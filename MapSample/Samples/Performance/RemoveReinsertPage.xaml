@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="MapSample.Samples.Performance.RemoveReinsertPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid RowDefinitions="Auto,*">
+        <Grid Margin="32,24,32,16" ColumnDefinitions="*,Auto" ColumnSpacing="24">
+            <StackPanel Spacing="4">
+                <TextBlock
+                    AutomationProperties.AutomationId="RemoveReinsertPage"
+                    Style="{StaticResource TitleTextBlockStyle}"
+                    Text="Remove and reinsert" />
+                <TextBlock Text="The toggle removes the same MapControl from the visual tree and reinserts it." />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12">
+                <TextBlock
+                    x:Name="MapStatus"
+                    VerticalAlignment="Center"
+                    AutomationProperties.AutomationId="RemoveReinsertStatus" />
+                <ToggleButton
+                    x:Name="MapToggle"
+                    AutomationProperties.AutomationId="MapPresenceToggle"
+                    Checked="MapToggle_Checked"
+                    Content="Map inserted"
+                    Unchecked="MapToggle_Unchecked" />
+            </StackPanel>
+        </Grid>
+        <Grid
+            x:Name="MapHost"
+            Grid.Row="1"
+            Margin="32,0,32,32"
+            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+    </Grid>
+</Page>

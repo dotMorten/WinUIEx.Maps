@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="MapSample.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="WinUIEx.Maps Samples">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid RowDefinitions="Auto,*">
+        <TitleBar
+            x:Name="AppTitleBar"
+            AutomationProperties.AutomationId="AppTitleBar"
+            IsPaneToggleButtonVisible="True"
+            PaneToggleRequested="AppTitleBar_PaneToggleRequested"
+            Subtitle="Home"
+            Title="WinUIEx.Maps Samples" />
+
+        <NavigationView
+            x:Name="SampleNavigation"
+            AutomationProperties.AutomationId="SampleNavigation"
+            Grid.Row="1"
+            AlwaysShowHeader="False"
+            IsBackButtonVisible="Collapsed"
+            IsPaneToggleButtonVisible="False"
+            IsSettingsVisible="False"
+            OpenPaneLength="280"
+            PaneDisplayMode="Left"
+            SelectionChanged="SampleNavigation_SelectionChanged">
+            <NavigationView.MenuItems>
+                <NavigationViewItem
+                    x:Name="HomeItem"
+                    AutomationProperties.AutomationId="HomeNavigationItem"
+                    Content="Home"
+                    Tag="home">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Home" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItemHeader Content="Maps" />
+                <NavigationViewItem
+                    AutomationProperties.AutomationId="BasemapNavigationItem"
+                    Content="Azure basemaps"
+                    Tag="basemaps">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Map" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
+                    AutomationProperties.AutomationId="OpenStreetMapNavigationItem"
+                    Content="OpenStreetMap tiles"
+                    Tag="openstreetmap">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Globe" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItemHeader Content="Interaction" />
+                <NavigationViewItem
+                    AutomationProperties.AutomationId="MapElementsNavigationItem"
+                    Content="Map elements"
+                    Tag="elements">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="MapPin" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
+                    AutomationProperties.AutomationId="CameraBindingNavigationItem"
+                    Content="Camera binding"
+                    Tag="camera">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Switch" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
+                    AutomationProperties.AutomationId="CurrentLocationNavigationItem"
+                    Content="Current location"
+                    Tag="location">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="MapPin" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItemHeader Content="Performance" />
+                <NavigationViewItem
+                    AutomationProperties.AutomationId="StressTestNavigationItem"
+                    Content="Icon stress test"
+                    Tag="stress">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Sync" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
+                    AutomationProperties.AutomationId="TabLifecycleNavigationItem"
+                    Content="Tab lifecycle"
+                    Tag="tab-lifecycle">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Document" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
+                    AutomationProperties.AutomationId="RemoveReinsertNavigationItem"
+                    Content="Remove and reinsert"
+                    Tag="remove-reinsert">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Refresh" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
+                    AutomationProperties.AutomationId="ReparentNavigationItem"
+                    Content="Reparent map"
+                    Tag="reparent">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Switch" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
+                    AutomationProperties.AutomationId="LifetimeStressNavigationItem"
+                    Content="Map lifetime stress"
+                    Tag="lifetime-stress">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="RepeatAll" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.MenuItems>
+
+            <Frame
+                x:Name="SampleFrame"
+                AutomationProperties.AutomationId="SampleFrame" />
+        </NavigationView>
+    </Grid>
+</Window>

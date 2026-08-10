@@ -1,0 +1,45 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <AssemblyName>WinUIEx.Maps</AssemblyName>
+    <RootNamespace>WinUIEx.Maps</RootNamespace>
+    <UseWinUI>true</UseWinUI>
+    <WinUISDKReferences>false</WinUISDKReferences>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Platform>AnyCPU</Platform>
+    <GenerateLibraryLayout>true</GenerateLibraryLayout>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <WarningsAsErrors>$(WarningsAsErrors);IL2026;IL2050;IL2070;IL2075;IL2104</WarningsAsErrors>
+    <ILLinkTreatWarningsAsErrors>true</ILLinkTreatWarningsAsErrors>
+    <IsTrimmable>true</IsTrimmable>
+  </PropertyGroup>
+
+  <PropertyGroup Label="PackageInfo">
+    <PackageId>WinUIEx.Maps</PackageId>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Copyright>Copyright © 2026-$([System.DateTime]::Now.ToString('yyyy')) - Morten Nielsen</Copyright>
+    <RepositoryType>git</RepositoryType>
+    <PackageOutputPath>$(MSBuildThisFileDirectory)..\artifacts\NuGet\$(Configuration)\</PackageOutputPath>
+    <Authors>Morten Nielsen - https://xaml.dev</Authors>
+    <Company>Morten Nielsen - https://xaml.dev</Company>
+    <PackageIcon>logo.png</PackageIcon>
+    <Version>0.1.0-preview</Version>
+    <Description>A set of extension methods and classes to fill some gaps in WinUI.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\logo.png" Pack="true" PackagePath="" />
+    <None Include="..\THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="" />
+    <PackageReference Include="LibTessDotNet" Version="1.1.15" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.0.12" />
+    <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.275">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+</Project>

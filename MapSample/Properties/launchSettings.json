@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "MapSample (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "MapSample (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

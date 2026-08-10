@@ -1,0 +1,75 @@
+name: Publish WinUIEx.Maps NuGet
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: NuGet package version
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Clone Repo
+      uses: actions/checkout@v4
+
+    - name: Set up .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Build and pack
+      env:
+        PACKAGE_VERSION: ${{ inputs.version }}
+      run: |
+        dotnet restore WinUIEx.Maps/WinUIEx.Maps.csproj
+        dotnet build WinUIEx.Maps/WinUIEx.Maps.csproj --no-restore -c Release
+        dotnet pack WinUIEx.Maps/WinUIEx.Maps.csproj --no-restore --no-build -c Release -p:PackageVersion="$env:PACKAGE_VERSION"
+
+    - name: Azure login
+      uses: azure/login@v3
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        allow-no-subscriptions: true
+
+    - name: Install Sign CLI
+      run: |
+        dotnet tool install --global sign --version 0.9.1-beta.26330.1
+
+    - name: Sign NuGet package and contained DLLs
+      run: |
+        sign code artifact-signing artifacts\NuGet\Release\*.nupkg `
+          --artifact-signing-endpoint ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }} `
+          --artifact-signing-account ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }} `
+          --artifact-signing-certificate-profile ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }} `
+          --azure-credential-type azure-cli `
+          --file-digest SHA256 `
+          --timestamp-url http://timestamp.acs.microsoft.com `
+          --timestamp-digest SHA256 `
+          --verbosity information
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: NuGet Packages
+        path: artifacts/NuGet/Release
+        if-no-files-found: error
+
+    # Get a short-lived NuGet API key
+    - name: NuGet login (OIDC → temp API key)
+      uses: NuGet/login@v1
+      id: login
+      with:
+        user: ${{ secrets.NUGET_USER }}
+   
+    - name: Push to NuGet
+      run: |
+        dotnet nuget push artifacts\NuGet\Release\*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json

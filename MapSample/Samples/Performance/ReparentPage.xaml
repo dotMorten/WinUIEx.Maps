@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="MapSample.Samples.Performance.ReparentPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:primitives="using:Microsoft.UI.Xaml.Controls.Primitives">
+
+    <Grid RowDefinitions="Auto,*">
+        <Grid Margin="32,24,32,16" ColumnDefinitions="*,Auto" ColumnSpacing="24">
+            <StackPanel Spacing="4">
+                <TextBlock
+                    AutomationProperties.AutomationId="ReparentPage"
+                    Style="{StaticResource TitleTextBlockStyle}"
+                    Text="Reparent map" />
+                <TextBlock Text="Moves the same MapControl between two grid columns." />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12">
+                <TextBlock
+                    x:Name="MoveStatus"
+                    VerticalAlignment="Center"
+                    AutomationProperties.AutomationId="ReparentStatus" />
+                <Button
+                    AutomationProperties.AutomationId="MoveMapButton"
+                    Click="MoveMap_Click"
+                    Content="Move once" />
+                <primitives:ToggleButton
+                    x:Name="AutoMoveToggle"
+                    AutomationProperties.AutomationId="AutoMoveToggle"
+                    Checked="AutoMoveToggle_Checked"
+                    Content="Move continuously"
+                    Unchecked="AutoMoveToggle_Unchecked" />
+            </StackPanel>
+        </Grid>
+        <Grid Grid.Row="1" Margin="32,0,32,32" ColumnDefinitions="*,*" ColumnSpacing="16">
+            <Border
+                Grid.Column="0"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+                <Grid x:Name="LeftHost" />
+            </Border>
+            <Border
+                Grid.Column="1"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+                <Grid x:Name="RightHost" />
+            </Border>
+        </Grid>
+    </Grid>
+</Page>

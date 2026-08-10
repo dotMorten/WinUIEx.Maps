@@ -1,0 +1,53 @@
+name: CI Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Clone Repo
+      uses: actions/checkout@v4
+
+    - name: Set up .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Restore
+      run: |
+        dotnet restore WinUIEx.Maps/WinUIEx.Maps.csproj
+        dotnet restore WinUIEx.Maps.Tests/WinUIEx.Maps.Tests.csproj -p:Platform=x64
+
+    - name: Build and pack
+      run: |
+        dotnet build WinUIEx.Maps/WinUIEx.Maps.csproj --no-restore -c Release
+        dotnet pack WinUIEx.Maps/WinUIEx.Maps.csproj --no-restore --no-build -c Release
+        dotnet build WinUIEx.Maps.Tests/WinUIEx.Maps.Tests.csproj --no-restore -c Release -p:Platform=x64
+
+#    - name: Test WinUIEx.Maps
+#      timeout-minutes: 10
+#      run: >-
+#        dotnet run
+#        --project WinUIEx.Maps.Tests/WinUIEx.Maps.Tests.csproj
+#        --no-build
+#        --no-restore
+#        -c Release
+#        -p:Platform=x64
+#        --
+#        --filter "FullyQualifiedName!~UITests"
+#        --progress on
+#        --output Detailed
+#        --timeout 5m
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: NuGet Packages
+        path: artifacts\NuGet\Release
+        if-no-files-found: error

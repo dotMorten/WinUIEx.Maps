@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="MapSample.Samples.Performance.TabLifecyclePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid RowDefinitions="Auto,*">
+        <Grid Margin="32,24,32,16" ColumnDefinitions="*,Auto" ColumnSpacing="24">
+            <StackPanel Spacing="4">
+                <TextBlock
+                    AutomationProperties.AutomationId="TabLifecyclePage"
+                    Style="{StaticResource TitleTextBlockStyle}"
+                    Text="Tab lifecycle" />
+                <TextBlock Text="Switch tabs to repeatedly unload and reload the same MapControl." />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12">
+                <TextBlock
+                    x:Name="LifecycleStatus"
+                    VerticalAlignment="Center"
+                    AutomationProperties.AutomationId="TabLifecycleStatus" />
+                <Button
+                    AutomationProperties.AutomationId="SwitchTabButton"
+                    Click="SwitchTab_Click"
+                    Content="Switch tab" />
+            </StackPanel>
+        </Grid>
+        <TabView
+            x:Name="LifecycleTabs"
+            Grid.Row="1"
+            Margin="32,0,32,32"
+            AutomationProperties.AutomationId="LifecycleTabView"
+            HorizontalContentAlignment="Stretch"
+            IsAddTabButtonVisible="False"
+            VerticalAlignment="Stretch"
+            VerticalContentAlignment="Stretch">
+            <TabViewItem
+                AutomationProperties.AutomationId="MapTab"
+                Header="Map"
+                HorizontalContentAlignment="Stretch"
+                IsClosable="False"
+                VerticalContentAlignment="Stretch">
+                <Grid x:Name="MapHost" />
+            </TabViewItem>
+            <TabViewItem
+                AutomationProperties.AutomationId="OtherTab"
+                Header="Other content"
+                IsClosable="False">
+                <TextBlock
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Style="{StaticResource SubtitleTextBlockStyle}"
+                    Text="The map tab is currently inactive." />
+            </TabViewItem>
+        </TabView>
+    </Grid>
+</Page>
