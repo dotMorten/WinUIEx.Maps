@@ -307,6 +307,11 @@ internal sealed partial class MapRenderer
             renderResult.LineSymbolCandidateCount,
             renderResult.LineSymbolProjectedCount,
             renderResult.LineSymbolDrawnCount);
+        MapControlEventSource.Log.VectorLineDecorationSummary(
+            layer.Style,
+            2,
+            renderResult.PatternLineCandidateCount,
+            renderResult.PatternInstanceCount);
         return activeFade;
     }
 
@@ -408,6 +413,11 @@ internal sealed partial class MapRenderer
             _displayPitch);
         renderResult.LineSymbolProjectedCount +=
             placements.Count(placement => placement.IsLinePlacement);
+        renderResult.PatternLineCandidateCount +=
+            symbols.Count(symbol => symbol.ContinuousLinePlacement);
+        renderResult.PatternInstanceCount +=
+            placements.Count(placement =>
+                placement.IsContinuousLinePlacement);
         if (placements.Length == 0)
         {
             return opacity < layer.Opacity;
@@ -739,7 +749,8 @@ internal sealed partial class MapRenderer
                 symbol.Height,
                 symbol.Kind,
                 symbol.Paint,
-                symbol.LabelId));
+                symbol.LabelId,
+                Opacity: symbol.Opacity));
     }
 
     private static void AddProjectedLineSymbols(
@@ -778,7 +789,8 @@ internal sealed partial class MapRenderer
         double maximumOffset = symbols.Max(
             symbol => symbol.OffsetX + (symbol.Width / 2));
         double symbolLength = maximumOffset - minimumOffset;
-        const double endpointPadding = 4;
+        bool continuousPlacement = symbols[0].ContinuousLinePlacement;
+        double endpointPadding = continuousPlacement ? 0 : 4;
         if (pathLength < symbolLength + (endpointPadding * 2))
         {
             return;
@@ -786,7 +798,7 @@ internal sealed partial class MapRenderer
 
         double spacing = Math.Max(
             symbols[0].LineSpacing,
-            symbolLength + 16);
+            symbolLength + (continuousPlacement ? 0 : 16));
         double usableLength = pathLength - symbolLength -
             (endpointPadding * 2);
         const int maximumPlacementCount = 4096;
@@ -794,8 +806,9 @@ internal sealed partial class MapRenderer
             Math.Floor(usableLength / spacing) + 1,
             1,
             maximumPlacementCount);
-        double firstCenter = (pathLength -
-            ((placementCount - 1) * spacing)) / 2;
+        double firstCenter = continuousPlacement
+            ? symbolLength / 2
+            : (pathLength - ((placementCount - 1) * spacing)) / 2;
         for (int placementIndex = 0;
             placementIndex < placementCount;
             placementIndex++)
@@ -810,7 +823,7 @@ internal sealed partial class MapRenderer
             {
                 continue;
             }
-            bool reverse = centerTangent.X < 0;
+            bool reverse = !continuousPlacement && centerTangent.X < 0;
             double centerRotation = Math.Atan2(
                 centerTangent.Y,
                 centerTangent.X);
@@ -898,7 +911,10 @@ internal sealed partial class MapRenderer
                     symbol.LabelId,
                     Rotation: rotation,
                     PlacementIndex: placementIndex,
-                    IsLinePlacement: true);
+                    IsLinePlacement: true,
+                    Opacity: symbol.Opacity,
+                    IsContinuousLinePlacement:
+                        symbol.ContinuousLinePlacement);
                 GetVectorSymbolBounds(
                     placement,
                     out double boundsLeft,
@@ -1166,7 +1182,9 @@ internal sealed partial class MapRenderer
     {
         List<VectorSymbolBatch> batches = [];
         foreach (IGrouping<int, VectorSymbolPlacement> styleLayer in
-            placements.GroupBy(placement => placement.StyleLayerOrder))
+            placements
+                .OrderBy(placement => placement.StyleLayerOrder)
+                .GroupBy(placement => placement.StyleLayerOrder))
         {
             Dictionary<VectorBatchKey, List<VectorSymbolPlacement>> grouped = [];
             List<VectorBatchKey> textureOrder = [];
@@ -1385,6 +1403,8 @@ internal sealed partial class MapRenderer
         internal int LineSymbolCandidateCount;
         internal int LineSymbolProjectedCount;
         internal int LineSymbolDrawnCount;
+        internal int PatternLineCandidateCount;
+        internal int PatternInstanceCount;
     }
 
     internal readonly record struct LabelCollisionResult(

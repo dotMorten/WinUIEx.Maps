@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
@@ -277,6 +278,13 @@ internal sealed class AzureVectorStyleAssets
                 textures,
                 symbols: null,
                 cancellationToken);
+            ResolveLinePatterns(
+                features,
+                zoom,
+                createTextures: true,
+                textures,
+                symbols: null,
+                cancellationToken);
         }
         HashSet<AzureGlyphKey> glyphKeys = [];
         foreach (double zoom in _symbolStyle.GetPreparationZooms(tileZoom))
@@ -321,6 +329,14 @@ internal sealed class AzureVectorStyleAssets
             textures: null,
             symbols,
             CancellationToken.None);
+        ResolveLinePatterns(
+            features,
+            zoom,
+            createTextures: false,
+            textures: null,
+            symbols,
+            CancellationToken.None,
+            ref counts);
         ResolveText(
             features,
             zoom,
@@ -373,6 +389,18 @@ internal sealed class AzureVectorStyleAssets
                     }
                     continue;
                 }
+                if (!layer.TryEvaluatePattern(
+                        context,
+                        out string? patternName,
+                        out _) ||
+                    patternName is not null)
+                {
+                    if (patternName is null)
+                    {
+                        evaluationFailureCount++;
+                    }
+                    continue;
+                }
                 AzureStyleLineResult lineResult =
                     layer.EvaluateLine(context, out VectorLineStyle style);
                 if (lineResult != AzureStyleLineResult.Resolved)
@@ -393,6 +421,141 @@ internal sealed class AzureVectorStyleAssets
             }
         }
         return new VectorLineResolution(lines.ToArray(), evaluationFailureCount);
+    }
+
+    private void ResolveLinePatterns(
+        VectorTileFeatureCollection features,
+        double zoom,
+        bool createTextures,
+        Dictionary<long, VectorSpriteTextureData>? textures,
+        List<VectorTileSymbol>? symbols,
+        CancellationToken cancellationToken)
+    {
+        VectorStyleResolutionCounts ignoredCounts = default;
+        ResolveLinePatterns(
+            features,
+            zoom,
+            createTextures,
+            textures,
+            symbols,
+            cancellationToken,
+            ref ignoredCounts,
+            collectCounts: false);
+    }
+
+    private void ResolveLinePatterns(
+        VectorTileFeatureCollection features,
+        double zoom,
+        bool createTextures,
+        Dictionary<long, VectorSpriteTextureData>? textures,
+        List<VectorTileSymbol>? symbols,
+        CancellationToken cancellationToken,
+        ref VectorStyleResolutionCounts counts,
+        bool collectCounts = true)
+    {
+        foreach (AzureLineStyleLayer layer in _symbolStyle.LineLayers)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            AzureStyleVisibilityResult visibility = layer.EvaluateVisibility(zoom);
+            if (visibility != AzureStyleVisibilityResult.Visible)
+            {
+                if (collectCounts &&
+                    visibility == AzureStyleVisibilityResult.EvaluationFailure)
+                {
+                    counts.EvaluationFailureCount++;
+                }
+                continue;
+            }
+            foreach (VectorTileFeature feature in features.GetSourceLayer(layer.SourceLayer))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (feature.Lines.Length == 0)
+                {
+                    continue;
+                }
+                AzureStyleEvaluationContext context = new(feature, zoom);
+                AzureStyleFilterResult filter = layer.EvaluateFilter(context);
+                if (filter != AzureStyleFilterResult.Match)
+                {
+                    if (collectCounts &&
+                        filter == AzureStyleFilterResult.EvaluationFailure)
+                    {
+                        counts.EvaluationFailureCount++;
+                    }
+                    continue;
+                }
+                if (!layer.TryEvaluatePattern(
+                        context,
+                        out string? patternName,
+                        out double opacity))
+                {
+                    if (collectCounts)
+                    {
+                        counts.EvaluationFailureCount++;
+                    }
+                    continue;
+                }
+                if (patternName is null || opacity <= 0)
+                {
+                    continue;
+                }
+                AzureSpriteLookupResult spriteResult = createTextures
+                    ? _spriteAtlas.TryGetOrCreateTexture(
+                        patternName,
+                        cancellationToken,
+                        out VectorSpriteTextureData? texture,
+                        out AzureSpriteEntry entry)
+                    : _spriteAtlas.TryGetTexture(
+                        patternName,
+                        out texture,
+                        out entry);
+                if (spriteResult != AzureSpriteLookupResult.Found ||
+                    texture is null)
+                {
+                    if (collectCounts)
+                    {
+                        counts.UnavailableSpriteCount += feature.Lines.Length;
+                    }
+                    continue;
+                }
+                textures?.TryAdd(texture.TextureId, texture);
+                if (symbols is null)
+                {
+                    continue;
+                }
+                double width = entry.Width / entry.PixelRatio;
+                double height = entry.Height / entry.PixelRatio;
+                if (!double.IsFinite(width) ||
+                    !double.IsFinite(height) ||
+                    width <= 0 ||
+                    height <= 0 ||
+                    width > 4096 ||
+                    height > 4096)
+                {
+                    if (collectCounts)
+                    {
+                        counts.EvaluationFailureCount++;
+                    }
+                    continue;
+                }
+                foreach (VectorTileLine line in feature.Lines)
+                {
+                    symbols.Add(new VectorTileSymbol(
+                        layer.Order,
+                        0,
+                        0,
+                        texture.TextureId,
+                        width,
+                        height,
+                        0,
+                        0,
+                        LinePoints: line.Points,
+                        LineSpacing: width,
+                        Opacity: opacity,
+                        ContinuousLinePlacement: true));
+                }
+            }
+        }
     }
 
     internal VectorPolygonResolution ResolvePolygons(
@@ -1569,16 +1732,6 @@ internal sealed class AzureSymbolStyle
         {
             return AzureStyleLayerParseResult.InvalidDefinition;
         }
-        if (paint.ValueKind == JsonValueKind.Object &&
-            paint.TryGetProperty("line-pattern", out _))
-        {
-            return AzureStyleLayerParseResult.UnsupportedLinePattern;
-        }
-        if (paint.ValueKind == JsonValueKind.Object &&
-            paint.TryGetProperty("line-dasharray", out _))
-        {
-            return AzureStyleLayerParseResult.UnsupportedLineDashArray;
-        }
         if (!TryParseOptionalExpression(
                 layout,
                 "visibility",
@@ -1608,7 +1761,17 @@ internal sealed class AzureSymbolStyle
                 paint,
                 "line-width",
                 AzureStyleValue.FromNumber(1),
-                out AzureStyleExpression lineWidth))
+                out AzureStyleExpression lineWidth) ||
+            !TryParseOptionalExpression(
+                paint,
+                "line-dasharray",
+                AzureStyleValue.FromArray([]),
+                out AzureStyleExpression lineDashArray) ||
+            !TryParseOptionalExpression(
+                paint,
+                "line-pattern",
+                AzureStyleValue.Null,
+                out AzureStyleExpression linePattern))
         {
             return AzureStyleLayerParseResult.UnsupportedExpression;
         }
@@ -1644,7 +1807,9 @@ internal sealed class AzureSymbolStyle
             lineOpacity,
             lineWidth,
             lineCap,
-            lineJoin);
+            lineJoin,
+            lineDashArray,
+            linePattern);
         return AzureStyleLayerParseResult.Parsed;
     }
 
@@ -1956,7 +2121,9 @@ internal sealed class AzureLineStyleLayer(
     AzureStyleExpression lineOpacity,
     AzureStyleExpression lineWidth,
     AzureStyleExpression lineCap,
-    AzureStyleExpression lineJoin)
+    AzureStyleExpression lineJoin,
+    AzureStyleExpression lineDashArray,
+    AzureStyleExpression linePattern)
 {
     internal int Order { get; } = order;
 
@@ -2022,9 +2189,45 @@ internal sealed class AzureLineStyleLayer(
         {
             return AzureStyleLineResult.EvaluationFailure;
         }
+        if (!lineDashArray.TryEvaluate(context, out AzureStyleValue dashValue) ||
+            !TryResolveDashArray(
+                dashValue,
+                width,
+                out ImmutableArray<double> dashArray))
+        {
+            return AzureStyleLineResult.EvaluationFailure;
+        }
         color *= (float)Math.Clamp(opacity, 0, 1);
-        result = new VectorLineStyle(color, width, cap, join);
+        result = new VectorLineStyle(color, width, cap, join, dashArray);
         return AzureStyleLineResult.Resolved;
+    }
+
+    internal bool TryEvaluatePattern(
+        AzureStyleEvaluationContext context,
+        out string? patternName,
+        out double opacity)
+    {
+        patternName = null;
+        opacity = 0;
+        if (!linePattern.TryEvaluate(context, out AzureStyleValue patternValue))
+        {
+            return false;
+        }
+        if (patternValue.Kind == AzureStyleValueKind.Null)
+        {
+            return true;
+        }
+        if (patternValue.Kind != AzureStyleValueKind.String ||
+            string.IsNullOrWhiteSpace(patternValue.StringValue) ||
+            !lineOpacity.TryEvaluate(context, out AzureStyleValue opacityValue) ||
+            !opacityValue.TryGetNumber(out opacity) ||
+            !double.IsFinite(opacity))
+        {
+            return false;
+        }
+        patternName = patternValue.StringValue;
+        opacity = Math.Clamp(opacity, 0, 1);
+        return true;
     }
 
     internal void CollectZoomStops(List<double> stops)
@@ -2038,6 +2241,52 @@ internal sealed class AzureLineStyleLayer(
         lineWidth.CollectZoomStops(stops);
         lineCap.CollectZoomStops(stops);
         lineJoin.CollectZoomStops(stops);
+        lineDashArray.CollectZoomStops(stops);
+        linePattern.CollectZoomStops(stops);
+    }
+
+    private static bool TryResolveDashArray(
+        AzureStyleValue value,
+        double lineWidth,
+        out ImmutableArray<double> dashArray)
+    {
+        dashArray = [];
+        if (value.Kind == AzureStyleValueKind.Null ||
+            value is { Kind: AzureStyleValueKind.Array, ArrayValue.Length: 0 })
+        {
+            return true;
+        }
+        if (value is not
+            {
+                Kind: AzureStyleValueKind.Array,
+                ArrayValue.Length: >= 2
+            } ||
+            value.ArrayValue is not { } values)
+        {
+            return false;
+        }
+        int normalizedCount = (values.Length & 1) == 0
+            ? values.Length
+            : values.Length * 2;
+        double[] resolved = new double[normalizedCount];
+        bool hasPositiveLength = false;
+        for (int index = 0; index < normalizedCount; index++)
+        {
+            if (!values[index % values.Length].TryGetNumber(out double length) ||
+                !double.IsFinite(length) ||
+                length < 0)
+            {
+                return false;
+            }
+            resolved[index] = length * lineWidth;
+            hasPositiveLength |= resolved[index] > 0;
+        }
+        if (!hasPositiveLength)
+        {
+            return false;
+        }
+        dashArray = [.. resolved];
+        return true;
     }
 
     private static bool TryGetCap(string? value, out VectorLineCap cap)
@@ -2397,8 +2646,6 @@ internal enum AzureStyleLayerParseResult
     UnsupportedSymbolPlacement,
     UnsupportedTextFit,
     UnsupportedIconRotation,
-    UnsupportedLinePattern,
-    UnsupportedLineDashArray,
     UnsupportedFillPattern,
     UnsupportedExpression,
     InvalidDefinition,

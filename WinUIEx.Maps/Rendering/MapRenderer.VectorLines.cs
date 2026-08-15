@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using WinUIEx.Maps.Rendering.Diagnostics;
 
 namespace WinUIEx.Maps.Rendering;
@@ -351,6 +352,11 @@ internal sealed partial class MapRenderer
             result.TriangleCount,
             result.EvaluationFailureCount,
             result.DrawCallCount);
+        MapControlEventSource.Log.VectorLineDecorationSummary(
+            layer.Style,
+            1,
+            result.DashedLineCount,
+            result.DashTriangleCount);
         if (result.FallbackInstanceCount != 0)
         {
             MapControlEventSource.Log.VectorLineFallbackSummary(
@@ -593,6 +599,11 @@ internal sealed partial class MapRenderer
             }
             result.DrawableLineCount++;
             result.TriangleCount += triangleCount;
+            if (!line.Style.DashArray.IsDefaultOrEmpty)
+            {
+                result.DashedLineCount++;
+                result.DashTriangleCount += triangleCount;
+            }
         }
         return tileOpacity < layer.Opacity;
     }
@@ -714,6 +725,18 @@ internal sealed partial class MapRenderer
             return 0;
         }
 
+        if (!style.DashArray.IsDefaultOrEmpty)
+        {
+            return AppendDashedVectorLineTriangles(
+                points,
+                style with { DashArray = [] },
+                style.DashArray.AsSpan(),
+                viewportWidth,
+                viewportHeight,
+                viewportPadding,
+                triangles);
+        }
+
         int initialCount = triangles.Count;
         double halfWidth = style.Width / 2;
         for (int index = 0; index + 1 < points.Length; index++)
@@ -817,6 +840,110 @@ internal sealed partial class MapRenderer
             }
         }
         return (triangles.Count - initialCount) / 3;
+    }
+
+    private static int AppendDashedVectorLineTriangles(
+        ReadOnlySpan<MapScreenPoint> points,
+        VectorLineStyle style,
+        ReadOnlySpan<double> dashArray,
+        double viewportWidth,
+        double viewportHeight,
+        double viewportPadding,
+        PooledGeometryBuffer triangles)
+    {
+        const double epsilon = 1e-7;
+        int initialCount = triangles.Count;
+        int dashIndex = 0;
+        double dashRemaining = dashArray[0];
+        bool draw = true;
+        List<MapScreenPoint> span = [];
+
+        for (int segmentIndex = 0;
+            segmentIndex + 1 < points.Length;
+            segmentIndex++)
+        {
+            MapScreenPoint segmentStart = points[segmentIndex];
+            MapScreenPoint segmentEnd = points[segmentIndex + 1];
+            double deltaX = segmentEnd.X - segmentStart.X;
+            double deltaY = segmentEnd.Y - segmentStart.Y;
+            double segmentLength = Math.Sqrt(
+                (deltaX * deltaX) + (deltaY * deltaY));
+            if (!double.IsFinite(segmentLength) || segmentLength <= epsilon)
+            {
+                continue;
+            }
+
+            double consumed = 0;
+            while (consumed < segmentLength - epsilon)
+            {
+                int skippedEntries = 0;
+                while (dashRemaining <= epsilon &&
+                    skippedEntries++ < dashArray.Length)
+                {
+                    if (draw && span.Count >= 2)
+                    {
+                        AppendVectorLineTriangles(
+                            CollectionsMarshal.AsSpan(span),
+                            style,
+                            viewportWidth,
+                            viewportHeight,
+                            viewportPadding,
+                            triangles);
+                        span.Clear();
+                    }
+                    dashIndex = (dashIndex + 1) % dashArray.Length;
+                    draw = !draw;
+                    dashRemaining = dashArray[dashIndex];
+                }
+                if (dashRemaining <= epsilon)
+                {
+                    break;
+                }
+
+                double length = Math.Min(
+                    dashRemaining,
+                    segmentLength - consumed);
+                double startAmount = consumed / segmentLength;
+                double endAmount = (consumed + length) / segmentLength;
+                MapScreenPoint start = new(
+                    segmentStart.X + (deltaX * startAmount),
+                    segmentStart.Y + (deltaY * startAmount));
+                MapScreenPoint end = new(
+                    segmentStart.X + (deltaX * endAmount),
+                    segmentStart.Y + (deltaY * endAmount));
+                if (draw)
+                {
+                    AddDistinctPoint(span, start);
+                    AddDistinctPoint(span, end);
+                }
+                consumed += length;
+                dashRemaining -= length;
+            }
+        }
+
+        if (draw && span.Count >= 2)
+        {
+            AppendVectorLineTriangles(
+                CollectionsMarshal.AsSpan(span),
+                style,
+                viewportWidth,
+                viewportHeight,
+                viewportPadding,
+                triangles);
+        }
+        return (triangles.Count - initialCount) / 3;
+    }
+
+    private static void AddDistinctPoint(
+        List<MapScreenPoint> points,
+        MapScreenPoint point)
+    {
+        if (points.Count == 0 ||
+            Math.Abs(points[^1].X - point.X) > 1e-7 ||
+            Math.Abs(points[^1].Y - point.Y) > 1e-7)
+        {
+            points.Add(point);
+        }
     }
 
     private static void AddQuad(
@@ -1020,6 +1147,8 @@ internal sealed partial class MapRenderer
         internal int TriangleCount;
         internal int EvaluationFailureCount;
         internal int DrawCallCount;
+        internal int DashedLineCount;
+        internal int DashTriangleCount;
         internal int FallbackInstanceCount;
         internal int DrawnFallbackInstanceCount;
         internal int FadedFallbackInstanceCount;
@@ -1035,6 +1164,8 @@ internal sealed partial class MapRenderer
             TriangleCount += other.TriangleCount;
             EvaluationFailureCount += other.EvaluationFailureCount;
             DrawCallCount += other.DrawCallCount;
+            DashedLineCount += other.DashedLineCount;
+            DashTriangleCount += other.DashTriangleCount;
         }
     }
 

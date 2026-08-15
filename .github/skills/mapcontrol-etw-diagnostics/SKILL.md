@@ -130,6 +130,7 @@ payload inspection is best in PerfView's Events view.
 | 63 | `VectorGeometryPreparationSummary` | Informational/Tiles+VectorTiles | background line/polygon vertex preparation accepted or discarded, separating CPU preparation from immutable GPU-buffer creation |
 | 64 | `VectorLabelTextureReadinessSummary` | Verbose/Icons+VectorTiles | whole labels and glyphs withheld until every texture required by each label is available |
 | 65 | `VectorLabelFadeSummary` | Verbose/Icons+VectorTiles | complete labels and glyphs currently fading from the newest required glyph texture |
+| 66 | `VectorLineDecorationSummary` | Verbose/Tiles+VectorTiles | dashed-line candidates and triangles (`decorationKind=1`), or patterned-line candidates and projected sprite instances (`decorationKind=2`) |
 
 ## Reproduce and interpret
 
@@ -151,7 +152,7 @@ payload inspection is best in PerfView's Events view.
   hidden Azure `TileLayer`, so it should produce no Azure tile/attribution work while custom
   IDs continue.
 - **Azure vector tiles:** select Tiles+VectorTiles (`0x108`) and correlate IDs 11–17, 43–46,
-  and 49–63. ID 49 confirms that MVT responses reached generation-checked CPU cache commit,
+  and 49–66. ID 49 confirms that MVT responses reached generation-checked CPU cache commit,
   ID 50 distinguishes asset acquisition from tile decode and reports explicitly unsupported
   style-layer counts, ID 52 reports glyph-range latency, ID 54 reports definitive unavailable
   ranges without font or label content, verbose IDs 51/53 summarize point-symbol and
@@ -162,8 +163,9 @@ payload inspection is best in PerfView's Events view.
   distinguishes geometry rebuilds from translation-only frame reuse, while ID 62 confirms
   that tile arrivals were handled incrementally instead of forcing an in-motion rebuild, and ID 63
   separates background geometry preparation from immutable GPU-buffer creation. ID 64 confirms
-  labels are withheld as complete groups while glyph textures are still uploading, and ID 65
-  confirms those complete groups fade after becoming ready. None exposes
+  labels are withheld as complete groups while glyph textures are still uploading, ID 65
+  confirms those complete groups fade after becoming ready, and ID 66 distinguishes dashed
+  geometry from sprite-patterned line placement without exposing pattern names. None exposes
   source-layer names, properties, sprite names, URLs, or service content.
 - **Cache/dedup:** inspect ID 18 over time. A high `pendingDedupCount` is expected while a
   wave is active. Repeated misses for the same stable scene or evictions that cannot return

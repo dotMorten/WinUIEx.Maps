@@ -425,6 +425,12 @@ internal sealed partial class MapRenderer
                     {
                         prepared.LineResult.DrawableLineCount++;
                         prepared.LineResult.TriangleCount += triangleCount;
+                        if (!line.Style.DashArray.IsDefaultOrEmpty)
+                        {
+                            prepared.LineResult.DashedLineCount++;
+                            prepared.LineResult.DashTriangleCount +=
+                                triangleCount;
+                        }
                     }
                 }
             }

@@ -1569,4 +1569,31 @@ internal sealed class MapControlEventSource : EventSource
                 fadingGlyphCount);
         }
     }
+
+    /// <summary>
+    /// Records dashed or sprite-patterned line rendering without sprite or layer names.
+    /// </summary>
+    [Event(
+        66,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorLineDecorationSummary(
+        int style,
+        int decorationKind,
+        int candidateLineCount,
+        int drawablePrimitiveCount)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                66,
+                style,
+                decorationKind,
+                candidateLineCount,
+                drawablePrimitiveCount);
+        }
+    }
 }

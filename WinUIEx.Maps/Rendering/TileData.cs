@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Numerics;
 
 namespace WinUIEx.Maps.Rendering;
@@ -71,7 +72,9 @@ internal readonly record struct VectorTileSymbol(
     VectorTextPaint Paint = default,
     int LabelId = -1,
     VectorTilePoint[]? LinePoints = null,
-    double LineSpacing = 250);
+    double LineSpacing = 250,
+    double Opacity = 1,
+    bool ContinuousLinePlacement = false);
 
 /// <summary>
 /// Describes one projected vector symbol rectangle ready for texture batching.
@@ -90,7 +93,8 @@ internal readonly record struct VectorSymbolPlacement(
     double Rotation = 0,
     int PlacementIndex = 0,
     bool IsLinePlacement = false,
-    double Opacity = 1);
+    double Opacity = 1,
+    bool IsContinuousLinePlacement = false);
 
 /// <summary>
 /// Carries resolved point symbols and privacy-safe aggregate failures for one display zoom.
@@ -137,7 +141,8 @@ internal readonly record struct VectorLineStyle(
     Vector4 Color,
     double Width,
     VectorLineCap Cap,
-    VectorLineJoin Join);
+    VectorLineJoin Join,
+    ImmutableArray<double> DashArray = default);
 
 internal enum VectorLineCap
 {
