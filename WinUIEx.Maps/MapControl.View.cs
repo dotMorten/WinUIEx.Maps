@@ -1,6 +1,7 @@
+using Microsoft.UI.Xaml;
+using Windows.Devices.Geolocation;
 using WinUIEx.Maps.Rendering;
 using WinUIEx.Maps.Rendering.Diagnostics;
-using Windows.Devices.Geolocation;
 
 namespace WinUIEx.Maps;
 
@@ -197,6 +198,221 @@ public sealed partial class MapControl
 
         return pending.Completion.Task;
     }
+
+    /// <summary>
+    /// Sets the view of the map displayed in the <see cref="MapControl"/> to the contents of
+    /// the specified <see cref="GeoboundingBox"/> with the specified margin. The view change
+    /// uses the specified animation.
+    /// </summary>
+    /// <param name="bounds">The geographic area to display in the view.</param>
+    /// <param name="margin">The margin to use in the view.</param>
+    /// <param name="animation">
+    /// The animation to use when changing the view. For more info, see
+    /// <see cref="MapAnimationKind"/>.
+    /// </param>
+    /// <returns>
+    /// <see langword="true"/> if the asynchronous operation succeeded; otherwise,
+    /// <see langword="false"/>.
+    /// </returns>
+    /// <remarks>
+    /// If the area specified by the <see cref="GeoboundingBox"/> doesn't fill the
+    /// <see cref="MapControl"/>, the control also displays the surrounding area outside the
+    /// <see cref="GeoboundingBox"/>.
+    /// </remarks>
+    public Task<bool> TrySetViewBoundsAsync(
+        GeoboundingBox bounds,
+        Thickness? margin,
+        MapAnimationKind animation)
+    {
+        ArgumentNullException.ThrowIfNull(bounds);
+        EnsureUiThread();
+        if (!Enum.IsDefined(animation))
+        {
+            throw new ArgumentOutOfRangeException(nameof(animation));
+        }
+
+        double viewportWidth = _panel?.ActualWidth ?? ActualWidth;
+        double viewportHeight = _panel?.ActualHeight ?? ActualHeight;
+        if (!TryCalculateBoundsView(
+            bounds,
+            margin ?? new Thickness(),
+            viewportWidth,
+            viewportHeight,
+            Heading,
+            Pitch,
+            out BasicGeoposition center,
+            out double zoom))
+        {
+            return Task.FromResult(false);
+        }
+
+        return TrySetViewAsync(
+            new Geopoint(center),
+            zoom,
+            null,
+            null,
+            animation);
+    }
+
+    internal static bool TryCalculateBoundsView(
+        GeoboundingBox bounds,
+        Thickness margin,
+        double viewportWidth,
+        double viewportHeight,
+        double heading,
+        double pitch,
+        out BasicGeoposition center,
+        out double zoom)
+    {
+        center = default;
+        zoom = 0;
+        if (!AreValidMargins(margin) ||
+            !double.IsFinite(viewportWidth) ||
+            !double.IsFinite(viewportHeight))
+        {
+            return false;
+        }
+
+        double availableWidth = viewportWidth - margin.Left - margin.Right;
+        double availableHeight = viewportHeight - margin.Top - margin.Bottom;
+        if (availableWidth <= 0 || availableHeight <= 0)
+        {
+            return false;
+        }
+
+        BasicGeoposition northwest = bounds.NorthwestCorner;
+        BasicGeoposition southeast = bounds.SoutheastCorner;
+        if (!double.IsFinite(northwest.Longitude) ||
+            !double.IsFinite(northwest.Latitude) ||
+            !double.IsFinite(southeast.Longitude) ||
+            !double.IsFinite(southeast.Latitude) ||
+            northwest.Latitude < southeast.Latitude)
+        {
+            return false;
+        }
+
+        double westX = MapCamera.LongitudeToWorldX(northwest.Longitude);
+        double eastX = MapCamera.LongitudeToWorldX(southeast.Longitude);
+        if (eastX < westX)
+        {
+            eastX++;
+        }
+        double centerLongitude =
+            MapCamera.WorldXToLongitude((westX + eastX) / 2);
+        double northY = MapCamera.LatitudeToWorldY(northwest.Latitude);
+        double southY = MapCamera.LatitudeToWorldY(southeast.Latitude);
+        double centerLatitude =
+            MapCamera.WorldYToLatitude((northY + southY) / 2);
+        var boundsCenter = new MapCenter(centerLongitude, centerLatitude);
+        double horizontalOffset = (margin.Left - margin.Right) / 2;
+        double verticalOffset = (margin.Top - margin.Bottom) / 2;
+        BasicGeoposition[] corners =
+        [
+            northwest,
+            new BasicGeoposition
+            {
+                Longitude = southeast.Longitude,
+                Latitude = northwest.Latitude,
+            },
+            southeast,
+            new BasicGeoposition
+            {
+                Longitude = northwest.Longitude,
+                Latitude = southeast.Latitude,
+            },
+        ];
+
+        bool Fits(double candidateZoom, out MapCenter candidateCenter)
+        {
+            candidateCenter = MapCamera.CenterForLocationAtOffset(
+                boundsCenter,
+                candidateZoom,
+                horizontalOffset,
+                verticalOffset,
+                heading,
+                pitch,
+                viewportHeight);
+            foreach (BasicGeoposition corner in corners)
+            {
+                if (!MapCamera.TryProjectLocation(
+                    corner.Longitude,
+                    corner.Latitude,
+                    candidateCenter.Longitude,
+                    candidateCenter.Latitude,
+                    candidateZoom,
+                    viewportWidth,
+                    viewportHeight,
+                    heading,
+                    pitch,
+                    out MapViewportPoint point) ||
+                    point.X < margin.Left - 0.5 ||
+                    point.X > viewportWidth - margin.Right + 0.5 ||
+                    point.Y < margin.Top - 0.5 ||
+                    point.Y > viewportHeight - margin.Bottom + 0.5)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        const double searchStep = 1d / 64;
+        double lower = MapCamera.MaximumTileZoom;
+        double upper = MapCamera.MaximumTileZoom;
+        MapCenter fittedCenter;
+        if (!Fits(lower, out fittedCenter))
+        {
+            bool foundFit = false;
+            for (upper = MapCamera.MaximumTileZoom;
+                upper > 0;
+                upper = Math.Max(0, upper - searchStep))
+            {
+                lower = Math.Max(0, upper - searchStep);
+                if (Fits(lower, out fittedCenter))
+                {
+                    foundFit = true;
+                    break;
+                }
+            }
+
+            if (!foundFit)
+            {
+                return false;
+            }
+        }
+
+        for (int iteration = 0; iteration < 48; iteration++)
+        {
+            double candidate = (lower + upper) / 2;
+            if (Fits(candidate, out MapCenter candidateCenter))
+            {
+                lower = candidate;
+                fittedCenter = candidateCenter;
+            }
+            else
+            {
+                upper = candidate;
+            }
+        }
+
+        center = new BasicGeoposition
+        {
+            Longitude = fittedCenter.Longitude,
+            Latitude = fittedCenter.Latitude,
+        };
+        zoom = lower;
+        return true;
+    }
+
+    private static bool AreValidMargins(Thickness margin) =>
+        double.IsFinite(margin.Left) &&
+        double.IsFinite(margin.Top) &&
+        double.IsFinite(margin.Right) &&
+        double.IsFinite(margin.Bottom) &&
+        margin.Left >= 0 &&
+        margin.Top >= 0 &&
+        margin.Right >= 0 &&
+        margin.Bottom >= 0;
 
     private void OnRendererDisplayedCameraChanged(MapScene scene) =>
         TryCompleteViewChange(

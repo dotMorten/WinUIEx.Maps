@@ -1,3 +1,4 @@
+using Microsoft.UI.Xaml;
 using Windows.Devices.Geolocation;
 using WinUIEx.Maps.Rendering;
 using WinUIEx.Maps.Tests.UITestHelpers;
@@ -223,7 +224,68 @@ public sealed class MapControlViewTests
                         0,
                         0,
                         (MapAnimationKind)100));
+                Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+                    map.TrySetViewBoundsAsync(
+                        CreateBounds(48, -123, 47, -121),
+                        null,
+                        (MapAnimationKind)100));
                 return Task.CompletedTask;
+            });
+
+    [TestMethod]
+    public Task BoundsViewNoneFitsCornersInsideAsymmetricMargin() =>
+        MapControlTestHost.LoadMapControlAsync(
+            InitialCenter,
+            3,
+            async map =>
+            {
+                GeoboundingBox bounds = CreateBounds(48, -123, 47, -121);
+                var margin = new Thickness(55, 35, 85, 45);
+
+                bool succeeded = await map.TrySetViewBoundsAsync(
+                    bounds,
+                    margin,
+                    MapAnimationKind.None);
+
+                Assert.IsTrue(succeeded);
+                AssertDisplayedBounds(map, bounds, margin);
+            });
+
+    [TestMethod]
+    public Task BoundsViewAnimatedChangeCompletes() =>
+        MapControlTestHost.LoadMapControlAsync(
+            InitialCenter,
+            3,
+            async map =>
+            {
+                GeoboundingBox bounds = CreateBounds(35, 138, 34, 140);
+                var margin = new Thickness(24);
+
+                bool succeeded = await map.TrySetViewBoundsAsync(
+                    bounds,
+                    margin,
+                    MapAnimationKind.Linear);
+
+                Assert.IsTrue(succeeded);
+                AssertDisplayedBounds(map, bounds, margin);
+            });
+
+    [TestMethod]
+    public Task BoundsViewReturnsFalseWhenMarginsConsumeViewport() =>
+        MapControlTestHost.LoadMapControlAsync(
+            InitialCenter,
+            3,
+            async map =>
+            {
+                GeoboundingBox bounds = CreateBounds(48, -123, 47, -121);
+
+                bool succeeded = await map.TrySetViewBoundsAsync(
+                    bounds,
+                    new Thickness(10000),
+                    MapAnimationKind.None);
+
+                Assert.IsFalse(succeeded);
+                AssertDisplayedView(map, InitialCenter, 3, 0, 0);
             });
 
     private static void AssertDisplayedView(
@@ -243,5 +305,74 @@ public sealed class MapControlViewTests
         Assert.AreEqual(expectedZoom, zoom, 0.001);
         Assert.AreEqual(expectedHeading, heading, 0.001);
         Assert.AreEqual(expectedPitch, pitch, 0.001);
+    }
+
+    private static GeoboundingBox CreateBounds(
+        double north,
+        double west,
+        double south,
+        double east) =>
+        new(
+            new BasicGeoposition
+            {
+                Latitude = north,
+                Longitude = west,
+            },
+            new BasicGeoposition
+            {
+                Latitude = south,
+                Longitude = east,
+            });
+
+    private static void AssertDisplayedBounds(
+        MapControl map,
+        GeoboundingBox bounds,
+        Thickness margin)
+    {
+        Assert.IsTrue(map.TryGetDisplayedCamera(
+            out BasicGeoposition center,
+            out double zoom,
+            out double heading,
+            out double pitch));
+        BasicGeoposition northwest = bounds.NorthwestCorner;
+        BasicGeoposition southeast = bounds.SoutheastCorner;
+        BasicGeoposition[] corners =
+        [
+            northwest,
+            new()
+            {
+                Latitude = northwest.Latitude,
+                Longitude = southeast.Longitude,
+            },
+            southeast,
+            new()
+            {
+                Latitude = southeast.Latitude,
+                Longitude = northwest.Longitude,
+            },
+        ];
+
+        foreach (BasicGeoposition corner in corners)
+        {
+            Assert.IsTrue(MapCamera.TryProjectLocation(
+                corner.Longitude,
+                corner.Latitude,
+                center.Longitude,
+                center.Latitude,
+                zoom,
+                map.ActualWidth,
+                map.ActualHeight,
+                heading,
+                pitch,
+                out MapViewportPoint point));
+            Assert.IsGreaterThanOrEqualTo(margin.Left - 1, point.X);
+            Assert.IsLessThanOrEqualTo(
+                map.ActualWidth - margin.Right + 1,
+                point.X);
+            Assert.IsGreaterThanOrEqualTo(margin.Top - 1, point.Y);
+            Assert.IsLessThanOrEqualTo(
+                map.ActualHeight - margin.Bottom + 1,
+                point.Y);
+        }
     }
 }
