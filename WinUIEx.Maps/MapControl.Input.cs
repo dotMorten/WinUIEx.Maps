@@ -64,6 +64,7 @@ public sealed partial class MapControl
 
         if (_navigationKeys.TryAdd(e.Key, Stopwatch.GetTimestamp()))
         {
+            CancelPendingViewChange();
             PublishKeyboardNavigation();
             e.Handled = true;
         }
@@ -280,6 +281,7 @@ public sealed partial class MapControl
             return;
         }
 
+        CancelPendingViewChange();
         BasicGeoposition position = Center?.Position ?? new BasicGeoposition();
         double viewportWidth = _panel?.ActualWidth ?? ActualWidth;
         double viewportHeight = _panel?.ActualHeight ?? ActualHeight;
@@ -460,6 +462,7 @@ public sealed partial class MapControl
         ManipulationStartedRoutedEventArgs e)
     {
         base.OnManipulationStarted(e);
+        CancelPendingViewChange();
         if (e.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Touch)
         {
             _touchRotation.Reset();

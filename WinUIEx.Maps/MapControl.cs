@@ -246,6 +246,7 @@ public sealed partial class MapControl : Control
             new WeakXamlRootChangedSubscription(this);
         _renderer = new MapRenderer();
         _renderer.SceneChanged += OnRendererSceneChanged;
+        _renderer.DisplayedCameraChanged += OnRendererDisplayedCameraChanged;
         _iconService = new MapIconService(_renderer, DispatcherQueue);
         _rasterTileManager = new RasterTileManager(_renderer);
         _rasterTileManager.AttributionChanged += OnAttributionChanged;
@@ -463,6 +464,7 @@ public sealed partial class MapControl : Control
             _rasterTileManager.Suspend();
             _renderer.SuspendBackgroundWork();
             _renderer.Suspend();
+            CancelPendingViewChange();
         });
     }
 
@@ -1243,11 +1245,18 @@ public sealed partial class MapControl : Control
 
     private void OnPanelSizeChanged(object sender, SizeChangedEventArgs e)
     {
-        UpdateCameraTarget();
+        UpdateCameraTarget(preservePendingViewChange: true);
     }
 
-    private void UpdateCameraTarget(bool forceImmediate = false)
+    private void UpdateCameraTarget(
+        bool forceImmediate = false,
+        MapAnimationKind animation = MapAnimationKind.Default,
+        bool preservePendingViewChange = false)
     {
+        if (!preservePendingViewChange)
+        {
+            CancelPendingViewChange();
+        }
         if (_panel is null ||
             _panel.ActualWidth <= 0 ||
             _panel.ActualHeight <= 0)
@@ -1280,7 +1289,8 @@ public sealed partial class MapControl : Control
                 _panel.ActualWidth,
                 _panel.ActualHeight,
                 Heading,
-                Pitch);
+                Pitch,
+                animation);
         }
         _hasPublishedCameraTarget = true;
     }

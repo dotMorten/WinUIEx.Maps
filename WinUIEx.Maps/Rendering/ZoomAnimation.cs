@@ -20,6 +20,7 @@ internal sealed class ZoomAnimation
     private double _startZoom;
     private long _startTimestamp;
     private double _durationMilliseconds;
+    private MapAnimationKind _animationKind;
 
     internal double TargetZoom { get; private set; }
 
@@ -38,12 +39,17 @@ internal sealed class ZoomAnimation
     /// <summary>
     /// Starts a cubic ease-out transition whose bounded duration scales with zoom distance.
     /// </summary>
-    internal void SetTarget(double currentZoom, double targetZoom, long timestamp)
+    internal void SetTarget(
+        double currentZoom,
+        double targetZoom,
+        long timestamp,
+        MapAnimationKind animationKind = MapAnimationKind.Default)
     {
         double normalizedCurrent = Normalize(currentZoom);
         TargetZoom = Normalize(targetZoom);
         _startZoom = normalizedCurrent;
         _startTimestamp = timestamp;
+        _animationKind = animationKind;
         _durationMilliseconds = Math.Clamp(
             Math.Abs(TargetZoom - _startZoom) * MillisecondsPerLevel,
             MinimumDurationMilliseconds,
@@ -64,7 +70,7 @@ internal sealed class ZoomAnimation
 
         double elapsedMilliseconds = Stopwatch.GetElapsedTime(_startTimestamp, timestamp).TotalMilliseconds;
         double progress = Math.Clamp(elapsedMilliseconds / _durationMilliseconds, 0, 1);
-        double easedProgress = 1 - Math.Pow(1 - progress, 3);
+        double easedProgress = CameraAnimation.Ease(progress, _animationKind);
         double zoom = _startZoom + ((TargetZoom - _startZoom) * easedProgress);
         if (progress >= 1)
         {

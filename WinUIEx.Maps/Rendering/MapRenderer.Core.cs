@@ -64,6 +64,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private double _targetZoom;
     private double _targetHeading;
     private double _targetPitch;
+    private MapAnimationKind _targetAnimationKind;
     private double _targetViewportWidth;
     private double _targetViewportHeight;
     private int _targetMaximumTileZoom = MapCamera.MaximumTileZoom;
@@ -97,6 +98,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private bool[] _visibleMapElementLayers = [];
 
     public event Action<MapScene>? SceneChanged;
+
+    internal event Action<MapScene>? DisplayedCameraChanged;
 
     /// <summary>
     /// Publishes the ordered layer-snapshot plan consumed by the render thread.
@@ -161,7 +164,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
         double viewportWidth,
         double viewportHeight,
         double targetHeading = 0,
-        double targetPitch = 0)
+        double targetPitch = 0,
+        MapAnimationKind animation = MapAnimationKind.Default)
     {
         bool headingChanged;
         bool pitchChanged;
@@ -176,6 +180,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _targetZoom = targetZoom;
             _targetHeading = normalizedHeading;
             _targetPitch = normalizedPitch;
+            _targetAnimationKind = animation;
             _targetViewportWidth = viewportWidth;
             _targetViewportHeight = viewportHeight;
             _targetHasZoomAnchor = false;
@@ -250,6 +255,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _targetZoom = targetZoom;
             _targetHeading = MapCamera.NormalizeHeading(heading);
             _targetPitch = MapCamera.NormalizePitch(pitch);
+            _targetAnimationKind = MapAnimationKind.Default;
             _targetViewportWidth = viewportWidth;
             _targetViewportHeight = viewportHeight;
             _targetZoomAnchor = anchor;
@@ -300,6 +306,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _targetZoom = targetZoom;
             _targetHeading = normalizedHeading;
             _targetPitch = normalizedPitch;
+            _targetAnimationKind = MapAnimationKind.None;
             _targetViewportWidth = viewportWidth;
             _targetViewportHeight = viewportHeight;
             _targetHasZoomAnchor = false;
@@ -613,6 +620,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _displayHeading,
             _displayPitch);
         _scene = scene;
+        DisplayedCameraChanged?.Invoke(scene);
 
         HashSet<TileId> requiredTiles = scene.RequiredTiles.ToHashSet();
         if (!_lastRequiredTiles.SetEquals(requiredTiles))
@@ -714,6 +722,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         double zoomAnchorVerticalOffset;
         bool hasZoomAnchor;
         bool isImmediate;
+        MapAnimationKind animationKind;
         long version;
         lock (_cameraSync)
         {
@@ -736,6 +745,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             zoomAnchorVerticalOffset = _targetZoomAnchorVerticalOffset;
             hasZoomAnchor = _targetHasZoomAnchor;
             isImmediate = _targetIsImmediate;
+            animationKind = _targetAnimationKind;
         }
 
         long timestamp = Stopwatch.GetTimestamp();
@@ -790,25 +800,32 @@ internal sealed partial class MapRenderer : DirectXRenderer
                     _displayLatitude,
                     longitude,
                     latitude,
-                    timestamp);
+                    timestamp,
+                    animationKind);
             }
             if (_zoomAnimation.TargetZoom != zoom)
             {
-                _zoomAnimation.SetTarget(_displayZoom, zoom, timestamp);
+                _zoomAnimation.SetTarget(
+                    _displayZoom,
+                    zoom,
+                    timestamp,
+                    animationKind);
             }
             if (_headingAnimation.TargetHeading != heading)
             {
                 _headingAnimation.SetTarget(
                     _displayHeading,
                     heading,
-                    timestamp);
+                    timestamp,
+                    animationKind);
             }
             if (_pitchAnimation.TargetPitch != pitch)
             {
                 _pitchAnimation.SetTarget(
                     _displayPitch,
                     pitch,
-                    timestamp);
+                    timestamp,
+                    animationKind);
             }
         }
         _consumedCameraVersion = version;

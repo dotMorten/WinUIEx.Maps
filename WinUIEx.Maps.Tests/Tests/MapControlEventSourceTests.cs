@@ -101,6 +101,7 @@ public sealed class MapControlEventSourceTests
             6, 3, 4, 5, 6, 7);
         MapControlEventSource.Log.VectorAdvancedSymbolStyleSummary(
             6, 8, 9, 10, 11, 12);
+        MapControlEventSource.Log.CameraViewChangeRequested(1, true, false, true);
 
         CapturedEvent wave = listener.Single(11);
         Assert.AreEqual("TileWaveStart", wave.Name);
@@ -359,6 +360,15 @@ public sealed class MapControlEventSourceTests
         Assert.AreEqual(10, advancedSymbol.Payload[3]);
         Assert.AreEqual(11, advancedSymbol.Payload[4]);
         Assert.AreEqual(12, advancedSymbol.Payload[5]);
+        CapturedEvent viewChange = listener.Single(70);
+        Assert.AreEqual("CameraViewChangeRequested", viewChange.Name);
+        Assert.AreSequenceEqual(
+            ["animationKind", "hasZoomLevel", "hasHeading", "hasPitch"],
+            viewChange.PayloadNames);
+        Assert.AreEqual(1, viewChange.Payload[0]);
+        Assert.AreEqual(true, viewChange.Payload[1]);
+        Assert.AreEqual(false, viewChange.Payload[2]);
+        Assert.AreEqual(true, viewChange.Payload[3]);
         Assert.AreEqual(4.25d, preparedGeometry.Payload[5]);
         Assert.DoesNotContain(captured => captured.Id == 0, listener.Events);
     }
@@ -373,7 +383,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 69),
+            Enumerable.Range(1, 70),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }

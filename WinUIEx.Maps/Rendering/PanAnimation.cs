@@ -21,6 +21,7 @@ internal sealed class PanAnimation
     private double _targetWorldX;
     private double _targetWorldY;
     private long _startTimestamp;
+    private MapAnimationKind _animationKind;
 
     internal bool IsActive { get; private set; }
 
@@ -51,7 +52,8 @@ internal sealed class PanAnimation
         double currentLatitude,
         double targetLongitude,
         double targetLatitude,
-        long timestamp)
+        long timestamp,
+        MapAnimationKind animationKind = MapAnimationKind.Default)
     {
         if (IsActive)
         {
@@ -66,6 +68,7 @@ internal sealed class PanAnimation
         _startWorldX = _currentWorldX;
         _startWorldY = _currentWorldY;
         _startTimestamp = timestamp;
+        _animationKind = animationKind;
         double targetWorldX = MapCamera.LongitudeToWorldX(targetLongitude);
         double horizontalDelta = targetWorldX - _currentWorldX;
         if (horizontalDelta > 0.5)
@@ -111,7 +114,7 @@ internal sealed class PanAnimation
         double elapsedMilliseconds =
             Stopwatch.GetElapsedTime(_startTimestamp, timestamp).TotalMilliseconds;
         double progress = Math.Clamp(elapsedMilliseconds / DurationMilliseconds, 0, 1);
-        double easedProgress = 1 - Math.Pow(1 - progress, 3);
+        double easedProgress = CameraAnimation.Ease(progress, _animationKind);
         _currentWorldX = _startWorldX + ((_targetWorldX - _startWorldX) * easedProgress);
         _currentWorldY = _startWorldY + ((_targetWorldY - _startWorldY) * easedProgress);
         if (progress >= 1)

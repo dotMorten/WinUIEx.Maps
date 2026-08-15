@@ -134,6 +134,7 @@ payload inspection is best in PerfView's Events view.
 | 67 | `VectorPolygonDecorationSummary` | Verbose/Tiles+VectorTiles | patterned polygon/triangle counts and explicit outline triangle counts |
 | 68 | `VectorAdvancedLineStyleSummary` | Verbose/Tiles+VectorTiles | line counts using offsets, gap/casing widths, gradients, blur, and true miter joins |
 | 69 | `VectorAdvancedSymbolStyleSummary` | Verbose/Icons+VectorTiles | counts of rotated, tinted, text-fitted, sorted, and collision-overridden symbols |
+| 70 | `CameraViewChangeRequested` | Info/Camera | programmatic view animation kind and nullable camera-field presence without application data |
 
 ## Reproduce and interpret
 

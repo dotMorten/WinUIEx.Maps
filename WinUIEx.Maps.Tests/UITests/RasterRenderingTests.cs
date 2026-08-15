@@ -95,9 +95,12 @@ public sealed class RasterRenderingTests
                         (32, 32, 224)),
                 });
             map.MapStyle = MapStyle.Blank;
-            map.Center = new Geopoint(source.GetTileCenter(tileId));
-            map.ZoomLevel = zoom;
-            map.Heading = 90;
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(source.GetTileCenter(tileId)),
+                zoom,
+                90,
+                null,
+                MapAnimationKind.None));
             map.Layers.Add(new TestRasterTileLayer(source));
 
             MapRenderFrame frame = await CaptureAsync(map);
@@ -142,7 +145,7 @@ public sealed class RasterRenderingTests
             TestRasterTileSource replacementSource = new(
                 sourceZoom,
                 replacementTiles);
-            TestRasterTileLayer layer = ConfigureMap(
+            TestRasterTileLayer layer = await ConfigureMapAsync(
                 map,
                 firstSource,
                 new BasicGeoposition { Latitude = 0, Longitude = 0 },
@@ -183,12 +186,20 @@ public sealed class RasterRenderingTests
                     [secondId] = TestRasterTileSource.Solid(2048, 32, 192, 32),
                     [thirdId] = TestRasterTileSource.Solid(2048, 32, 32, 192),
                 });
-            _ = ConfigureMap(map, source, source.GetTileCenter(firstId));
+            _ = await ConfigureMapAsync(
+                map,
+                source,
+                source.GetTileCenter(firstId));
 
             MapRenderFrame first = await CaptureAsync(map);
             AssertViewportTile(first, 192, 32, 32);
 
-            map.Center = new Geopoint(source.GetTileCenter(secondId));
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(source.GetTileCenter(secondId)),
+                null,
+                null,
+                null,
+                MapAnimationKind.None));
             MapRenderFrame second = await CaptureUntilColorAsync(
                 map,
                 32,
@@ -196,7 +207,12 @@ public sealed class RasterRenderingTests
                 32);
             AssertViewportTile(second, 32, 192, 32);
 
-            map.Center = new Geopoint(source.GetTileCenter(thirdId));
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(source.GetTileCenter(thirdId)),
+                null,
+                null,
+                null,
+                MapAnimationKind.None));
             MapRenderFrame third = await CaptureUntilColorAsync(
                 map,
                 32,
@@ -204,7 +220,12 @@ public sealed class RasterRenderingTests
                 192);
             AssertViewportTile(third, 32, 32, 192);
 
-            map.Center = new Geopoint(source.GetTileCenter(firstId));
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(source.GetTileCenter(firstId)),
+                null,
+                null,
+                null,
+                MapAnimationKind.None));
             await WaitForAsync(() => source.GetRequestCount(firstId) >= 2);
             MapRenderFrame reloaded = await CaptureUntilColorAsync(
                 map,
@@ -230,8 +251,12 @@ public sealed class RasterRenderingTests
                     [tileId] = TestRasterTileSource.Solid(256, 0, 192, 192),
                 });
             map.MapStyle = MapStyle.Blank;
-            map.Center = new Geopoint(source.GetTileCenter(tileId));
-            map.ZoomLevel = zoom;
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(source.GetTileCenter(tileId)),
+                zoom,
+                null,
+                null,
+                MapAnimationKind.None));
             map.Layers.Add(new TestHybridRasterTileLayer(source));
 
             MapRenderFrame frame = await CaptureAsync(map);
@@ -295,27 +320,46 @@ public sealed class RasterRenderingTests
                 },
                 hybridVectorByteSize: vectorBytesPerTile);
             map.MapStyle = MapStyle.Blank;
-            map.Center = new Geopoint(source.GetTileCenter(firstId));
-            map.ZoomLevel = zoom;
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(source.GetTileCenter(firstId)),
+                zoom,
+                null,
+                null,
+                MapAnimationKind.None));
             map.Layers.Add(new TestHybridRasterTileLayer(source));
 
             AssertViewportTile(await CaptureAsync(map), 176, 48, 48);
 
-            map.Center = new Geopoint(source.GetTileCenter(secondId));
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(source.GetTileCenter(secondId)),
+                null,
+                null,
+                null,
+                MapAnimationKind.None));
             AssertViewportTile(
                 await CaptureUntilColorAsync(map, 48, 176, 48),
                 48,
                 176,
                 48);
 
-            map.Center = new Geopoint(source.GetTileCenter(thirdId));
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(source.GetTileCenter(thirdId)),
+                null,
+                null,
+                null,
+                MapAnimationKind.None));
             AssertViewportTile(
                 await CaptureUntilColorAsync(map, 48, 48, 176),
                 48,
                 48,
                 176);
 
-            map.Center = new Geopoint(source.GetTileCenter(firstId));
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(source.GetTileCenter(firstId)),
+                null,
+                null,
+                null,
+                MapAnimationKind.None));
             await WaitForAsync(() => source.GetRequestCount(firstId) >= 2);
             AssertViewportTile(
                 await CaptureUntilColorAsync(map, 176, 48, 48),
@@ -419,11 +463,11 @@ public sealed class RasterRenderingTests
         TestRasterTileSource source,
         BasicGeoposition center)
     {
-        _ = ConfigureMap(map, source, center);
+        _ = await ConfigureMapAsync(map, source, center);
         return await CaptureAsync(map);
     }
 
-    private static TestRasterTileLayer ConfigureMap(
+    private static async Task<TestRasterTileLayer> ConfigureMapAsync(
         MapControl map,
         TestRasterTileSource source,
         BasicGeoposition center,
@@ -431,8 +475,12 @@ public sealed class RasterRenderingTests
     {
         TestRasterTileLayer layer = new(source);
         map.MapStyle = MapStyle.Blank;
-        map.Center = new Geopoint(center);
-        map.ZoomLevel = displayZoom ?? source.Zoom;
+        Assert.IsTrue(await map.TrySetViewAsync(
+            new Geopoint(center),
+            displayZoom ?? source.Zoom,
+            null,
+            null,
+            MapAnimationKind.None));
         map.Layers.Add(layer);
         return layer;
     }

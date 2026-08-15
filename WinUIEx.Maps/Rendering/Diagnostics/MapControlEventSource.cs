@@ -1685,4 +1685,26 @@ internal sealed class MapControlEventSource : EventSource
                 collisionOverrideSymbolCount);
         }
     }
+
+    /// <summary>
+    /// Records a programmatic camera view request and its animation kind.
+    /// </summary>
+    [Event(
+        70,
+        Level = EventLevel.Informational,
+        Keywords = Keywords.Camera,
+        Task = Tasks.Camera)]
+    public void CameraViewChangeRequested(
+        int animationKind,
+        bool hasZoomLevel,
+        bool hasHeading,
+        bool hasPitch)
+    {
+        WriteEvent(
+            70,
+            animationKind,
+            hasZoomLevel,
+            hasHeading,
+            hasPitch);
+    }
 }

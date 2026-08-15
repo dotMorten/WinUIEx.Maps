@@ -11,6 +11,7 @@ internal sealed class HeadingAnimation
     private double _startHeading;
     private double _headingDelta;
     private long _startTimestamp;
+    private MapAnimationKind _animationKind;
 
     internal double TargetHeading { get; private set; }
 
@@ -25,7 +26,11 @@ internal sealed class HeadingAnimation
         IsActive = false;
     }
 
-    internal void SetTarget(double currentHeading, double targetHeading, long timestamp)
+    internal void SetTarget(
+        double currentHeading,
+        double targetHeading,
+        long timestamp,
+        MapAnimationKind animationKind = MapAnimationKind.Default)
     {
         _startHeading = MapCamera.NormalizeHeading(currentHeading);
         TargetHeading = MapCamera.NormalizeHeading(targetHeading);
@@ -33,6 +38,7 @@ internal sealed class HeadingAnimation
             _startHeading,
             TargetHeading);
         _startTimestamp = timestamp;
+        _animationKind = animationKind;
         IsActive = Math.Abs(_headingDelta) > double.Epsilon;
     }
 
@@ -49,7 +55,7 @@ internal sealed class HeadingAnimation
             elapsedMilliseconds / DurationMilliseconds,
             0,
             1);
-        double easedProgress = 1 - Math.Pow(1 - progress, 3);
+        double easedProgress = CameraAnimation.Ease(progress, _animationKind);
         if (progress >= 1)
         {
             IsActive = false;

@@ -308,12 +308,12 @@ public sealed class VectorRenderingTests
 
             BasicGeoposition center = source.TileCenter;
             map.MapStyle = MapStyle.Blank;
-            map.Center = new Geopoint(center);
-            map.ZoomLevel = source.TileId.Zoom;
-            await MapControlTestUtilities.WaitForDisplayedCameraAsync(
-                map,
-                center,
-                source.TileId.Zoom);
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(center),
+                source.TileId.Zoom,
+                null,
+                null,
+                MapAnimationKind.None));
             map.Layers.Add(new TestVectorTileLayer(
                 source,
                 TimeSpan.FromSeconds(1)));
@@ -372,14 +372,14 @@ public sealed class VectorRenderingTests
     {
         BasicGeoposition center = source.TileCenter;
         map.MapStyle = MapStyle.Blank;
-        map.Center = new Geopoint(center);
-        map.ZoomLevel = source.TileId.Zoom;
+        Assert.IsTrue(await map.TrySetViewAsync(
+            new Geopoint(center),
+            source.TileId.Zoom,
+            null,
+            null,
+            MapAnimationKind.None));
         map.Layers.Add(new TestVectorTileLayer(source, fadeDuration));
 
-        await MapControlTestUtilities.WaitForDisplayedCameraAsync(
-            map,
-            center,
-            source.TileId.Zoom);
         using CancellationTokenSource timeout =
             new(TimeSpan.FromSeconds(5));
         return await map.CaptureRenderedFrameAsync(timeout.Token);
