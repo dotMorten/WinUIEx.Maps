@@ -46,9 +46,11 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private IntPtr _vertexBufferPointer;
     private IntPtr _iconInstanceBufferPointer;
     private IntPtr _geometryVertexBufferPointer;
+    private IntPtr _patternVertexBufferPointer;
     private IntPtr _indexBufferPointer;
     private IntPtr _constantBufferPointer;
     private IntPtr _samplerPointer;
+    private IntPtr _patternSamplerPointer;
     private IntPtr _rasterizerPointer;
     private IntPtr _blendStatePointer;
     private IntPtr _premultipliedBlendStatePointer;
@@ -92,9 +94,11 @@ internal sealed partial class MapRenderer : DirectXRenderer
         _vertexBufferPointer != IntPtr.Zero &&
         _iconInstanceBufferPointer != IntPtr.Zero &&
         _geometryVertexBufferPointer != IntPtr.Zero &&
+        _patternVertexBufferPointer != IntPtr.Zero &&
         _indexBufferPointer != IntPtr.Zero &&
         _constantBufferPointer != IntPtr.Zero &&
         _samplerPointer != IntPtr.Zero &&
+        _patternSamplerPointer != IntPtr.Zero &&
         _rasterizerPointer != IntPtr.Zero &&
         _blendStatePointer != IntPtr.Zero &&
         _premultipliedBlendStatePointer != IntPtr.Zero;
@@ -144,12 +148,14 @@ internal sealed partial class MapRenderer : DirectXRenderer
         ReleasePointer(ref _blendStatePointer);
         ReleasePointer(ref _premultipliedBlendStatePointer);
         ReleasePointer(ref _rasterizerPointer);
+        ReleasePointer(ref _patternSamplerPointer);
         ReleasePointer(ref _samplerPointer);
         ReleasePointer(ref _constantBufferPointer);
         ReleasePointer(ref _indexBufferPointer);
         ReleasePointer(ref _vertexBufferPointer);
         ReleasePointer(ref _iconInstanceBufferPointer);
         ReleasePointer(ref _geometryVertexBufferPointer);
+        ReleasePointer(ref _patternVertexBufferPointer);
         ReleasePointer(ref _inputLayoutPointer);
         ReleasePointer(ref _iconInputLayoutPointer);
         ReleasePointer(ref _geometryInputLayoutPointer);
@@ -354,6 +360,12 @@ internal sealed partial class MapRenderer : DirectXRenderer
             BindFlags = D3D11_BIND_FLAG.D3D11_BIND_VERTEX_BUFFER,
             CPUAccessFlags = D3D11_CPU_ACCESS_FLAG.D3D11_CPU_ACCESS_WRITE,
         };
+        D3D11_BUFFER_DESC patternVertexDescription =
+            geometryVertexDescription with
+            {
+                ByteWidth = (uint)(
+                    GeometryVertexCapacity * Marshal.SizeOf<TileVertex>()),
+            };
 
         _vertexBufferPointer = CreateBuffer(
             DevicePointer,
@@ -371,6 +383,10 @@ internal sealed partial class MapRenderer : DirectXRenderer
             DevicePointer,
             &geometryVertexDescription,
             "Failed to create the map geometry vertex buffer.");
+        _patternVertexBufferPointer = CreateBuffer(
+            DevicePointer,
+            &patternVertexDescription,
+            "Failed to create the map pattern vertex buffer.");
         fixed (TileVertex* verticesPointer = vertices)
         fixed (ushort* indicesPointer = indices)
         {
@@ -426,6 +442,15 @@ internal sealed partial class MapRenderer : DirectXRenderer
             &samplerDescription,
             23,
             "Failed to create the map sampler.");
+        samplerDescription.AddressU =
+            D3D11_TEXTURE_ADDRESS_MODE.D3D11_TEXTURE_ADDRESS_WRAP;
+        samplerDescription.AddressV =
+            D3D11_TEXTURE_ADDRESS_MODE.D3D11_TEXTURE_ADDRESS_WRAP;
+        _patternSamplerPointer = CreateState(
+            DevicePointer,
+            &samplerDescription,
+            23,
+            "Failed to create the map pattern sampler.");
         _rasterizerPointer = CreateState(
             DevicePointer,
             &rasterizerDescription,

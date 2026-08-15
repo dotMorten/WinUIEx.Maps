@@ -1,6 +1,9 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using WinUIEx.Maps.Rendering.Diagnostics;
+using static WinUIEx.Maps.Rendering.DirectXInterop;
 
 namespace WinUIEx.Maps.Rendering;
 
@@ -84,9 +87,7 @@ internal sealed partial class MapRenderer
                                 pendingTileCount,
                                 offsetX,
                                 offsetY);
-                        pendingOrder.Sort(static (left, right) =>
-                            left.StyleLayerOrder.CompareTo(
-                                right.StyleLayerOrder));
+                        pendingOrder.Sort(CompareVectorPolygonBatches);
                         DrawReusedVectorPolygons(
                             context,
                             cached,
@@ -132,6 +133,7 @@ internal sealed partial class MapRenderer
         _vectorPolygonFrameCache?.Dispose();
         _vectorPolygonFrameCache = null;
         Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches = [];
+        Dictionary<VectorPolygonBatchKey, List<TileVertex>> patternBatches = [];
         List<VectorPolygonBatchKey> batchOrder = [];
         try
         {
@@ -154,6 +156,7 @@ internal sealed partial class MapRenderer
                 cachedLevels,
                 activeScene,
                 batches,
+                patternBatches,
                 batchOrder,
                 ref result);
             if (activeScene is not null)
@@ -162,27 +165,39 @@ internal sealed partial class MapRenderer
                     layer,
                     activeScene,
                     batches,
+                    patternBatches,
                     batchOrder,
                     ref result,
                     includedTiles);
             }
 
-            batchOrder.Sort(static (left, right) =>
-                left.StyleLayerOrder.CompareTo(right.StyleLayerOrder));
+            batchOrder.Sort(CompareVectorPolygonBatches);
             foreach (VectorPolygonBatchKey key in batchOrder)
             {
-                PooledGeometryBuffer buffer = batches[key];
-                DrawGeometryBuffer(
-                    context,
-                    buffer,
-                    key.Color,
-                    premultiplied: true);
-                result.DrawCallCount += buffer.Chunks.Count;
+                if (key.Kind == VectorPolygonBatchKind.Pattern)
+                {
+                    result.DrawCallCount += DrawVectorPolygonPattern(
+                        context,
+                        patternBatches[key],
+                        key.TextureId,
+                        key.Opacity);
+                }
+                else
+                {
+                    PooledGeometryBuffer buffer = batches[key];
+                    DrawGeometryBuffer(
+                        context,
+                        buffer,
+                        key.Color,
+                        premultiplied: true);
+                    result.DrawCallCount += buffer.Chunks.Count;
+                }
             }
             TraceVectorPolygonResult(layer, result);
             int vertexCount = batches.Values.Sum(buffer => buffer.Count);
             long retainedByteSize = 0;
             bool shouldRetain = !activeFade &&
+                patternBatches.Count == 0 &&
                 _displayPitch == 0 &&
                 !_zoomAnimation.IsActive &&
                 !_headingAnimation.IsActive &&
@@ -247,6 +262,8 @@ internal sealed partial class MapRenderer
 
         bool activeFade = false;
         HashSet<RasterTileKey> pendingTiles = [];
+        Dictionary<VectorPolygonBatchKey, List<TileVertex>>
+            ignoredPatternBatches = [];
         MapScene scene = CreateCurrentRasterScene(state.Scene.TileZoom);
         foreach (VisibleTile visibleTile in scene.VisibleTiles)
         {
@@ -262,6 +279,7 @@ internal sealed partial class MapRenderer
                 visibleTile,
                 tile,
                 batches,
+                ignoredPatternBatches,
                 batchOrder,
                 ref result,
                 opacityMultiplier: 1);
@@ -286,8 +304,9 @@ internal sealed partial class MapRenderer
         {
             if (pendingIndex >= pendingOrder.Count ||
                 (cachedIndex < cached.Batches.Length &&
-                 cached.Batches[cachedIndex].Key.StyleLayerOrder <=
-                    pendingOrder[pendingIndex].StyleLayerOrder))
+                 CompareVectorPolygonBatches(
+                     cached.Batches[cachedIndex].Key,
+                     pendingOrder[pendingIndex]) <= 0))
             {
                 VectorPolygonCachedBatch batch =
                     cached.Batches[cachedIndex++];
@@ -356,6 +375,11 @@ internal sealed partial class MapRenderer
             result.EvaluationFailureCount,
             result.SuppressedFallbackInstanceCount,
             result.DrawCallCount);
+        MapControlEventSource.Log.VectorPolygonDecorationSummary(
+            layer.Style,
+            result.PatternPolygonCount,
+            result.PatternTriangleCount,
+            result.OutlineTriangleCount);
         if (result.FallbackInstanceCount != 0)
         {
             MapControlEventSource.Log.VectorGeometryFallbackOpacitySummary(
@@ -373,6 +397,7 @@ internal sealed partial class MapRenderer
         LayerRenderSnapshot layer,
         MapScene scene,
         Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        Dictionary<VectorPolygonBatchKey, List<TileVertex>> patternBatches,
         List<VectorPolygonBatchKey> batchOrder,
         ref VectorPolygonRenderResult result,
         ISet<VectorTileInstanceKey>? includedTiles = null)
@@ -389,6 +414,7 @@ internal sealed partial class MapRenderer
                     visibleTile,
                     tile,
                     batches,
+                    patternBatches,
                     batchOrder,
                     ref result,
                     opacityMultiplier: 1);
@@ -402,6 +428,7 @@ internal sealed partial class MapRenderer
         IReadOnlySet<int> tileZooms,
         MapScene? activeScene,
         Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        Dictionary<VectorPolygonBatchKey, List<TileVertex>> patternBatches,
         List<VectorPolygonBatchKey> batchOrder,
         ref VectorPolygonRenderResult result)
     {
@@ -457,6 +484,7 @@ internal sealed partial class MapRenderer
                     instance,
                     tile,
                     batches,
+                    patternBatches,
                     batchOrder,
                     ref result,
                     opacityMultiplier);
@@ -470,6 +498,7 @@ internal sealed partial class MapRenderer
         VisibleTile visibleTile,
         VectorTileCacheEntry tile,
         Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        Dictionary<VectorPolygonBatchKey, List<TileVertex>> patternBatches,
         List<VectorPolygonBatchKey> batchOrder,
         ref VectorPolygonRenderResult result,
         double opacityMultiplier)
@@ -485,34 +514,215 @@ internal sealed partial class MapRenderer
         double opacity = tileOpacity * opacityMultiplier;
         foreach (VectorTileStyledPolygon polygon in resolution.Polygons)
         {
-            VectorPolygonBatchKey key = new(
-                polygon.StyleLayerOrder,
-                polygon.Style.Color * (float)opacity);
-            if (!batches.TryGetValue(
-                    key,
-                    out PooledGeometryBuffer? buffer))
+            int triangleCount = 0;
+            if (polygon.Style.HasPattern)
             {
-                buffer = new PooledGeometryBuffer();
-                batches.Add(key, buffer);
-                batchOrder.Add(key);
+                result.HasPatternPolygons = true;
+                result.PatternPolygonCount++;
+                VectorPolygonBatchKey patternKey = new(
+                    polygon.StyleLayerOrder,
+                    VectorPolygonBatchKind.Pattern,
+                    default,
+                    polygon.Style.PatternTextureId,
+                    polygon.Style.Opacity * opacity);
+                if (!patternBatches.TryGetValue(
+                        patternKey,
+                        out List<TileVertex>? patternBuffer))
+                {
+                    patternBuffer = [];
+                    patternBatches.Add(patternKey, patternBuffer);
+                    batchOrder.Add(patternKey);
+                }
+                triangleCount = AppendProjectedVectorPolygonPattern(
+                    polygon.FillTriangles,
+                    visibleTile,
+                    _viewportWidth,
+                    _viewportHeight,
+                    _displayHeading,
+                    _displayPitch,
+                    _displayPitch == 0 ? VectorGeometryCachePadding : 0,
+                    polygon.Style.PatternWidth,
+                    polygon.Style.PatternHeight,
+                    patternBuffer);
             }
-            int triangleCount = AppendProjectedVectorPolygonTriangles(
-                polygon.FillTriangles,
+            else
+            {
+                VectorPolygonBatchKey fillKey = new(
+                    polygon.StyleLayerOrder,
+                    VectorPolygonBatchKind.Fill,
+                    polygon.Style.Color * (float)opacity);
+                PooledGeometryBuffer fillBuffer =
+                    GetOrCreatePolygonBuffer(
+                        fillKey,
+                        batches,
+                        batchOrder);
+                triangleCount = AppendProjectedVectorPolygonTriangles(
+                    polygon.FillTriangles,
+                    visibleTile,
+                    _viewportWidth,
+                    _viewportHeight,
+                    _displayHeading,
+                    _displayPitch,
+                    _displayPitch == 0 ? VectorGeometryCachePadding : 0,
+                    fillBuffer);
+            }
+            int outlineTriangleCount = AppendVectorPolygonOutline(
+                polygon,
                 visibleTile,
-                _viewportWidth,
-                _viewportHeight,
-                _displayHeading,
-                _displayPitch,
-                _displayPitch == 0 ? VectorGeometryCachePadding : 0,
-                buffer);
+                opacity,
+                batches,
+                batchOrder);
             if (triangleCount == 0)
             {
+                result.OutlineTriangleCount += outlineTriangleCount;
                 continue;
             }
             result.DrawablePolygonCount++;
             result.TriangleCount += triangleCount;
+            if (polygon.Style.HasPattern)
+            {
+                result.PatternTriangleCount += triangleCount;
+            }
+            result.OutlineTriangleCount += outlineTriangleCount;
         }
         return tileOpacity < layer.Opacity;
+    }
+
+    private int AppendVectorPolygonOutline(
+        VectorTileStyledPolygon polygon,
+        VisibleTile tile,
+        double opacity,
+        Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        List<VectorPolygonBatchKey> batchOrder)
+    {
+        if (polygon.Style.OutlineColor is not Vector4 outlineColor ||
+            outlineColor.W <= 0)
+        {
+            return 0;
+        }
+        VectorPolygonBatchKey key = new(
+            polygon.StyleLayerOrder,
+            VectorPolygonBatchKind.Outline,
+            outlineColor * (float)opacity);
+        PooledGeometryBuffer buffer = GetOrCreatePolygonBuffer(
+            key,
+            batches,
+            batchOrder);
+        VectorLineStyle outlineStyle = new(
+            key.Color,
+            1,
+            VectorLineCap.Butt,
+            VectorLineJoin.Miter);
+        return AppendVectorPolygonOutlineTriangles(
+            polygon.Rings,
+            tile,
+            _viewportWidth,
+            _viewportHeight,
+            _displayHeading,
+            _displayPitch,
+            _displayPitch == 0 ? VectorGeometryCachePadding : 0,
+            outlineStyle,
+            buffer);
+    }
+
+    internal static MapScreenPoint[] ExpandVectorPolygonOutlineTriangles(
+        IReadOnlyList<VectorTileRing> rings,
+        VisibleTile tile,
+        double viewportWidth,
+        double viewportHeight,
+        double heading,
+        double pitch)
+    {
+        using PooledGeometryBuffer triangles = new();
+        AppendVectorPolygonOutlineTriangles(
+            rings,
+            tile,
+            viewportWidth,
+            viewportHeight,
+            heading,
+            pitch,
+            0,
+            new VectorLineStyle(
+                Vector4.One,
+                1,
+                VectorLineCap.Butt,
+                VectorLineJoin.Miter),
+            triangles);
+        return triangles.ToArray();
+    }
+
+    private static int AppendVectorPolygonOutlineTriangles(
+        IReadOnlyList<VectorTileRing> rings,
+        VisibleTile tile,
+        double viewportWidth,
+        double viewportHeight,
+        double heading,
+        double pitch,
+        double viewportPadding,
+        VectorLineStyle outlineStyle,
+        PooledGeometryBuffer buffer)
+    {
+        int triangleCount = 0;
+        foreach (VectorTileRing ring in rings)
+        {
+            MapScreenPoint[] projected =
+                ArrayPool<MapScreenPoint>.Shared.Rent(ring.Points.Length);
+            try
+            {
+                ProjectVectorLine(
+                    ring.Points,
+                    tile,
+                    viewportWidth,
+                    viewportHeight,
+                    heading,
+                    pitch,
+                    projected.AsSpan(0, ring.Points.Length));
+                triangleCount += AppendVectorLineTriangles(
+                    projected.AsSpan(0, ring.Points.Length),
+                    outlineStyle,
+                    viewportWidth,
+                    viewportHeight,
+                    viewportPadding,
+                    buffer);
+            }
+            finally
+            {
+                ArrayPool<MapScreenPoint>.Shared.Return(projected);
+            }
+        }
+        return triangleCount;
+    }
+
+    internal static Vector2[] GetVectorPolygonPatternTextureCoordinates(
+        IReadOnlyList<VectorTilePoint> points,
+        VisibleTile tile,
+        double patternWidth,
+        double patternHeight)
+    {
+        double phaseX = PositiveModulo(
+            tile.WorldX * tile.Size,
+            patternWidth);
+        double phaseY = PositiveModulo(
+            tile.Id.Y * tile.Size,
+            patternHeight);
+        return points.Select(point => new Vector2(
+            (float)((phaseX + (point.X * tile.Size)) / patternWidth),
+            (float)((phaseY + (point.Y * tile.Size)) / patternHeight)))
+            .ToArray();
+    }
+
+    private static PooledGeometryBuffer GetOrCreatePolygonBuffer(
+        VectorPolygonBatchKey key,
+        Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        List<VectorPolygonBatchKey> batchOrder)
+    {
+        if (!batches.TryGetValue(key, out PooledGeometryBuffer? buffer))
+        {
+            buffer = new PooledGeometryBuffer();
+            batches.Add(key, buffer);
+            batchOrder.Add(key);
+        }
+        return buffer;
     }
 
     internal static MapScreenPoint[] ProjectVectorPolygonTriangles(
@@ -592,9 +802,195 @@ internal sealed partial class MapRenderer
         return (visible.Count - initialCount) / 3;
     }
 
+    private static int AppendProjectedVectorPolygonPattern(
+        IReadOnlyList<VectorTilePoint> triangles,
+        VisibleTile tile,
+        double viewportWidth,
+        double viewportHeight,
+        double heading,
+        double pitch,
+        double viewportPadding,
+        double patternWidth,
+        double patternHeight,
+        List<TileVertex> visible)
+    {
+        int initialCount = visible.Count;
+        double phaseX = PositiveModulo(
+            tile.WorldX * tile.Size,
+            patternWidth);
+        double phaseY = PositiveModulo(
+            tile.Id.Y * tile.Size,
+            patternHeight);
+        for (int index = 0; index + 2 < triangles.Count; index += 3)
+        {
+            VectorTilePoint firstSource = triangles[index];
+            VectorTilePoint secondSource = triangles[index + 1];
+            VectorTilePoint thirdSource = triangles[index + 2];
+            MapScreenPoint first = ProjectVectorPoint(
+                firstSource,
+                tile,
+                viewportWidth,
+                viewportHeight,
+                heading,
+                pitch);
+            MapScreenPoint second = ProjectVectorPoint(
+                secondSource,
+                tile,
+                viewportWidth,
+                viewportHeight,
+                heading,
+                pitch);
+            MapScreenPoint third = ProjectVectorPoint(
+                thirdSource,
+                tile,
+                viewportWidth,
+                viewportHeight,
+                heading,
+                pitch);
+            double left = Math.Min(first.X, Math.Min(second.X, third.X));
+            double top = Math.Min(first.Y, Math.Min(second.Y, third.Y));
+            double right = Math.Max(first.X, Math.Max(second.X, third.X));
+            double bottom = Math.Max(first.Y, Math.Max(second.Y, third.Y));
+            if (left >= viewportWidth + viewportPadding ||
+                top >= viewportHeight + viewportPadding ||
+                right <= -viewportPadding ||
+                bottom <= -viewportPadding)
+            {
+                continue;
+            }
+            visible.Add(CreatePatternVertex(
+                first,
+                firstSource,
+                tile.Size,
+                phaseX,
+                phaseY,
+                patternWidth,
+                patternHeight));
+            visible.Add(CreatePatternVertex(
+                second,
+                secondSource,
+                tile.Size,
+                phaseX,
+                phaseY,
+                patternWidth,
+                patternHeight));
+            visible.Add(CreatePatternVertex(
+                third,
+                thirdSource,
+                tile.Size,
+                phaseX,
+                phaseY,
+                patternWidth,
+                patternHeight));
+        }
+        return (visible.Count - initialCount) / 3;
+    }
+
+    private static TileVertex CreatePatternVertex(
+        MapScreenPoint projected,
+        VectorTilePoint source,
+        double tileSize,
+        double phaseX,
+        double phaseY,
+        double patternWidth,
+        double patternHeight) =>
+        new(
+            new Vector2((float)projected.X, (float)projected.Y),
+            new Vector2(
+                (float)((phaseX + (source.X * tileSize)) / patternWidth),
+                (float)((phaseY + (source.Y * tileSize)) / patternHeight)));
+
+    private static double PositiveModulo(double value, double modulus)
+    {
+        double result = value % modulus;
+        return result < 0 ? result + modulus : result;
+    }
+
+    private unsafe int DrawVectorPolygonPattern(
+        IntPtr context,
+        List<TileVertex> vertices,
+        long textureId,
+        double opacity)
+    {
+        if (vertices.Count < 3 ||
+            opacity <= 0 ||
+            !_iconTextures.TryGetValue(textureId, out TileTexture? texture))
+        {
+            return 0;
+        }
+        TileConstants constants = new(
+            new Vector4(
+                (float)(2 / Viewport.Width),
+                (float)(-2 / Viewport.Height),
+                -1,
+                1),
+            new Vector4(1, 0, 0, 1),
+            new Vector4(1, 0, 1, 0),
+            new Vector4((float)opacity, 0, 0, 0));
+        UpdateSubresource(context, _constantBufferPointer, &constants);
+        SetBlendState(context, _premultipliedBlendStatePointer);
+        SetInputLayout(context, _inputLayoutPointer);
+        SetVertexBuffer(
+            context,
+            _patternVertexBufferPointer,
+            (uint)Marshal.SizeOf<TileVertex>());
+        SetVertexShader(
+            context,
+            _vertexShaderPointer,
+            _constantBufferPointer);
+        SetPixelShader(
+            context,
+            _iconPixelShaderPointer,
+            texture.ViewPointer,
+            _patternSamplerPointer,
+            _constantBufferPointer);
+
+        int drawCallCount = 0;
+        Span<TileVertex> remaining = CollectionsMarshal.AsSpan(vertices);
+        while (!remaining.IsEmpty)
+        {
+            int count = Math.Min(GeometryVertexCapacity, remaining.Length);
+            count -= count % 3;
+            if (count == 0)
+            {
+                break;
+            }
+            fixed (TileVertex* vertexPointer = remaining)
+            {
+                WriteDiscardBuffer(
+                    context,
+                    _patternVertexBufferPointer,
+                    vertexPointer,
+                    (nuint)(count * Marshal.SizeOf<TileVertex>()));
+            }
+            DrawVertices(context, (uint)count);
+            drawCallCount++;
+            remaining = remaining[count..];
+        }
+        return drawCallCount;
+    }
+
     private readonly record struct VectorPolygonBatchKey(
         int StyleLayerOrder,
-        Vector4 Color);
+        VectorPolygonBatchKind Kind,
+        Vector4 Color,
+        long TextureId = 0,
+        double Opacity = 1);
+
+    private enum VectorPolygonBatchKind
+    {
+        Fill,
+        Pattern,
+        Outline,
+    }
+
+    private static int CompareVectorPolygonBatches(
+        VectorPolygonBatchKey left,
+        VectorPolygonBatchKey right)
+    {
+        int order = left.StyleLayerOrder.CompareTo(right.StyleLayerOrder);
+        return order != 0 ? order : left.Kind.CompareTo(right.Kind);
+    }
 
     private sealed record VectorPolygonCachedBatch(
         VectorPolygonBatchKey Key,
@@ -681,6 +1077,10 @@ internal sealed partial class MapRenderer
         internal int CandidatePolygonCount;
         internal int DrawablePolygonCount;
         internal int TriangleCount;
+        internal int OutlineTriangleCount;
+        internal int PatternPolygonCount;
+        internal int PatternTriangleCount;
+        internal bool HasPatternPolygons;
         internal int EvaluationFailureCount;
         internal int FallbackInstanceCount;
         internal int FadedFallbackInstanceCount;
@@ -694,6 +1094,10 @@ internal sealed partial class MapRenderer
             CandidatePolygonCount += other.CandidatePolygonCount;
             DrawablePolygonCount += other.DrawablePolygonCount;
             TriangleCount += other.TriangleCount;
+            OutlineTriangleCount += other.OutlineTriangleCount;
+            PatternPolygonCount += other.PatternPolygonCount;
+            PatternTriangleCount += other.PatternTriangleCount;
+            HasPatternPolygons |= other.HasPatternPolygons;
             EvaluationFailureCount += other.EvaluationFailureCount;
             DrawCallCount += other.DrawCallCount;
         }

@@ -1596,4 +1596,31 @@ internal sealed class MapControlEventSource : EventSource
                 drawablePrimitiveCount);
         }
     }
+
+    /// <summary>
+    /// Records patterned polygon and explicit outline geometry without sprite or layer names.
+    /// </summary>
+    [Event(
+        67,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorPolygonDecorationSummary(
+        int style,
+        int patternedPolygonCount,
+        int patternTriangleCount,
+        int outlineTriangleCount)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                67,
+                style,
+                patternedPolygonCount,
+                patternTriangleCount,
+                outlineTriangleCount);
+        }
+    }
 }

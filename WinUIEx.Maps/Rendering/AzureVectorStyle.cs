@@ -285,6 +285,11 @@ internal sealed class AzureVectorStyleAssets
                 textures,
                 symbols: null,
                 cancellationToken);
+            PrepareFillPatternTextures(
+                features,
+                zoom,
+                textures,
+                cancellationToken);
         }
         HashSet<AzureGlyphKey> glyphKeys = [];
         foreach (double zoom in _symbolStyle.GetPreparationZooms(tileZoom))
@@ -421,6 +426,53 @@ internal sealed class AzureVectorStyleAssets
             }
         }
         return new VectorLineResolution(lines.ToArray(), evaluationFailureCount);
+    }
+
+    private void PrepareFillPatternTextures(
+        VectorTileFeatureCollection features,
+        double zoom,
+        Dictionary<long, VectorSpriteTextureData> textures,
+        CancellationToken cancellationToken)
+    {
+        foreach (AzureFillStyleLayer layer in _symbolStyle.FillLayers)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (layer.EvaluateVisibility(zoom) !=
+                AzureStyleVisibilityResult.Visible)
+            {
+                continue;
+            }
+            foreach (VectorTileFeature feature in
+                features.GetSourceLayer(layer.SourceLayer))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (feature.Polygons.Length == 0)
+                {
+                    continue;
+                }
+                AzureStyleEvaluationContext context = new(feature, zoom);
+                if (layer.EvaluateFilter(context) !=
+                        AzureStyleFilterResult.Match ||
+                    layer.EvaluateFill(
+                        context,
+                        out _,
+                        out string? patternName) !=
+                        AzureStyleFillResult.Resolved ||
+                    patternName is null)
+                {
+                    continue;
+                }
+                if (_spriteAtlas.TryGetOrCreateTexture(
+                        patternName,
+                        cancellationToken,
+                        out VectorSpriteTextureData? texture,
+                        out _) == AzureSpriteLookupResult.Found &&
+                    texture is not null)
+                {
+                    textures.TryAdd(texture.TextureId, texture);
+                }
+            }
+        }
     }
 
     private void ResolveLinePatterns(
@@ -597,7 +649,10 @@ internal sealed class AzureVectorStyleAssets
                     continue;
                 }
                 AzureStyleFillResult fillResult =
-                    layer.EvaluateFill(context, out VectorFillStyle style);
+                    layer.EvaluateFill(
+                        context,
+                        out VectorFillStyle style,
+                        out string? patternName);
                 if (fillResult != AzureStyleFillResult.Resolved)
                 {
                     if (fillResult == AzureStyleFillResult.EvaluationFailure)
@@ -606,10 +661,46 @@ internal sealed class AzureVectorStyleAssets
                     }
                     continue;
                 }
+                if (patternName is not null)
+                {
+                    AzureSpriteLookupResult spriteResult =
+                        _spriteAtlas.TryGetTexture(
+                            patternName,
+                            out VectorSpriteTextureData? texture,
+                            out AzureSpriteEntry entry);
+                    if (spriteResult is
+                        AzureSpriteLookupResult.Missing or
+                        AzureSpriteLookupResult.Hidden)
+                    {
+                        evaluationFailureCount++;
+                        continue;
+                    }
+                    double patternWidth = entry.Width / entry.PixelRatio;
+                    double patternHeight = entry.Height / entry.PixelRatio;
+                    if (!double.IsFinite(patternWidth) ||
+                        !double.IsFinite(patternHeight) ||
+                        patternWidth <= 0 ||
+                        patternHeight <= 0)
+                    {
+                        evaluationFailureCount++;
+                        continue;
+                    }
+                    style = style with
+                    {
+                        PatternTextureId = texture?.TextureId ??
+                            AzureSpriteAtlas.CreateTextureId(
+                                AzureTileAcquisitionSession
+                                    .GetAzureStyleName(_mapStyle),
+                                patternName),
+                        PatternWidth = patternWidth,
+                        PatternHeight = patternHeight,
+                    };
+                }
                 foreach (VectorTilePolygon polygon in feature.Polygons)
                 {
                     polygons.Add(new VectorTileStyledPolygon(
                         layer.Order,
+                        polygon.Rings,
                         polygon.FillTriangles,
                         style));
                 }
@@ -1637,11 +1728,6 @@ internal sealed class AzureSymbolStyle
         {
             return AzureStyleLayerParseResult.InvalidDefinition;
         }
-        if (paint.ValueKind == JsonValueKind.Object &&
-            paint.TryGetProperty("fill-pattern", out _))
-        {
-            return AzureStyleLayerParseResult.UnsupportedFillPattern;
-        }
         if (!TryParseOptionalExpression(
                 layout,
                 "visibility",
@@ -1656,7 +1742,17 @@ internal sealed class AzureSymbolStyle
                 paint,
                 "fill-opacity",
                 AzureStyleValue.FromNumber(1),
-                out AzureStyleExpression fillOpacity))
+                out AzureStyleExpression fillOpacity) ||
+            !TryParseOptionalExpression(
+                paint,
+                "fill-outline-color",
+                AzureStyleValue.Null,
+                out AzureStyleExpression fillOutlineColor) ||
+            !TryParseOptionalExpression(
+                paint,
+                "fill-pattern",
+                AzureStyleValue.Null,
+                out AzureStyleExpression fillPattern))
         {
             return AzureStyleLayerParseResult.UnsupportedExpression;
         }
@@ -1689,7 +1785,9 @@ internal sealed class AzureSymbolStyle
             visibility,
             filter,
             fillColor,
-            fillOpacity);
+            fillOpacity,
+            fillOutlineColor,
+            fillPattern);
         return AzureStyleLayerParseResult.Parsed;
     }
 
@@ -2041,7 +2139,9 @@ internal sealed class AzureFillStyleLayer(
     AzureStyleExpression visibility,
     AzureStyleExpression filter,
     AzureStyleExpression fillColor,
-    AzureStyleExpression fillOpacity)
+    AzureStyleExpression fillOpacity,
+    AzureStyleExpression fillOutlineColor,
+    AzureStyleExpression fillPattern)
 {
     internal int Order { get; } = order;
 
@@ -2079,23 +2179,44 @@ internal sealed class AzureFillStyleLayer(
 
     internal AzureStyleFillResult EvaluateFill(
         AzureStyleEvaluationContext context,
-        out VectorFillStyle result)
+        out VectorFillStyle result,
+        out string? patternName)
     {
         result = default;
+        patternName = null;
         if (!fillColor.TryEvaluate(context, out AzureStyleValue colorValue) ||
             !AzureTextStyleLayer.TryParseColor(colorValue, out Vector4 color) ||
             !fillOpacity.TryEvaluate(context, out AzureStyleValue opacityValue) ||
             !opacityValue.TryGetNumber(out double opacity) ||
-            !double.IsFinite(opacity))
+            !double.IsFinite(opacity) ||
+            !fillOutlineColor.TryEvaluate(
+                context,
+                out AzureStyleValue outlineValue) ||
+            !TryResolveOptionalColor(
+                outlineValue,
+                out Vector4? outlineColor) ||
+            !fillPattern.TryEvaluate(context, out AzureStyleValue patternValue) ||
+            !TryResolvePattern(patternValue, out patternName))
         {
             return AzureStyleFillResult.EvaluationFailure;
         }
-        if (opacity <= 0 || color.W <= 0)
+        opacity = Math.Clamp(opacity, 0, 1);
+        if (opacity <= 0 ||
+            patternName is null && color.W <= 0 &&
+            (outlineColor is not Vector4 visibleOutline ||
+             visibleOutline.W <= 0))
         {
             return AzureStyleFillResult.Hidden;
         }
-        color *= (float)Math.Clamp(opacity, 0, 1);
-        result = new VectorFillStyle(color);
+        color *= (float)opacity;
+        if (outlineColor is Vector4 outline)
+        {
+            outlineColor = outline * (float)opacity;
+        }
+        result = new VectorFillStyle(
+            patternName is null ? color : Vector4.Zero,
+            outlineColor,
+            Opacity: opacity);
         return AzureStyleFillResult.Resolved;
     }
 
@@ -2107,6 +2228,43 @@ internal sealed class AzureFillStyleLayer(
         filter.CollectZoomStops(stops);
         fillColor.CollectZoomStops(stops);
         fillOpacity.CollectZoomStops(stops);
+        fillOutlineColor.CollectZoomStops(stops);
+        fillPattern.CollectZoomStops(stops);
+    }
+
+    private static bool TryResolveOptionalColor(
+        AzureStyleValue value,
+        out Vector4? color)
+    {
+        color = null;
+        if (value.Kind == AzureStyleValueKind.Null)
+        {
+            return true;
+        }
+        if (!AzureTextStyleLayer.TryParseColor(value, out Vector4 resolved))
+        {
+            return false;
+        }
+        color = resolved;
+        return true;
+    }
+
+    private static bool TryResolvePattern(
+        AzureStyleValue value,
+        out string? patternName)
+    {
+        patternName = null;
+        if (value.Kind == AzureStyleValueKind.Null)
+        {
+            return true;
+        }
+        if (value.Kind != AzureStyleValueKind.String ||
+            string.IsNullOrWhiteSpace(value.StringValue))
+        {
+            return false;
+        }
+        patternName = value.StringValue;
+        return true;
     }
 }
 
@@ -2646,7 +2804,6 @@ internal enum AzureStyleLayerParseResult
     UnsupportedSymbolPlacement,
     UnsupportedTextFit,
     UnsupportedIconRotation,
-    UnsupportedFillPattern,
     UnsupportedExpression,
     InvalidDefinition,
 }

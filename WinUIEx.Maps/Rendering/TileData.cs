@@ -160,6 +160,7 @@ internal enum VectorLineJoin
 
 internal sealed record VectorTileStyledPolygon(
     int StyleLayerOrder,
+    VectorTileRing[] Rings,
     VectorTilePoint[] FillTriangles,
     VectorFillStyle Style);
 
@@ -167,7 +168,16 @@ internal sealed record VectorPolygonResolution(
     VectorTileStyledPolygon[] Polygons,
     int EvaluationFailureCount);
 
-internal readonly record struct VectorFillStyle(Vector4 Color);
+internal readonly record struct VectorFillStyle(
+    Vector4 Color,
+    Vector4? OutlineColor = null,
+    long PatternTextureId = 0,
+    double PatternWidth = 0,
+    double PatternHeight = 0,
+    double Opacity = 1)
+{
+    internal bool HasPattern => PatternTextureId != 0;
+}
 
 /// <summary>
 /// Combines renderer source identity with tile coordinates for pending and GPU-cache lookup.

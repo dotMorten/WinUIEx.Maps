@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.InteropServices;
 using WinUIEx.Maps.Rendering.Diagnostics;
 
@@ -253,28 +254,35 @@ internal sealed partial class MapRenderer
                     prepared.LineResult,
                     prepared.LineVertexCount,
                     lineBatches.Sum(batch => batch.Buffer.ByteSize));
-                VectorPolygonFrameCache polygonCache = new(
-                    layer,
-                    state,
-                    prepared.Key.VectorTileVersion,
-                    0,
-                    prepared.Longitude,
-                    prepared.Latitude,
-                    prepared.Zoom,
-                    prepared.Heading,
-                    prepared.ViewportWidth,
-                    prepared.ViewportHeight,
-                    polygonBatches,
-                    prepared.IncludedTiles,
-                    prepared.PolygonResult,
-                    prepared.PolygonVertexCount,
-                    polygonBatches.Sum(batch => batch.Buffer.ByteSize));
+                VectorPolygonFrameCache? polygonCache =
+                    prepared.PolygonResult.HasPatternPolygons
+                        ? null
+                        : new(
+                            layer,
+                            state,
+                            prepared.Key.VectorTileVersion,
+                            0,
+                            prepared.Longitude,
+                            prepared.Latitude,
+                            prepared.Zoom,
+                            prepared.Heading,
+                            prepared.ViewportWidth,
+                            prepared.ViewportHeight,
+                            polygonBatches,
+                            prepared.IncludedTiles,
+                            prepared.PolygonResult,
+                            prepared.PolygonVertexCount,
+                            polygonBatches.Sum(batch =>
+                                batch.Buffer.ByteSize));
                 _vectorLineFrameCache?.Dispose();
                 _vectorPolygonFrameCache?.Dispose();
                 _vectorLineFrameCache = lineCache;
                 _vectorPolygonFrameCache = polygonCache;
                 lineBatches = null;
-                polygonBatches = null;
+                if (polygonCache is not null)
+                {
+                    polygonBatches = null;
+                }
                 MapControlEventSource.Log.VectorGeometryPreparationSummary(
                     prepared.Key.Style,
                     1,
@@ -356,8 +364,14 @@ internal sealed partial class MapRenderer
                     tile.Resolution.Polygons)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    if (polygon.Style.HasPattern)
+                    {
+                        prepared.PolygonResult.HasPatternPolygons = true;
+                        continue;
+                    }
                     VectorPolygonBatchKey key = new(
                         polygon.StyleLayerOrder,
+                        VectorPolygonBatchKind.Fill,
                         polygon.Style.Color * (float)input.Layer.Opacity);
                     PooledGeometryBuffer buffer =
                         prepared.GetPolygonBuffer(key);
@@ -375,6 +389,54 @@ internal sealed partial class MapRenderer
                     {
                         prepared.PolygonResult.DrawablePolygonCount++;
                         prepared.PolygonResult.TriangleCount += triangleCount;
+                    }
+                    if (polygon.Style.OutlineColor is Vector4 outlineColor &&
+                        outlineColor.W > 0)
+                    {
+                        VectorPolygonBatchKey outlineKey = new(
+                            polygon.StyleLayerOrder,
+                            VectorPolygonBatchKind.Outline,
+                            outlineColor * (float)input.Layer.Opacity);
+                        PooledGeometryBuffer outlineBuffer =
+                            prepared.GetPolygonBuffer(outlineKey);
+                        VectorLineStyle outlineStyle = new(
+                            outlineKey.Color,
+                            1,
+                            VectorLineCap.Butt,
+                            VectorLineJoin.Miter);
+                        foreach (VectorTileRing ring in polygon.Rings)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            MapScreenPoint[] projected =
+                                ArrayPool<MapScreenPoint>.Shared.Rent(
+                                    ring.Points.Length);
+                            try
+                            {
+                                ProjectVectorLine(
+                                    ring.Points,
+                                    tile.Tile,
+                                    input.ViewportWidth,
+                                    input.ViewportHeight,
+                                    input.Heading,
+                                    0,
+                                    projected.AsSpan(0, ring.Points.Length));
+                                prepared.PolygonResult.OutlineTriangleCount +=
+                                    AppendVectorLineTriangles(
+                                        projected.AsSpan(
+                                            0,
+                                            ring.Points.Length),
+                                        outlineStyle,
+                                        input.ViewportWidth,
+                                        input.ViewportHeight,
+                                        VectorGeometryCachePadding,
+                                        outlineBuffer);
+                            }
+                            finally
+                            {
+                                ArrayPool<MapScreenPoint>.Shared.Return(
+                                    projected);
+                            }
+                        }
                     }
                 }
             }
