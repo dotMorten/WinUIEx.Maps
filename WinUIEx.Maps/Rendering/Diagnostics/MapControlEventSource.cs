@@ -1623,4 +1623,35 @@ internal sealed class MapControlEventSource : EventSource
                 outlineTriangleCount);
         }
     }
+
+    /// <summary>
+    /// Records advanced line-style usage without source-layer or feature properties.
+    /// </summary>
+    [Event(
+        68,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorAdvancedLineStyleSummary(
+        int style,
+        int offsetLineCount,
+        int gapLineCount,
+        int gradientLineCount,
+        int blurredLineCount,
+        int miterLineCount)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                68,
+                style,
+                offsetLineCount,
+                gapLineCount,
+                gradientLineCount,
+                blurredLineCount,
+                miterLineCount);
+        }
+    }
 }

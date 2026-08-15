@@ -453,10 +453,6 @@ internal sealed partial class MapRenderer
                     cancellationToken.ThrowIfCancellationRequested();
                     VectorLineStyle style =
                         PrepareVectorLineForRasterization(line.Style);
-                    VectorLineBatchKey key = new(
-                        line.StyleLayerOrder,
-                        style.Color * (float)input.Layer.Opacity);
-                    PooledGeometryBuffer buffer = prepared.GetLineBuffer(key);
                     MapScreenPoint[] projected =
                         ArrayPool<MapScreenPoint>.Shared.Rent(
                             line.Points.Length);
@@ -471,13 +467,16 @@ internal sealed partial class MapRenderer
                             input.Heading,
                             0,
                             projected.AsSpan(0, line.Points.Length));
-                        triangleCount = AppendVectorLineTriangles(
+                        triangleCount = AppendStyledVectorLineTriangles(
                             projected.AsSpan(0, line.Points.Length),
                             style,
+                            line.StyleLayerOrder,
+                            input.Layer.Opacity,
                             input.ViewportWidth,
                             input.ViewportHeight,
                             VectorGeometryCachePadding,
-                            buffer);
+                            prepared.LineBatches,
+                            prepared.LineBatchOrder);
                     }
                     finally
                     {
@@ -493,6 +492,7 @@ internal sealed partial class MapRenderer
                             prepared.LineResult.DashTriangleCount +=
                                 triangleCount;
                         }
+                        prepared.LineResult.AddAdvancedStyle(line.Style);
                     }
                 }
             }
@@ -672,10 +672,8 @@ internal sealed partial class MapRenderer
 
         internal void Complete()
         {
-            LineBatchOrder.Sort(static (left, right) =>
-                left.StyleLayerOrder.CompareTo(right.StyleLayerOrder));
-            PolygonBatchOrder.Sort(static (left, right) =>
-                left.StyleLayerOrder.CompareTo(right.StyleLayerOrder));
+            LineBatchOrder.Sort(CompareVectorLineBatches);
+            PolygonBatchOrder.Sort(CompareVectorPolygonBatches);
             LineVertexCount =
                 LineBatches.Values.Sum(buffer => buffer.Count);
             PolygonVertexCount =

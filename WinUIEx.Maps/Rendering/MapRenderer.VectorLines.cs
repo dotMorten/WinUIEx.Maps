@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -165,8 +166,7 @@ internal sealed partial class MapRenderer
                     includedTiles);
             }
 
-            batchOrder.Sort(static (left, right) =>
-                left.StyleLayerOrder.CompareTo(right.StyleLayerOrder));
+            batchOrder.Sort(CompareVectorLineBatches);
             foreach (VectorLineBatchKey key in batchOrder)
             {
                 PooledGeometryBuffer buffer = batches[key];
@@ -284,8 +284,9 @@ internal sealed partial class MapRenderer
         {
             if (pendingIndex >= pendingOrder.Count ||
                 (cachedIndex < cached.Batches.Length &&
-                 cached.Batches[cachedIndex].Key.StyleLayerOrder <=
-                    pendingOrder[pendingIndex].StyleLayerOrder))
+                 CompareVectorLineBatches(
+                     cached.Batches[cachedIndex].Key,
+                     pendingOrder[pendingIndex]) <= 0))
             {
                 VectorLineCachedBatch batch = cached.Batches[cachedIndex++];
                 DrawGpuGeometryBuffer(
@@ -357,6 +358,13 @@ internal sealed partial class MapRenderer
             1,
             result.DashedLineCount,
             result.DashTriangleCount);
+        MapControlEventSource.Log.VectorAdvancedLineStyleSummary(
+            layer.Style,
+            result.OffsetLineCount,
+            result.GapLineCount,
+            result.GradientLineCount,
+            result.BlurredLineCount,
+            result.MiterLineCount);
         if (result.FallbackInstanceCount != 0)
         {
             MapControlEventSource.Log.VectorLineFallbackSummary(
@@ -557,17 +565,6 @@ internal sealed partial class MapRenderer
         {
             VectorLineStyle rasterStyle =
                 PrepareVectorLineForRasterization(line.Style);
-            VectorLineBatchKey key = new(
-                line.StyleLayerOrder,
-                rasterStyle.Color * (float)opacity);
-            if (!batches.TryGetValue(
-                    key,
-                    out PooledGeometryBuffer? buffer))
-            {
-                buffer = new PooledGeometryBuffer();
-                batches.Add(key, buffer);
-                batchOrder.Add(key);
-            }
             MapScreenPoint[] projected =
                 ArrayPool<MapScreenPoint>.Shared.Rent(line.Points.Length);
             int triangleCount;
@@ -581,13 +578,16 @@ internal sealed partial class MapRenderer
                     _displayHeading,
                     _displayPitch,
                     projected.AsSpan(0, line.Points.Length));
-                triangleCount = AppendVectorLineTriangles(
+                triangleCount = AppendStyledVectorLineTriangles(
                     projected.AsSpan(0, line.Points.Length),
                     rasterStyle,
+                    line.StyleLayerOrder,
+                    opacity,
                     _viewportWidth,
                     _viewportHeight,
                     _displayPitch == 0 ? VectorGeometryCachePadding : 0,
-                    buffer);
+                    batches,
+                    batchOrder);
             }
             finally
             {
@@ -604,6 +604,7 @@ internal sealed partial class MapRenderer
                 result.DashedLineCount++;
                 result.DashTriangleCount += triangleCount;
             }
+            result.AddAdvancedStyle(line.Style);
         }
         return tileOpacity < layer.Opacity;
     }
@@ -623,8 +624,246 @@ internal sealed partial class MapRenderer
         {
             Color = style.Color * (float)coverage,
             Width = MinimumVectorLineRasterWidth,
+            Gradient = style.Gradient.IsDefaultOrEmpty
+                ? []
+                : [.. style.Gradient.Select(stop => stop with
+                {
+                    Color = stop.Color * (float)coverage,
+                })],
         };
     }
+
+    private static int AppendStyledVectorLineTriangles(
+        ReadOnlySpan<MapScreenPoint> points,
+        VectorLineStyle style,
+        int styleLayerOrder,
+        double opacity,
+        double viewportWidth,
+        double viewportHeight,
+        double viewportPadding,
+        Dictionary<VectorLineBatchKey, PooledGeometryBuffer> batches,
+        List<VectorLineBatchKey> batchOrder)
+    {
+        int triangleCount = 0;
+        if (style.Blur > 0)
+        {
+            for (int pass = 0; pass < 3; pass++)
+            {
+                double amount = (3 - pass) / 3d;
+                triangleCount += AppendVectorLineColorRuns(
+                    points,
+                    style with
+                    {
+                        Width = style.Width + (style.Blur * amount * 2),
+                        Blur = 0,
+                    },
+                    styleLayerOrder,
+                    pass,
+                    opacity * (0.1 + (pass * 0.08)),
+                    viewportWidth,
+                    viewportHeight,
+                    viewportPadding,
+                    batches,
+                    batchOrder);
+            }
+        }
+        triangleCount += AppendVectorLineColorRuns(
+            points,
+            style with { Blur = 0 },
+            styleLayerOrder,
+            3,
+            opacity,
+            viewportWidth,
+            viewportHeight,
+            viewportPadding,
+            batches,
+            batchOrder);
+        return triangleCount;
+    }
+
+    private static int AppendVectorLineColorRuns(
+        ReadOnlySpan<MapScreenPoint> points,
+        VectorLineStyle style,
+        int styleLayerOrder,
+        int passOrder,
+        double opacity,
+        double viewportWidth,
+        double viewportHeight,
+        double viewportPadding,
+        Dictionary<VectorLineBatchKey, PooledGeometryBuffer> batches,
+        List<VectorLineBatchKey> batchOrder)
+    {
+        if (style.Gradient.IsDefaultOrEmpty)
+        {
+            VectorLineBatchKey key = new(
+                styleLayerOrder,
+                passOrder,
+                style.Color * (float)opacity);
+            return AppendVectorLineTriangles(
+                points,
+                style with { Color = key.Color },
+                viewportWidth,
+                viewportHeight,
+                viewportPadding,
+                GetOrCreateVectorLineBuffer(key, batches, batchOrder));
+        }
+
+        double[] distances = new double[points.Length];
+        for (int index = 1; index < points.Length; index++)
+        {
+            double deltaX = points[index].X - points[index - 1].X;
+            double deltaY = points[index].Y - points[index - 1].Y;
+            distances[index] = distances[index - 1] +
+                Math.Sqrt((deltaX * deltaX) + (deltaY * deltaY));
+        }
+        double totalLength = distances[^1];
+        if (!double.IsFinite(totalLength) || totalLength <= 1e-7)
+        {
+            return 0;
+        }
+
+        int triangleCount = 0;
+        VectorLineStyle segmentStyle = style with
+        {
+            Cap = VectorLineCap.Butt,
+            Join = VectorLineJoin.Bevel,
+            Gradient = [],
+        };
+        Span<MapScreenPoint> segment = stackalloc MapScreenPoint[2];
+        for (int index = 0; index + 1 < points.Length; index++)
+        {
+            double segmentLength = distances[index + 1] - distances[index];
+            int subdivisionCount = (int)Math.Clamp(
+                Math.Ceiling(segmentLength / 8),
+                1,
+                64);
+            MapScreenPoint start = points[index];
+            MapScreenPoint end = points[index + 1];
+            for (int subdivision = 0;
+                subdivision < subdivisionCount;
+                subdivision++)
+            {
+                double startAmount = subdivision / (double)subdivisionCount;
+                double endAmount = (subdivision + 1d) / subdivisionCount;
+                double progress = (
+                    distances[index] +
+                    (segmentLength * ((startAmount + endAmount) / 2))) /
+                    totalLength;
+                Vector4 color = QuantizeLineGradientColor(
+                    ResolveLineGradientColor(style.Gradient, progress) *
+                        (float)opacity);
+                VectorLineBatchKey key = new(
+                    styleLayerOrder,
+                    passOrder,
+                    color);
+                segment[0] = new MapScreenPoint(
+                    start.X + ((end.X - start.X) * startAmount),
+                    start.Y + ((end.Y - start.Y) * startAmount));
+                segment[1] = new MapScreenPoint(
+                    start.X + ((end.X - start.X) * endAmount),
+                    start.Y + ((end.Y - start.Y) * endAmount));
+                triangleCount += AppendVectorLineTriangles(
+                    segment,
+                    segmentStyle with { Color = color },
+                    viewportWidth,
+                    viewportHeight,
+                    viewportPadding,
+                    GetOrCreateVectorLineBuffer(key, batches, batchOrder));
+            }
+        }
+        return triangleCount;
+    }
+
+    private static PooledGeometryBuffer GetOrCreateVectorLineBuffer(
+        VectorLineBatchKey key,
+        Dictionary<VectorLineBatchKey, PooledGeometryBuffer> batches,
+        List<VectorLineBatchKey> batchOrder)
+    {
+        if (!batches.TryGetValue(key, out PooledGeometryBuffer? buffer))
+        {
+            buffer = new PooledGeometryBuffer();
+            batches.Add(key, buffer);
+            batchOrder.Add(key);
+        }
+        return buffer;
+    }
+
+    internal static Vector4 ResolveLineGradientColor(
+        ImmutableArray<VectorLineGradientStop> stops,
+        double progress)
+    {
+        if (stops.IsDefaultOrEmpty)
+        {
+            return default;
+        }
+        progress = Math.Clamp(progress, 0, 1);
+        if (progress <= stops[0].Offset)
+        {
+            return stops[0].Color;
+        }
+        for (int index = 1; index < stops.Length; index++)
+        {
+            if (progress > stops[index].Offset)
+            {
+                continue;
+            }
+            VectorLineGradientStop previous = stops[index - 1];
+            VectorLineGradientStop next = stops[index];
+            double amount = (progress - previous.Offset) /
+                (next.Offset - previous.Offset);
+            return Vector4.Lerp(
+                previous.Color,
+                next.Color,
+                (float)amount);
+        }
+        return stops[^1].Color;
+    }
+
+    internal static VectorLineStyleBatchMetrics GetVectorLineStyleBatchMetrics(
+        IReadOnlyList<MapScreenPoint> points,
+        VectorLineStyle style,
+        double viewportWidth,
+        double viewportHeight)
+    {
+        Dictionary<VectorLineBatchKey, PooledGeometryBuffer> batches = [];
+        List<VectorLineBatchKey> order = [];
+        try
+        {
+            int triangleCount = AppendStyledVectorLineTriangles(
+                points is MapScreenPoint[] array ? array : points.ToArray(),
+                style,
+                0,
+                1,
+                viewportWidth,
+                viewportHeight,
+                0,
+                batches,
+                order);
+            return new VectorLineStyleBatchMetrics(
+                batches.Count,
+                triangleCount,
+                order.Select(key => key.PassOrder).Distinct().Count());
+        }
+        finally
+        {
+            foreach (PooledGeometryBuffer buffer in batches.Values)
+            {
+                buffer.Dispose();
+            }
+        }
+    }
+
+    private static Vector4 QuantizeLineGradientColor(Vector4 color) =>
+        new(
+            MathF.Round(color.X * 32) / 32,
+            MathF.Round(color.Y * 32) / 32,
+            MathF.Round(color.Z * 32) / 32,
+            MathF.Round(color.W * 32) / 32);
+
+    internal readonly record struct VectorLineStyleBatchMetrics(
+        int BatchCount,
+        int TriangleCount,
+        int PassCount);
 
     internal static MapScreenPoint[] ProjectVectorLine(
         IReadOnlyList<VectorTilePoint> points,
@@ -725,6 +964,43 @@ internal sealed partial class MapRenderer
             return 0;
         }
 
+        if (style.Offset != 0 || style.GapWidth > 0)
+        {
+            MapScreenPoint[] center = OffsetVectorLine(points, style.Offset);
+            VectorLineStyle centeredStyle = style with
+            {
+                Offset = 0,
+                GapWidth = 0,
+            };
+            if (style.GapWidth <= 0)
+            {
+                return AppendVectorLineTriangles(
+                    center,
+                    centeredStyle,
+                    viewportWidth,
+                    viewportHeight,
+                    viewportPadding,
+                    triangles);
+            }
+            double bandOffset = (style.GapWidth + style.Width) / 2;
+            int gapInitialCount = triangles.Count;
+            AppendVectorLineTriangles(
+                OffsetVectorLine(center, bandOffset),
+                centeredStyle,
+                viewportWidth,
+                viewportHeight,
+                viewportPadding,
+                triangles);
+            AppendVectorLineTriangles(
+                OffsetVectorLine(center, -bandOffset),
+                centeredStyle,
+                viewportWidth,
+                viewportHeight,
+                viewportPadding,
+                triangles);
+            return (triangles.Count - gapInitialCount) / 3;
+        }
+
         if (!style.DashArray.IsDefaultOrEmpty)
         {
             return AppendDashedVectorLineTriangles(
@@ -813,6 +1089,16 @@ internal sealed partial class MapRenderer
             {
                 AddCircle(triangles, join, halfWidth);
             }
+            else if (style.Join == VectorLineJoin.Miter)
+            {
+                AddMiterJoin(
+                    triangles,
+                    previous,
+                    join,
+                    next,
+                    halfWidth,
+                    style.MiterLimit);
+            }
             else
             {
                 AddBevelJoin(triangles, previous, join, next, halfWidth);
@@ -840,6 +1126,84 @@ internal sealed partial class MapRenderer
             }
         }
         return (triangles.Count - initialCount) / 3;
+    }
+
+    private static MapScreenPoint[] OffsetVectorLine(
+        ReadOnlySpan<MapScreenPoint> points,
+        double offset)
+    {
+        if (offset == 0)
+        {
+            return points.ToArray();
+        }
+        MapScreenPoint[] result = new MapScreenPoint[points.Length];
+        for (int index = 0; index < points.Length; index++)
+        {
+            MapScreenPoint previous = points[Math.Max(0, index - 1)];
+            MapScreenPoint current = points[index];
+            MapScreenPoint next = points[Math.Min(points.Length - 1, index + 1)];
+            bool hasPrevious = TryGetRightNormal(
+                previous,
+                current,
+                out MapScreenPoint previousNormal);
+            bool hasNext = TryGetRightNormal(
+                current,
+                next,
+                out MapScreenPoint nextNormal);
+            if (!hasPrevious && !hasNext)
+            {
+                result[index] = current;
+                continue;
+            }
+            if (!hasPrevious)
+            {
+                previousNormal = nextNormal;
+            }
+            if (!hasNext)
+            {
+                nextNormal = previousNormal;
+            }
+            double miterX = previousNormal.X + nextNormal.X;
+            double miterY = previousNormal.Y + nextNormal.Y;
+            double miterLength = Math.Sqrt(
+                (miterX * miterX) + (miterY * miterY));
+            double denominator = miterLength <= 1e-7
+                ? 0
+                : ((miterX / miterLength) * nextNormal.X) +
+                  ((miterY / miterLength) * nextNormal.Y);
+            double scale = Math.Abs(denominator) <= 0.25
+                ? offset
+                : offset / denominator;
+            scale = Math.Clamp(
+                scale,
+                -Math.Abs(offset) * 4,
+                Math.Abs(offset) * 4);
+            result[index] = miterLength <= 1e-7
+                ? new MapScreenPoint(
+                    current.X + (nextNormal.X * offset),
+                    current.Y + (nextNormal.Y * offset))
+                : new MapScreenPoint(
+                    current.X + ((miterX / miterLength) * scale),
+                    current.Y + ((miterY / miterLength) * scale));
+        }
+        return result;
+    }
+
+    private static bool TryGetRightNormal(
+        MapScreenPoint start,
+        MapScreenPoint end,
+        out MapScreenPoint normal)
+    {
+        double deltaX = end.X - start.X;
+        double deltaY = end.Y - start.Y;
+        double length = Math.Sqrt((deltaX * deltaX) + (deltaY * deltaY));
+        if (!double.IsFinite(length) || length <= 1e-7)
+        {
+            normal = default;
+            return false;
+        }
+        normal = new MapScreenPoint(deltaY / length, -deltaX / length);
+        return true;
     }
 
     private static int AppendDashedVectorLineTriangles(
@@ -981,6 +1345,121 @@ internal sealed partial class MapRenderer
         triangles.Add(new MapScreenPoint(join.X - second.X, join.Y - second.Y));
     }
 
+    private static void AddMiterJoin(
+        PooledGeometryBuffer triangles,
+        MapScreenPoint previous,
+        MapScreenPoint join,
+        MapScreenPoint next,
+        double radius,
+        double miterLimit)
+    {
+        if (!TryGetPerpendicular(previous, join, radius, out MapScreenPoint first) ||
+            !TryGetPerpendicular(join, next, radius, out MapScreenPoint second))
+        {
+            return;
+        }
+        AddMiterSide(
+            triangles,
+            previous,
+            join,
+            next,
+            first,
+            second,
+            radius,
+            miterLimit);
+        AddMiterSide(
+            triangles,
+            previous,
+            join,
+            next,
+            new MapScreenPoint(-first.X, -first.Y),
+            new MapScreenPoint(-second.X, -second.Y),
+            radius,
+            miterLimit);
+    }
+
+    private static void AddMiterSide(
+        PooledGeometryBuffer triangles,
+        MapScreenPoint previous,
+        MapScreenPoint join,
+        MapScreenPoint next,
+        MapScreenPoint firstOffset,
+        MapScreenPoint secondOffset,
+        double radius,
+        double miterLimit)
+    {
+        MapScreenPoint first = new(
+            join.X + firstOffset.X,
+            join.Y + firstOffset.Y);
+        MapScreenPoint second = new(
+            join.X + secondOffset.X,
+            join.Y + secondOffset.Y);
+        if (!TryIntersectLines(
+                new MapScreenPoint(
+                    previous.X + firstOffset.X,
+                    previous.Y + firstOffset.Y),
+                first,
+                second,
+                new MapScreenPoint(
+                    next.X + secondOffset.X,
+                    next.Y + secondOffset.Y),
+                out MapScreenPoint miter))
+        {
+            AddJoinTriangle(triangles, join, first, second);
+            return;
+        }
+        double miterX = miter.X - join.X;
+        double miterY = miter.Y - join.Y;
+        double length = Math.Sqrt((miterX * miterX) + (miterY * miterY));
+        if (!double.IsFinite(length) || length > radius * miterLimit)
+        {
+            AddJoinTriangle(triangles, join, first, second);
+            return;
+        }
+        triangles.Add(first);
+        triangles.Add(miter);
+        triangles.Add(second);
+    }
+
+    private static void AddJoinTriangle(
+        PooledGeometryBuffer triangles,
+        MapScreenPoint join,
+        MapScreenPoint first,
+        MapScreenPoint second)
+    {
+        triangles.Add(join);
+        triangles.Add(first);
+        triangles.Add(second);
+    }
+
+    private static bool TryIntersectLines(
+        MapScreenPoint firstStart,
+        MapScreenPoint firstEnd,
+        MapScreenPoint secondStart,
+        MapScreenPoint secondEnd,
+        out MapScreenPoint intersection)
+    {
+        double firstX = firstEnd.X - firstStart.X;
+        double firstY = firstEnd.Y - firstStart.Y;
+        double secondX = secondEnd.X - secondStart.X;
+        double secondY = secondEnd.Y - secondStart.Y;
+        double denominator = (firstX * secondY) - (firstY * secondX);
+        if (Math.Abs(denominator) <= 1e-7)
+        {
+            intersection = default;
+            return false;
+        }
+        double deltaX = secondStart.X - firstStart.X;
+        double deltaY = secondStart.Y - firstStart.Y;
+        double amount = ((deltaX * secondY) - (deltaY * secondX)) /
+            denominator;
+        intersection = new MapScreenPoint(
+            firstStart.X + (firstX * amount),
+            firstStart.Y + (firstY * amount));
+        return double.IsFinite(intersection.X) &&
+            double.IsFinite(intersection.Y);
+    }
+
     private static bool TryGetPerpendicular(
         MapScreenPoint start,
         MapScreenPoint end,
@@ -1058,7 +1537,16 @@ internal sealed partial class MapRenderer
 
     private readonly record struct VectorLineBatchKey(
         int StyleLayerOrder,
+        int PassOrder,
         Vector4 Color);
+
+    private static int CompareVectorLineBatches(
+        VectorLineBatchKey left,
+        VectorLineBatchKey right)
+    {
+        int order = left.StyleLayerOrder.CompareTo(right.StyleLayerOrder);
+        return order != 0 ? order : left.PassOrder.CompareTo(right.PassOrder);
+    }
 
     private sealed record VectorLineCachedBatch(
         VectorLineBatchKey Key,
@@ -1149,6 +1637,11 @@ internal sealed partial class MapRenderer
         internal int DrawCallCount;
         internal int DashedLineCount;
         internal int DashTriangleCount;
+        internal int OffsetLineCount;
+        internal int GapLineCount;
+        internal int GradientLineCount;
+        internal int BlurredLineCount;
+        internal int MiterLineCount;
         internal int FallbackInstanceCount;
         internal int DrawnFallbackInstanceCount;
         internal int FadedFallbackInstanceCount;
@@ -1166,6 +1659,20 @@ internal sealed partial class MapRenderer
             DrawCallCount += other.DrawCallCount;
             DashedLineCount += other.DashedLineCount;
             DashTriangleCount += other.DashTriangleCount;
+            OffsetLineCount += other.OffsetLineCount;
+            GapLineCount += other.GapLineCount;
+            GradientLineCount += other.GradientLineCount;
+            BlurredLineCount += other.BlurredLineCount;
+            MiterLineCount += other.MiterLineCount;
+        }
+
+        internal void AddAdvancedStyle(VectorLineStyle style)
+        {
+            OffsetLineCount += style.Offset != 0 ? 1 : 0;
+            GapLineCount += style.GapWidth > 0 ? 1 : 0;
+            GradientLineCount += !style.Gradient.IsDefaultOrEmpty ? 1 : 0;
+            BlurredLineCount += style.Blur > 0 ? 1 : 0;
+            MiterLineCount += style.Join == VectorLineJoin.Miter ? 1 : 0;
         }
     }
 

@@ -142,7 +142,16 @@ internal readonly record struct VectorLineStyle(
     double Width,
     VectorLineCap Cap,
     VectorLineJoin Join,
-    ImmutableArray<double> DashArray = default);
+    ImmutableArray<double> DashArray = default,
+    double Offset = 0,
+    double GapWidth = 0,
+    double Blur = 0,
+    double MiterLimit = 2,
+    ImmutableArray<VectorLineGradientStop> Gradient = default);
+
+internal readonly record struct VectorLineGradientStop(
+    double Offset,
+    Vector4 Color);
 
 internal enum VectorLineCap
 {

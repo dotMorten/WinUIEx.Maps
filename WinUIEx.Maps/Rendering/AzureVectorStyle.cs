@@ -1862,6 +1862,26 @@ internal sealed class AzureSymbolStyle
                 out AzureStyleExpression lineWidth) ||
             !TryParseOptionalExpression(
                 paint,
+                "line-offset",
+                AzureStyleValue.FromNumber(0),
+                out AzureStyleExpression lineOffset) ||
+            !TryParseOptionalExpression(
+                paint,
+                "line-gap-width",
+                AzureStyleValue.FromNumber(0),
+                out AzureStyleExpression lineGapWidth) ||
+            !TryParseOptionalExpression(
+                paint,
+                "line-blur",
+                AzureStyleValue.FromNumber(0),
+                out AzureStyleExpression lineBlur) ||
+            !TryParseOptionalExpression(
+                layout,
+                "line-miter-limit",
+                AzureStyleValue.FromNumber(2),
+                out AzureStyleExpression lineMiterLimit) ||
+            !TryParseOptionalExpression(
+                paint,
                 "line-dasharray",
                 AzureStyleValue.FromArray([]),
                 out AzureStyleExpression lineDashArray) ||
@@ -1869,7 +1889,10 @@ internal sealed class AzureSymbolStyle
                 paint,
                 "line-pattern",
                 AzureStyleValue.Null,
-                out AzureStyleExpression linePattern))
+                out AzureStyleExpression linePattern) ||
+            !TryParseLineGradient(
+                paint,
+                out ImmutableArray<VectorLineGradientStop> lineGradient))
         {
             return AzureStyleLayerParseResult.UnsupportedExpression;
         }
@@ -1907,7 +1930,12 @@ internal sealed class AzureSymbolStyle
             lineCap,
             lineJoin,
             lineDashArray,
-            linePattern);
+            linePattern,
+            lineOffset,
+            lineGapWidth,
+            lineBlur,
+            lineMiterLimit,
+            lineGradient);
         return AzureStyleLayerParseResult.Parsed;
     }
 
@@ -1966,6 +1994,76 @@ internal sealed class AzureSymbolStyle
             return true;
         }
         return AzureStyleExpression.TryParse(value, out expression);
+    }
+
+    private static bool TryParseLineGradient(
+        JsonElement paint,
+        out ImmutableArray<VectorLineGradientStop> gradient)
+    {
+        gradient = [];
+        if (paint.ValueKind != JsonValueKind.Object ||
+            !paint.TryGetProperty("line-gradient", out JsonElement value))
+        {
+            return true;
+        }
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+        JsonElement[] items = value.EnumerateArray().ToArray();
+        if (items.Length < 7 ||
+            (items.Length & 1) == 0 ||
+            items[0].ValueKind != JsonValueKind.String ||
+            !string.Equals(
+                items[0].GetString(),
+                "interpolate",
+                StringComparison.Ordinal) ||
+            items[1].ValueKind != JsonValueKind.Array ||
+            items[1].GetArrayLength() != 1 ||
+            items[1][0].ValueKind != JsonValueKind.String ||
+            !string.Equals(
+                items[1][0].GetString(),
+                "linear",
+                StringComparison.Ordinal) ||
+            items[2].ValueKind != JsonValueKind.Array ||
+            items[2].GetArrayLength() != 1 ||
+            items[2][0].ValueKind != JsonValueKind.String ||
+            !string.Equals(
+                items[2][0].GetString(),
+                "line-progress",
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        ImmutableArray<VectorLineGradientStop>.Builder stops =
+            ImmutableArray.CreateBuilder<VectorLineGradientStop>(
+                (items.Length - 3) / 2);
+        double previousOffset = double.NegativeInfinity;
+        for (int index = 3; index + 1 < items.Length; index += 2)
+        {
+            if (!items[index].TryGetDouble(out double offset) ||
+                !double.IsFinite(offset) ||
+                offset < 0 ||
+                offset > 1 ||
+                offset <= previousOffset ||
+                items[index + 1].ValueKind != JsonValueKind.String ||
+                !AzureTextStyleLayer.TryParseColor(
+                    AzureStyleValue.FromString(
+                        items[index + 1].GetString()!),
+                    out Vector4 color))
+            {
+                return false;
+            }
+            stops.Add(new VectorLineGradientStop(offset, color));
+            previousOffset = offset;
+        }
+        if (stops.Count < 2)
+        {
+            return false;
+        }
+        gradient = stops.MoveToImmutable();
+        return true;
     }
 
     private static bool TryParseOptionalLiteralExpression(
@@ -2281,7 +2379,12 @@ internal sealed class AzureLineStyleLayer(
     AzureStyleExpression lineCap,
     AzureStyleExpression lineJoin,
     AzureStyleExpression lineDashArray,
-    AzureStyleExpression linePattern)
+    AzureStyleExpression linePattern,
+    AzureStyleExpression lineOffset,
+    AzureStyleExpression lineGapWidth,
+    AzureStyleExpression lineBlur,
+    AzureStyleExpression lineMiterLimit,
+    ImmutableArray<VectorLineGradientStop> lineGradient)
 {
     internal int Order { get; } = order;
 
@@ -2330,6 +2433,20 @@ internal sealed class AzureLineStyleLayer(
             !lineWidth.TryEvaluate(context, out AzureStyleValue widthValue) ||
             !widthValue.TryGetNumber(out double width) ||
             !double.IsFinite(width) ||
+            !lineOffset.TryEvaluate(context, out AzureStyleValue offsetValue) ||
+            !offsetValue.TryGetNumber(out double offset) ||
+            !double.IsFinite(offset) ||
+            !lineGapWidth.TryEvaluate(context, out AzureStyleValue gapValue) ||
+            !gapValue.TryGetNumber(out double gapWidth) ||
+            !double.IsFinite(gapWidth) ||
+            !lineBlur.TryEvaluate(context, out AzureStyleValue blurValue) ||
+            !blurValue.TryGetNumber(out double blur) ||
+            !double.IsFinite(blur) ||
+            !lineMiterLimit.TryEvaluate(
+                context,
+                out AzureStyleValue miterLimitValue) ||
+            !miterLimitValue.TryGetNumber(out double miterLimit) ||
+            !double.IsFinite(miterLimit) ||
             !lineCap.TryEvaluate(context, out AzureStyleValue capValue) ||
             capValue.Kind != AzureStyleValueKind.String ||
             !TryGetCap(capValue.StringValue, out VectorLineCap cap) ||
@@ -2339,11 +2456,20 @@ internal sealed class AzureLineStyleLayer(
         {
             return AzureStyleLineResult.EvaluationFailure;
         }
-        if (opacity <= 0 || width <= 0 || color.W <= 0)
+        if (opacity <= 0 ||
+            width <= 0 ||
+            lineGradient.IsDefaultOrEmpty && color.W <= 0)
         {
             return AzureStyleLineResult.Hidden;
         }
-        if (width > 256)
+        if (width > 256 ||
+            Math.Abs(offset) > 4096 ||
+            gapWidth < 0 ||
+            gapWidth > 512 ||
+            blur < 0 ||
+            blur > 128 ||
+            miterLimit < 1 ||
+            miterLimit > 16)
         {
             return AzureStyleLineResult.EvaluationFailure;
         }
@@ -2356,7 +2482,24 @@ internal sealed class AzureLineStyleLayer(
             return AzureStyleLineResult.EvaluationFailure;
         }
         color *= (float)Math.Clamp(opacity, 0, 1);
-        result = new VectorLineStyle(color, width, cap, join, dashArray);
+        ImmutableArray<VectorLineGradientStop> gradient =
+            lineGradient.IsDefaultOrEmpty
+                ? []
+                : [.. lineGradient.Select(stop => stop with
+                {
+                    Color = stop.Color * (float)Math.Clamp(opacity, 0, 1),
+                })];
+        result = new VectorLineStyle(
+            color,
+            width,
+            cap,
+            join,
+            dashArray,
+            offset,
+            gapWidth,
+            blur,
+            miterLimit,
+            gradient);
         return AzureStyleLineResult.Resolved;
     }
 
@@ -2401,6 +2544,10 @@ internal sealed class AzureLineStyleLayer(
         lineJoin.CollectZoomStops(stops);
         lineDashArray.CollectZoomStops(stops);
         linePattern.CollectZoomStops(stops);
+        lineOffset.CollectZoomStops(stops);
+        lineGapWidth.CollectZoomStops(stops);
+        lineBlur.CollectZoomStops(stops);
+        lineMiterLimit.CollectZoomStops(stops);
     }
 
     private static bool TryResolveDashArray(
