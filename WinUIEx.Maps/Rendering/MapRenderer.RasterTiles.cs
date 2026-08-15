@@ -1061,6 +1061,10 @@ internal sealed partial class MapRenderer
             {
                 continue;
             }
+            TileId[] targetRequired =
+                state.Scene.RequiredTiles.Where(state.IncludesTile).ToArray();
+            protectedKeys.UnionWith(
+                targetRequired.Select(id => new RasterTileKey(sourceId, id)));
             if (!CanEnumerateRasterScene(_displayZoom, state.Scene.TileZoom))
             {
                 HashSet<int> visibleLevels = [.. state.FallbackTileZooms, state.Scene.TileZoom];
@@ -1080,7 +1084,8 @@ internal sealed partial class MapRenderer
             }
 
             MapScene activeScene = CreateCurrentRasterScene(state.Scene.TileZoom);
-            TileId[] required = activeScene.RequiredTiles.Where(state.IncludesTile).ToArray();
+            TileId[] required =
+                activeScene.RequiredTiles.Where(state.IncludesTile).ToArray();
             protectedKeys.UnionWith(
                 required.Select(id => new RasterTileKey(sourceId, id)));
             TileId[] incomplete = required

@@ -17,7 +17,10 @@ public sealed class TouchInputTests
 
     [TestMethod]
     public Task Pitch_IsClampedToSupportedRange() =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             map.MapStyle = MapStyle.Blank;
             Assert.AreEqual(0, map.Pitch);
@@ -37,7 +40,10 @@ public sealed class TouchInputTests
 
     [TestMethod]
     public Task Stretch_ZoomsIn() =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
             UiInputInjector input = UiInputInjector.ForElement(MapControlTestHost.Window, map);
@@ -64,7 +70,10 @@ public sealed class TouchInputTests
 
     [TestMethod]
     public Task Pinch_ZoomsOut() =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
             UiInputInjector input = UiInputInjector.ForElement(MapControlTestHost.Window, map);
@@ -94,7 +103,10 @@ public sealed class TouchInputTests
     [DataRow(true)]
     public Task PinchOrStretch_OffCenter_PreservesLocationUnderGesture(
         bool stretch) =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
             UiInputInjector input = UiInputInjector.ForElement(MapControlTestHost.Window, map);
@@ -170,7 +182,10 @@ public sealed class TouchInputTests
 
     [TestMethod]
     public Task RotationBelowThresholdKeepsNorthUp() =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
             UiInputInjector input =
@@ -183,7 +198,10 @@ public sealed class TouchInputTests
 
     [TestMethod]
     public Task HeadingNormalizesToCompassRange() =>
-        MapControlTestHost.LoadMapControlAsync(map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            map =>
         {
             map.Heading = 450;
             Assert.AreEqual(90, map.Heading);
@@ -198,7 +216,10 @@ public sealed class TouchInputTests
 
     [TestMethod]
     public Task TwoFingerRotationChangesHeading() =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
             UiInputInjector input =
@@ -225,7 +246,10 @@ public sealed class TouchInputTests
 
     [TestMethod]
     public Task RotationEndingNearNorthSnapsBack() =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
             map.Heading = 352;

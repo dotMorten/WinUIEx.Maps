@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Text;
+using System.Text.Json;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using WinUIEx.Maps.Rendering;
 
@@ -1069,6 +1070,393 @@ public sealed class AzureVectorStyleTests
         Assert.AreEqual(4, secondTop - firstTop, 0.000001);
     }
 
+    [TestMethod]
+    public void InvalidStyleDocumentsFailClosed()
+    {
+        string[] invalidStyles =
+        [
+            "{}",
+            """{"version":7,"layers":[]}""",
+            """{"version":8,"layers":{}}""",
+            """{"version":8,"layers":[null]}""",
+            """{"version":8,"layers":[{}]}""",
+            """{"version":8,"layers":[{"type":5}]}""",
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "fill",
+                "source-layer": "",
+                "paint": {}
+              }]
+            }
+            """,
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "line",
+                "source-layer": "",
+                "paint": {}
+              }]
+            }
+            """,
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "symbol",
+                "source-layer": "",
+                "layout": { "icon-image": "marker" }
+              }]
+            }
+            """,
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "symbol",
+                "source-layer": "",
+                "layout": { "text-field": "label" }
+              }]
+            }
+            """,
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "fill",
+                "source-layer": "land",
+                "paint": false
+              }]
+            }
+            """,
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "line",
+                "source-layer": "road",
+                "paint": false
+              }]
+            }
+            """,
+        ];
+
+        foreach (string style in invalidStyles)
+        {
+            Assert.ThrowsExactly<InvalidDataException>(() =>
+                AzureSymbolStyle.Parse(Encoding.UTF8.GetBytes(style)));
+        }
+    }
+
+    [TestMethod]
+    public async Task EveryIconAnchorResolvesExpectedSpriteOffset()
+    {
+        Dictionary<string, (double X, double Y)> anchors = new()
+        {
+            ["center"] = (0, 0),
+            ["left"] = (5, 0),
+            ["right"] = (-5, 0),
+            ["top"] = (0, 10),
+            ["bottom"] = (0, -10),
+            ["top-left"] = (5, 10),
+            ["top-right"] = (-5, 10),
+            ["bottom-left"] = (5, -10),
+            ["bottom-right"] = (-5, -10),
+        };
+
+        foreach ((string anchor, (double expectedX, double expectedY)) in anchors)
+        {
+            AzureVectorStyleAssets assets = CreateAssets(
+                $$"""
+                {
+                  "version": 8,
+                  "layers": [{
+                    "type": "symbol",
+                    "source-layer": "poi",
+                    "layout": {
+                      "icon-image": "marker",
+                      "icon-anchor": "{{anchor}}"
+                    }
+                  }]
+                }
+                """,
+                """
+                {
+                  "marker": {
+                    "x": 0, "y": 0, "width": 10, "height": 20,
+                    "pixelRatio": 1, "visible": true
+                  }
+                }
+                """,
+                PixelBytes(Enumerable.Repeat((byte)7, 200).ToArray()),
+                10,
+                20);
+
+            await assets.PrepareTexturesAsync(
+                CreateFeatures(),
+                10,
+                CancellationToken.None);
+            VectorTileSymbol symbol = Assert.ContainsSingle(
+                assets.ResolveSymbols(CreateFeatures(), 10).Symbols);
+
+            Assert.AreEqual(expectedX, symbol.OffsetX, 0.000001, anchor);
+            Assert.AreEqual(expectedY, symbol.OffsetY, 0.000001, anchor);
+        }
+    }
+
+    [TestMethod]
+    public async Task EveryTextAnchorAppliesRadialOffsetFromCenter()
+    {
+        string[] anchors =
+        [
+            "center",
+            "left",
+            "right",
+            "top",
+            "bottom",
+            "top-left",
+            "top-right",
+            "bottom-left",
+            "bottom-right",
+        ];
+        string layers = string.Join(
+            ",",
+            anchors.Select(anchor =>
+                $$"""
+                {
+                  "type": "symbol",
+                  "source-layer": "poi",
+                  "layout": {
+                    "text-field": "A",
+                    "text-font": ["Roboto-Regular"],
+                    "text-size": 24,
+                    "text-anchor": "{{anchor}}",
+                    "text-radial-offset": 1
+                  }
+                }
+                """));
+        AzureVectorStyleAssets assets = CreateAssets(
+            $$"""{"version":8,"layers":[{{layers}}]}""",
+            "{}",
+            PixelBytes(0),
+            1,
+            1);
+        assets.GlyphAtlas.AddRangeForTest(new AzureGlyphRange(
+            "Roboto-Regular",
+            0,
+            new Dictionary<int, AzureGlyph>
+            {
+                ['A'] = new(
+                    'A',
+                    GlyphBitmap(8, 128),
+                    2,
+                    2,
+                    0,
+                    2,
+                    24),
+            }));
+
+        await assets.PrepareTexturesAsync(
+            CreateFeatures(),
+            10,
+            CancellationToken.None);
+        VectorTileSymbol[] symbols = assets.ResolveSymbols(
+                CreateFeatures(),
+                10)
+            .Symbols;
+        VectorTileSymbol center = symbols.Single(symbol =>
+            symbol.StyleLayerOrder == 0);
+        Dictionary<string, (double X, double Y)> expectedDeltas = new()
+        {
+            ["center"] = (0, 0),
+            ["left"] = (36, 0),
+            ["right"] = (-36, 0),
+            ["top"] = (0, 38.4),
+            ["bottom"] = (0, -38.4),
+            ["top-left"] = (36, 38.4),
+            ["top-right"] = (-36, 38.4),
+            ["bottom-left"] = (36, -38.4),
+            ["bottom-right"] = (-36, -38.4),
+        };
+
+        Assert.HasCount(anchors.Length, symbols);
+        for (int index = 0; index < anchors.Length; index++)
+        {
+            VectorTileSymbol symbol = symbols.Single(candidate =>
+                candidate.StyleLayerOrder == index);
+            (double expectedX, double expectedY) =
+                expectedDeltas[anchors[index]];
+            Assert.AreEqual(
+                expectedX,
+                symbol.OffsetX - center.OffsetX,
+                0.000001,
+                anchors[index]);
+            Assert.AreEqual(
+                expectedY,
+                symbol.OffsetY - center.OffsetY,
+                0.000001,
+                anchors[index]);
+        }
+    }
+
+    [TestMethod]
+    public void LineAndPolygonFailuresAreCountedWithoutPartialOutput()
+    {
+        AzureVectorStyleAssets assets = CreateAssets(
+            """
+            {
+              "version": 8,
+              "layers": [
+                {
+                  "type": "line", "source-layer": "road",
+                  "layout": { "visibility": true }
+                },
+                {
+                  "type": "line", "source-layer": "road",
+                  "filter": "not-a-boolean"
+                },
+                {
+                  "type": "line", "source-layer": "road",
+                  "paint": { "line-pattern": 5 }
+                },
+                {
+                  "type": "line", "source-layer": "road",
+                  "paint": { "line-width": "wide" }
+                },
+                {
+                  "type": "line", "source-layer": "road",
+                  "paint": { "line-width": 0 }
+                },
+                {
+                  "type": "line", "source-layer": "road",
+                  "paint": { "line-pattern": "missing" }
+                },
+                {
+                  "type": "fill", "source-layer": "land",
+                  "layout": { "visibility": true }
+                },
+                {
+                  "type": "fill", "source-layer": "land",
+                  "filter": "not-a-boolean"
+                },
+                {
+                  "type": "fill", "source-layer": "land",
+                  "paint": { "fill-color": "red" }
+                },
+                {
+                  "type": "fill", "source-layer": "land",
+                  "paint": { "fill-opacity": "opaque" }
+                },
+                {
+                  "type": "fill", "source-layer": "land",
+                  "paint": { "fill-opacity": 0 }
+                },
+                {
+                  "type": "fill", "source-layer": "land",
+                  "paint": { "fill-pattern": "missing" }
+                }
+              ]
+            }
+            """,
+            "{}",
+            PixelBytes(0),
+            1,
+            1);
+        VectorLineResolution lines = assets.ResolveLines(
+            CreateLineFeatures(),
+            10);
+        VectorPolygonResolution polygons = assets.ResolvePolygons(
+            CreatePolygonFeatures("park"),
+            10);
+        VectorSymbolResolution patterns = assets.ResolveSymbols(
+            CreateLineFeatures(),
+            10);
+
+        Assert.IsEmpty(lines.Lines);
+        Assert.AreEqual(4, lines.EvaluationFailureCount);
+        Assert.IsEmpty(polygons.Polygons);
+        Assert.AreEqual(5, polygons.EvaluationFailureCount);
+        Assert.IsEmpty(patterns.Symbols);
+        Assert.AreEqual(3, patterns.EvaluationFailureCount);
+        Assert.AreEqual(1, patterns.UnavailableSpriteCount);
+    }
+
+    [TestMethod]
+    public void SupportedExpressionsEvaluateValuesAndRejectTypeMismatches()
+    {
+        VectorTileFeature feature = CreateFeatures(
+            new VectorTileProperty("number", VectorTileValue.FromDouble(2)),
+            new VectorTileProperty("name", VectorTileValue.FromString("road")),
+            new VectorTileProperty("enabled", VectorTileValue.FromBool(true)))
+            .Features[0];
+        AzureStyleEvaluationContext context = new(feature, 10.5);
+
+        AssertExpressionNumber("""["get","number"]""", context, 2);
+        AssertExpressionKind("""["get","missing"]""", context, AzureStyleValueKind.Null);
+        AssertExpressionBoolean("""["has","enabled"]""", context, true);
+        AssertExpressionBoolean("""["has","missing"]""", context, false);
+        AssertExpressionString("""["geometry-type"]""", context, "Point");
+        AssertExpressionNumber("""["zoom"]""", context, 10.5);
+        AssertExpressionBoolean("""["==",["get","number"],2]""", context, true);
+        AssertExpressionBoolean("""["!",false]""", context, true);
+        AssertExpressionBoolean("""["all",true,true,false]""", context, false);
+        AssertExpressionBoolean("""["any",false,false,true]""", context, true);
+        AssertExpressionBoolean(
+            """["in","road",["literal",["water","road"]]]""",
+            context,
+            true);
+        AssertExpressionString(
+            """["case",false,"first",true,"second","fallback"]""",
+            context,
+            "second");
+        AssertExpressionString(
+            """["coalesce",["get","missing"],"fallback"]""",
+            context,
+            "fallback");
+        AssertExpressionString(
+            """["concat","route-",["to-string",["get","number"]]]""",
+            context,
+            "route-2");
+        AssertExpressionString(
+            """["match",["get","name"],["road","street"],"yes","no"]""",
+            context,
+            "yes");
+        AssertExpressionNumber(
+            """["step",["zoom"],1,10,2,12,3]""",
+            context,
+            2);
+        AssertExpressionNumber(
+            """["interpolate",["linear"],["zoom"],10,0,12,20]""",
+            context,
+            5);
+        AzureStyleValue array = EvaluateExpression(
+            """["interpolate",["linear"],["zoom"],10,["literal",[0,10]],12,["literal",[20,30]]]""",
+            context);
+        Assert.AreEqual(AzureStyleValueKind.Array, array.Kind);
+        Assert.AreEqual(5, array.ArrayValue![0].NumberValue, 0.000001);
+        Assert.AreEqual(15, array.ArrayValue[1].NumberValue, 0.000001);
+        AssertExpressionNumber(
+            """["let","scale",3,"offset",4,["*",["var","scale"],["var","offset"]]]""",
+            context,
+            12);
+        AssertExpressionString("""["to-string",true]""", context, "true");
+        AssertExpressionString("""["to-string",null]""", context, string.Empty);
+        AssertExpressionNumber("""["*",2,3,4]""", context, 24);
+        AssertExpressionNumber("""["number","not-number",7]""", context, 7);
+
+        AssertExpressionFails("""["var","missing"]""", context);
+        AssertExpressionFails("""["!",1]""", context);
+        AssertExpressionFails("""["all",true,1]""", context);
+        AssertExpressionFails("""["to-string",["literal",[1]]]""", context);
+        AssertExpressionFails("""["*","x",2]""", context);
+        AssertExpressionFails("""["number","x",false]""", context);
+        AssertExpressionFails(
+            """["interpolate",["linear"],["zoom"],10,"low",12,"high"]""",
+            context);
+    }
+
     private static AzureVectorStyleAssets CreateAssets(
         string style,
         string sprites,
@@ -1158,4 +1546,54 @@ public sealed class AzureVectorStyleTests
 
     private static byte[] GlyphBitmap(int size, byte value) =>
         Enumerable.Repeat(value, size * size).ToArray();
+
+    private static AzureStyleValue EvaluateExpression(
+        string json,
+        AzureStyleEvaluationContext context)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.IsTrue(AzureStyleExpression.TryParse(
+            document.RootElement,
+            out AzureStyleExpression expression));
+        Assert.IsTrue(expression.TryEvaluate(context, out AzureStyleValue value));
+        return value;
+    }
+
+    private static void AssertExpressionFails(
+        string json,
+        AzureStyleEvaluationContext context)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.IsTrue(AzureStyleExpression.TryParse(
+            document.RootElement,
+            out AzureStyleExpression expression));
+        Assert.IsFalse(expression.TryEvaluate(context, out _));
+    }
+
+    private static void AssertExpressionKind(
+        string json,
+        AzureStyleEvaluationContext context,
+        AzureStyleValueKind expected) =>
+        Assert.AreEqual(expected, EvaluateExpression(json, context).Kind);
+
+    private static void AssertExpressionBoolean(
+        string json,
+        AzureStyleEvaluationContext context,
+        bool expected) =>
+        Assert.AreEqual(expected, EvaluateExpression(json, context).BooleanValue);
+
+    private static void AssertExpressionNumber(
+        string json,
+        AzureStyleEvaluationContext context,
+        double expected) =>
+        Assert.AreEqual(
+            expected,
+            EvaluateExpression(json, context).NumberValue,
+            0.000001);
+
+    private static void AssertExpressionString(
+        string json,
+        AzureStyleEvaluationContext context,
+        string expected) =>
+        Assert.AreEqual(expected, EvaluateExpression(json, context).StringValue);
 }

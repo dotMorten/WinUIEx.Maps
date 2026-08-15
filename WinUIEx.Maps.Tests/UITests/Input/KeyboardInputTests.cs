@@ -20,7 +20,10 @@ public sealed class KeyboardInputTests
         VirtualKey key,
         int longitudeDirection,
         int latitudeDirection) =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
             UiInputInjector input = UiInputInjector.ForElement(MapControlTestHost.Window, map);

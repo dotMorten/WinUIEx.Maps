@@ -1422,9 +1422,15 @@ internal sealed partial class MapRenderer
             {
                 continue;
             }
+            protectedKeys.UnionWith(
+                state.Scene.RequiredTiles
+                    .Where(state.IncludesTile)
+                    .Select(id => new RasterTileKey(sourceId, id)));
             MapScene scene = CreateCurrentRasterScene(state.Scene.TileZoom);
             protectedKeys.UnionWith(
-                scene.RequiredTiles.Select(id => new RasterTileKey(sourceId, id)));
+                scene.RequiredTiles
+                    .Where(state.IncludesTile)
+                    .Select(id => new RasterTileKey(sourceId, id)));
         }
 
         bool removed = false;

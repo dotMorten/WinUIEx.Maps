@@ -270,6 +270,70 @@ public sealed class VectorRenderingTests
                 minimumPixelCount: 20));
         });
 
+    [TestMethod]
+    public Task LabelGlyphsFadeTogetherAfterTexturesBecomeReady() =>
+        MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            using RenderingEventListener listener =
+                new("VectorLabelFadeSummary");
+            TileId tileId = new(4, 8, 8);
+            byte[] tile = new MapboxVectorTileBuilder()
+                .AddPoint(
+                    "markers",
+                    2048,
+                    2048,
+                    new Dictionary<string, object> { ["label"] = "7" })
+                .Build();
+            TestVectorTileSource source = CreateShieldSource(
+                tileId,
+                tile,
+                """
+                {
+                  "version": 8,
+                  "layers": [{
+                    "type": "symbol",
+                    "source-layer": "markers",
+                    "layout": {
+                      "text-field": ["get", "label"],
+                      "text-font": ["TestFont"],
+                      "text-size": 18
+                    },
+                    "paint": {
+                      "text-color": "#ff00ff"
+                    }
+                  }]
+                }
+                """,
+                '7');
+
+            BasicGeoposition center = source.TileCenter;
+            map.MapStyle = MapStyle.Blank;
+            map.Center = new Geopoint(center);
+            map.ZoomLevel = source.TileId.Zoom;
+            await MapControlTestUtilities.WaitForDisplayedCameraAsync(
+                map,
+                center,
+                source.TileId.Zoom);
+            map.Layers.Add(new TestVectorTileLayer(
+                source,
+                TimeSpan.FromSeconds(1)));
+            using CancellationTokenSource timeout =
+                new(TimeSpan.FromSeconds(5));
+            MapRenderFrame frame =
+                await map.CaptureRenderedFrameAsync(timeout.Token);
+
+            Assert.ContainsSingle(
+                FindColor(frame, 255, 0, 255, minimumPixelCount: 20));
+            CapturedRenderingEvent[] fadeEvents =
+                listener.Events("VectorLabelFadeSummary");
+            Assert.IsTrue(fadeEvents.Any(captured =>
+                Convert.ToInt32(captured.Payload[1]) > 0 &&
+                Convert.ToInt32(captured.Payload[2]) > 0));
+            Assert.IsTrue(fadeEvents.Any(captured =>
+                Convert.ToInt32(captured.Payload[1]) == 0 &&
+                Convert.ToInt32(captured.Payload[2]) == 0));
+        });
+
     private static TestVectorTileSource CreateShieldSource(
         TileId tileId,
         byte[] tile,
@@ -303,13 +367,14 @@ public sealed class VectorRenderingTests
 
     private static async Task<MapRenderFrame> RenderAsync(
         MapControl map,
-        TestVectorTileSource source)
+        TestVectorTileSource source,
+        TimeSpan? fadeDuration = null)
     {
         BasicGeoposition center = source.TileCenter;
         map.MapStyle = MapStyle.Blank;
         map.Center = new Geopoint(center);
         map.ZoomLevel = source.TileId.Zoom;
-        map.Layers.Add(new TestVectorTileLayer(source));
+        map.Layers.Add(new TestVectorTileLayer(source, fadeDuration));
 
         await MapControlTestUtilities.WaitForDisplayedCameraAsync(
             map,

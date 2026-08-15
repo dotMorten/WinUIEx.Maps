@@ -17,7 +17,10 @@ public sealed class MouseInputTests
 {
     [TestMethod]
     public Task DoubleClick_ZoomsIn() =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
             UiInputInjector input = UiInputInjector.ForElement(MapControlTestHost.Window, map);
@@ -35,7 +38,10 @@ public sealed class MouseInputTests
 
     [TestMethod]
     public Task DoubleClick_OffCenter_PreservesLocationUnderPointer() =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
             UiInputInjector input = UiInputInjector.ForElement(MapControlTestHost.Window, map);
@@ -80,7 +86,10 @@ public sealed class MouseInputTests
 
     [TestMethod]
     public Task DoubleClick_LowZoomNearIceland_PreservesLocationUnderPointer() =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            new BasicGeoposition(),
+            0,
+            async map =>
         {
             map.MapStyle = WinUIEx.Maps.MapStyle.Blank;
             map.Center = new Geopoint(new BasicGeoposition
@@ -124,7 +133,10 @@ public sealed class MouseInputTests
 
     [TestMethod]
     public Task MouseWheel_ZoomsIn() =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
             UiInputInjector input = UiInputInjector.ForElement(MapControlTestHost.Window, map);
@@ -150,7 +162,10 @@ public sealed class MouseInputTests
 
     [TestMethod]
     public Task MouseWheel_ZoomsOut() =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
             UiInputInjector input = UiInputInjector.ForElement(MapControlTestHost.Window, map);
@@ -178,7 +193,10 @@ public sealed class MouseInputTests
     [DataRow(120)]
     [DataRow(-120)]
     public Task MouseWheel_OffCenter_PreservesLocationUnderPointer(int wheelDelta) =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
             UiInputInjector input = UiInputInjector.ForElement(MapControlTestHost.Window, map);
@@ -232,7 +250,10 @@ public sealed class MouseInputTests
     [DataRow(0, 100)]
     [DataRow(0, -100)]
     public Task MouseDrag_PansMapByDragDistance(int horizontalDelta, int verticalDelta) =>
-        MapControlTestHost.LoadMapControlAsync(async map =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
             UiInputInjector input = UiInputInjector.ForElement(MapControlTestHost.Window, map);

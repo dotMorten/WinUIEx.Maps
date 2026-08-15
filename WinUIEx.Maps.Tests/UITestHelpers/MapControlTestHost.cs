@@ -2,6 +2,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using System.Runtime.CompilerServices;
+using Windows.Devices.Geolocation;
 
 namespace WinUIEx.Maps.Tests.UITestHelpers;
 
@@ -48,6 +49,27 @@ internal static class MapControlTestHost
 
         await LoadUIAsync(
             CreateMapControl,
+            element => onLoad((MapControl)element),
+            testName);
+    }
+
+    internal static Task LoadMapControlAsync(
+        BasicGeoposition initialCenter,
+        double initialZoomLevel,
+        Func<MapControl, Task> onLoad,
+        [CallerMemberName] string testName = "")
+    {
+        ArgumentNullException.ThrowIfNull(onLoad);
+
+        return LoadUIAsync(
+            () =>
+            {
+                MapControl map = CreateMapControl();
+                map.MapStyle = MapStyle.Blank;
+                map.Center = new Geopoint(initialCenter);
+                map.ZoomLevel = initialZoomLevel;
+                return map;
+            },
             element => onLoad((MapControl)element),
             testName);
     }

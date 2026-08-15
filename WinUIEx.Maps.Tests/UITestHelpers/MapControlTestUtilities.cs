@@ -8,19 +8,22 @@ namespace WinUIEx.Maps.Tests.UITestHelpers;
 internal static class MapControlTestUtilities
 {
     internal const double CoordinateTolerance = 0.000000001;
+    internal const double InitialZoomLevel = 5;
     internal const double ZoomTolerance = 0.001;
     internal const double TileSize = 256;
     private static readonly TimeSpan InputTimeout = TimeSpan.FromSeconds(5);
 
+    internal static BasicGeoposition InitialCenter => new()
+    {
+        Latitude = 10,
+        Longitude = 20,
+    };
+
     internal static async Task SetupMapAsync(MapControl map)
     {
-        BasicGeoposition initialCenter = new()
-        {
-            Latitude = 10,
-            Longitude = 20,
-        };
+        BasicGeoposition initialCenter = InitialCenter;
         map.MapStyle = WinUIEx.Maps.MapStyle.Blank;
-        map.ZoomLevel = 5;
+        map.ZoomLevel = InitialZoomLevel;
         map.Center = new Geopoint(initialCenter);
         var pin = new FontIcon
         {

@@ -127,13 +127,15 @@ internal sealed class TestVectorTileLayer : TileLayer
 {
     private readonly TestVectorTileSource _source;
 
-    internal TestVectorTileLayer(TestVectorTileSource source)
+    internal TestVectorTileLayer(
+        TestVectorTileSource source,
+        TimeSpan? fadeDuration = null)
         : base(new TileLayerOptions
         {
             TileSize = 256,
             MinSourceZoom = source.TileId.Zoom,
             MaxSourceZoom = source.TileId.Zoom,
-            FadeDuration = TimeSpan.Zero,
+            FadeDuration = fadeDuration ?? TimeSpan.Zero,
         })
     {
         _source = source;

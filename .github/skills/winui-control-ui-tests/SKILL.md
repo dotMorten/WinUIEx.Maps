@@ -28,17 +28,26 @@ Each test must use `MapControlTestHost.LoadMapControlAsync`:
 ```csharp
 [TestMethod]
 public Task MouseWheel_ZoomsIn() =>
-    MapControlTestHost.LoadMapControlAsync(async map =>
-    {
-        await SetupMapAsync(map);
-        UiInputInjector input =
-            UiInputInjector.ForElement(MapControlTestHost.Window, map);
+    MapControlTestHost.LoadMapControlAsync(
+        MapControlTestUtilities.InitialCenter,
+        MapControlTestUtilities.InitialZoomLevel,
+        async map =>
+        {
+            await SetupMapAsync(map);
+            UiInputInjector input =
+                UiInputInjector.ForElement(MapControlTestHost.Window, map);
 
-        input.Mouse.Wheel(120);
+            input.Mouse.Wheel(120);
 
-        await WaitForAsync(() => map.ZoomLevel == 6);
-    });
+            await WaitForAsync(() => map.ZoomLevel == 6);
+        });
 ```
+
+Use the center/zoom overload whenever the initial camera is test setup rather than behavior
+under test. It applies `MapStyle.Blank`, `Center`, and `ZoomLevel` before the control is
+attached, so the first rendered camera starts at the requested view instead of animating
+from defaults. Tests that intentionally verify programmatic camera animation should keep
+setting those properties after `Loaded`.
 
 For another WinUI control, use `LoadUIAsync`:
 
@@ -257,6 +266,62 @@ texture preparation/upload, collision logic, and renderer. It supplies only its 
 tile, so neighboring wrapped tiles cannot duplicate the feature. `TestGlyph.Solid` creates
 a deterministic rectangular SDF glyph for geometry assertions rather than typographic
 fidelity.
+
+Use `RenderingEventListener` when the semantic result includes intermediate render frames,
+such as synchronized label fading. The listener copies only requested events and enables
+Verbose rendering events, so a test can assert that `VectorLabelFadeSummary` first reports
+active labels/glyphs and later reports zero after `CaptureRenderedFrameAsync` reaches the
+fully opaque frame.
+
+## Tailored raster-tile rendering
+
+Use `TestRasterTileSource` and `TestRasterTileLayer` to exercise the production raster
+scheduler, GPU upload worker, cache, fade handling, and draw path without HTTP or image
+decoding:
+
+```csharp
+TileId tileId = new(5, 16, 16);
+TestRasterTileSource source = new(
+    tileId.Zoom,
+    new Dictionary<TileId, TestRasterTile>
+    {
+        [tileId] = TestRasterTileSource.Solid(256, 255, 0, 0),
+    });
+
+map.MapStyle = MapStyle.Blank;
+map.Center = new Geopoint(source.GetTileCenter(tileId));
+map.ZoomLevel = tileId.Zoom;
+map.Layers.Add(new TestRasterTileLayer(source));
+
+MapRenderFrame frame = await map.CaptureRenderedFrameAsync(cancellationToken);
+ConnectedComponent tile = Assert.ContainsSingle(
+    ConnectedComponentAnalyzer.Find(
+        frame,
+        ConnectedComponentAnalyzer.Near(255, 0, 0, tolerance: 4),
+        minimumPixelCount: 40_000));
+```
+
+The source accepts exact BGRA buffers and dimensions, including intentionally malformed
+buffers for upload-validation tests. Use distinct solid colors for adjacent-tile placement,
+replace a `TestRasterTileLayer` source to test generations, and use large pixel dimensions
+for cache-pressure tests; texture byte size follows the supplied pixel dimensions while
+screen geometry still follows the tile's zoom. `TestHybridRasterTileLayer` delivers the
+same manufactured raster as the background of an empty vector payload when the hybrid
+commit path needs coverage.
+
+For hybrid vector-cache pressure, pass `hybridVectorByteSize` to
+`TestRasterTileSource`. The test source creates an empty, non-rendering vector payload with
+that accounted size while retaining the colored raster background for visual assertions.
+Navigate among separated tiles and return to the first tile to prove least-recently-used
+eviction through its request count and rendered color.
+
+Coverage milestone tests can listen for `RasterCoverageMilestone` and assert the
+`FirstTile`, `FullCoverage`, and `OpaqueCoverage` payload values after capturing a complete
+frame. Keep the listener active for the entire control lifetime.
+
+After changing the camera in cache or fallback tests, poll renderer readback for the
+expected color rather than sleeping. Acquisition, camera animation, GPU commit, and cache
+trimming can complete in different frames, especially under coverage instrumentation.
 
 Use `ConnectedComponentAnalyzer.Find` to locate rendered regions by color. Filters receive
 red, green, blue, and alpha values even though the underlying frame is BGRA:
