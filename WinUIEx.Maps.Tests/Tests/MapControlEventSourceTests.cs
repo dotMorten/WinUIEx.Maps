@@ -102,6 +102,7 @@ public sealed class MapControlEventSourceTests
         MapControlEventSource.Log.VectorAdvancedSymbolStyleSummary(
             6, 8, 9, 10, 11, 12);
         MapControlEventSource.Log.CameraViewChangeRequested(1, true, false, true);
+        MapControlEventSource.Log.TextScaleFactorChanged(1.5, true);
 
         CapturedEvent wave = listener.Single(11);
         Assert.AreEqual("TileWaveStart", wave.Name);
@@ -369,6 +370,13 @@ public sealed class MapControlEventSourceTests
         Assert.AreEqual(true, viewChange.Payload[1]);
         Assert.AreEqual(false, viewChange.Payload[2]);
         Assert.AreEqual(true, viewChange.Payload[3]);
+        CapturedEvent textScale = listener.Single(71);
+        Assert.AreEqual("TextScaleFactorChanged", textScale.Name);
+        Assert.AreSequenceEqual(
+            ["textScaleFactor", "isEnabled"],
+            textScale.PayloadNames);
+        Assert.AreEqual(1.5d, textScale.Payload[0]);
+        Assert.AreEqual(true, textScale.Payload[1]);
         Assert.AreEqual(4.25d, preparedGeometry.Payload[5]);
         Assert.DoesNotContain(captured => captured.Id == 0, listener.Events);
     }
@@ -383,7 +391,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 70),
+            Enumerable.Range(1, 71),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }

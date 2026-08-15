@@ -1707,4 +1707,19 @@ internal sealed class MapControlEventSource : EventSource
             hasHeading,
             hasPitch);
     }
+
+    /// <summary>
+    /// Records the effective system text scale applied to vector labels.
+    /// </summary>
+    [Event(
+        71,
+        Level = EventLevel.Informational,
+        Keywords = Keywords.Icons | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void TextScaleFactorChanged(
+        double textScaleFactor,
+        bool isEnabled)
+    {
+        WriteEvent(71, textScaleFactor, isEnabled);
+    }
 }

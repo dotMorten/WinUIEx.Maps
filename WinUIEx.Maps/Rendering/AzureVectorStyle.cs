@@ -320,7 +320,8 @@ internal sealed class AzureVectorStyleAssets
 
     internal VectorSymbolResolution ResolveSymbols(
         VectorTileFeatureCollection features,
-        double zoom)
+        double zoom,
+        double textScaleFactor = 1)
     {
         if (_mapStyle == MapStyle.BlankAccessible)
         {
@@ -346,6 +347,7 @@ internal sealed class AzureVectorStyleAssets
         ResolveText(
             features,
             zoom,
+            NormalizeTextScaleFactor(textScaleFactor),
             symbols,
             ref counts,
             CancellationToken.None);
@@ -827,6 +829,7 @@ internal sealed class AzureVectorStyleAssets
     private void ResolveText(
         VectorTileFeatureCollection features,
         double zoom,
+        double textScaleFactor,
         List<VectorTileSymbol> symbols,
         ref VectorStyleResolutionCounts counts,
         CancellationToken cancellationToken)
@@ -868,6 +871,7 @@ internal sealed class AzureVectorStyleAssets
                     counts.EvaluationFailureCount++;
                     continue;
                 }
+                text = text with { Size = text.Size * textScaleFactor };
                 if (layer.Placement == AzureSymbolPlacement.Line)
                 {
                     foreach (VectorTileLine line in feature.Lines)
@@ -1029,6 +1033,11 @@ internal sealed class AzureVectorStyleAssets
             _ => (-width / 2, -height / 2),
         };
     }
+
+    private static double NormalizeTextScaleFactor(double textScaleFactor) =>
+        double.IsFinite(textScaleFactor) && textScaleFactor > 0
+            ? textScaleFactor
+            : 1;
 
     private VectorStyleResolutionCounts Resolve(
         VectorTileFeatureCollection features,

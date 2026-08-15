@@ -308,6 +308,7 @@ public sealed class VectorRenderingTests
 
             BasicGeoposition center = source.TileCenter;
             map.MapStyle = MapStyle.Blank;
+            map.IsTextScaleFactorEnabled = false;
             Assert.IsTrue(await map.TrySetViewAsync(
                 new Geopoint(center),
                 source.TileId.Zoom,
@@ -333,6 +334,97 @@ public sealed class VectorRenderingTests
                 Convert.ToInt32(captured.Payload[1]) == 0 &&
                 Convert.ToInt32(captured.Payload[2]) == 0));
         });
+
+    [TestMethod]
+    public Task TextScaleFactorUpdatesRenderedLabelAndHonorsOptOut() =>
+        MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            TileId tileId = new(4, 8, 8);
+            byte[] tile = new MapboxVectorTileBuilder()
+                .AddPoint("markers", 2048, 2048)
+                .Build();
+            TestVectorTileSource source = TestVectorTileSource.Create(
+                tileId,
+                tile,
+                """
+                {
+                  "version": 8,
+                  "layers": [{
+                    "type": "symbol",
+                    "source-layer": "markers",
+                    "layout": {
+                      "text-field": "7",
+                      "text-font": ["TestFont"],
+                      "text-size": 12
+                    },
+                    "paint": {
+                      "text-color": "#ff00ff"
+                    }
+                  }]
+                }
+                """,
+                "{}",
+                [0, 0, 0, 0],
+                1,
+                1);
+            source.AddGlyphs("TestFont", TestGlyph.Solid('7'));
+            BasicGeoposition center = source.TileCenter;
+            map.MapStyle = MapStyle.Blank;
+            map.IsTextScaleFactorEnabled = true;
+            map.ApplyTextScaleFactor(1);
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(center),
+                tileId.Zoom,
+                null,
+                null,
+                MapAnimationKind.None));
+            map.Layers.Add(new TestVectorTileLayer(source));
+
+            ConnectedComponent normal = await CaptureTextComponentAsync(map);
+
+            map.ApplyTextScaleFactor(2);
+            ConnectedComponent scaled = await CaptureTextComponentAsync(
+                map,
+                component => component.Bounds.Width >= normal.Bounds.Width * 2 - 2);
+
+            Assert.IsGreaterThanOrEqualTo(normal.Bounds.Width * 2 - 2, scaled.Bounds.Width);
+            Assert.IsGreaterThanOrEqualTo(normal.Bounds.Height * 2 - 2, scaled.Bounds.Height);
+            Assert.IsGreaterThan(normal.PixelCount * 3, scaled.PixelCount);
+
+            map.IsTextScaleFactorEnabled = false;
+            map.ApplyTextScaleFactor(2);
+            ConnectedComponent disabled = await CaptureTextComponentAsync(
+                map,
+                component => Math.Abs(component.Bounds.Width - normal.Bounds.Width) <= 1);
+
+            Assert.AreEqual(normal.Bounds.Width, disabled.Bounds.Width, 1);
+            Assert.AreEqual(normal.Bounds.Height, disabled.Bounds.Height, 1);
+            Assert.AreEqual(normal.PixelCount, disabled.PixelCount, 8);
+        });
+
+    private static async Task<ConnectedComponent> CaptureTextComponentAsync(
+        MapControl map,
+        Func<ConnectedComponent, bool>? expected = null)
+    {
+        using CancellationTokenSource timeout =
+            new(TimeSpan.FromSeconds(5));
+        while (true)
+        {
+            MapRenderFrame frame =
+                await map.CaptureRenderedFrameAsync(timeout.Token);
+            ConnectedComponent[] components = FindColor(
+                frame,
+                255,
+                0,
+                255,
+                minimumPixelCount: 20);
+            if (components.Length == 1 &&
+                (expected is null || expected(components[0])))
+            {
+                return components[0];
+            }
+        }
+    }
 
     private static TestVectorTileSource CreateShieldSource(
         TileId tileId,

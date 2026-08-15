@@ -253,6 +253,7 @@ public sealed partial class MapControl : Control
         _rasterTileManager.AzureAuthenticationFailed +=
             OnAzureAuthenticationFailed;
         SetValue(LayersProperty, new MapLayerCollection());
+        InitializeTextScaling();
         DefaultStyleKey = typeof(MapControl);
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
@@ -402,6 +403,7 @@ public sealed partial class MapControl : Control
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         MapControlEventSource.Log.ControlLoaded();
+        AttachTextScaleSettings();
         AttachLifecycleSubscriptions();
         _iconService.SetLoaded(true);
         AttachIconXamlRoot();
@@ -464,6 +466,7 @@ public sealed partial class MapControl : Control
             _rasterTileManager.Suspend();
             _renderer.SuspendBackgroundWork();
             _renderer.Suspend();
+            DetachTextScaleSettings();
             CancelPendingViewChange();
         });
     }

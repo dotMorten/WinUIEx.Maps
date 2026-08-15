@@ -398,7 +398,9 @@ internal sealed partial class MapRenderer
         ref long nextCollisionGroup)
     {
         tile.MarkUsed();
-        VectorSymbolResolution resolution = tile.GetSymbols(_displayZoom);
+        VectorSymbolResolution resolution = tile.GetSymbols(
+            _displayZoom,
+            Volatile.Read(ref _textScaleFactor));
         VectorTileSymbol[] symbols = resolution.Symbols;
         renderResult.CandidateCount +=
             symbols.Count(symbol => symbol.Kind == VectorSymbolKind.Icon);
@@ -1467,6 +1469,7 @@ internal sealed partial class MapRenderer
         int style)
     {
         private double _resolvedZoom = double.NaN;
+        private double _resolvedTextScaleFactor = double.NaN;
         private VectorSymbolResolution _resolved =
             new([], 0, 0);
         private double _resolvedLineZoom = double.NaN;
@@ -1483,12 +1486,19 @@ internal sealed partial class MapRenderer
 
         internal long ByteSize => features.ByteSize;
 
-        internal VectorSymbolResolution GetSymbols(double zoom)
+        internal VectorSymbolResolution GetSymbols(
+            double zoom,
+            double textScaleFactor)
         {
-            if (_resolvedZoom != zoom)
+            if (_resolvedZoom != zoom ||
+                _resolvedTextScaleFactor != textScaleFactor)
             {
-                _resolved = styleAssets.ResolveSymbols(features, zoom);
+                _resolved = styleAssets.ResolveSymbols(
+                    features,
+                    zoom,
+                    textScaleFactor);
                 _resolvedZoom = zoom;
+                _resolvedTextScaleFactor = textScaleFactor;
             }
             return _resolved;
         }

@@ -68,6 +68,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private double _targetViewportWidth;
     private double _targetViewportHeight;
     private int _targetMaximumTileZoom = MapCamera.MaximumTileZoom;
+    private double _textScaleFactor = 1;
     private MapCenter _targetZoomAnchor;
     private double _targetZoomAnchorHorizontalOffset;
     private double _targetZoomAnchorVerticalOffset;
@@ -447,6 +448,18 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _cameraVersion++;
         }
         RequestRender();
+    }
+
+    internal void SetTextScaleFactor(double textScaleFactor)
+    {
+        double normalized =
+            double.IsFinite(textScaleFactor) && textScaleFactor > 0
+                ? textScaleFactor
+                : 1;
+        if (Interlocked.Exchange(ref _textScaleFactor, normalized) != normalized)
+        {
+            RequestRender();
+        }
     }
 
     /// <summary>

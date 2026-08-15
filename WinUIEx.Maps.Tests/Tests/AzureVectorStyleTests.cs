@@ -1071,6 +1071,66 @@ public sealed class AzureVectorStyleTests
     }
 
     [TestMethod]
+    public async Task TextScaleFactorScalesGlyphGeometryAndSpacing()
+    {
+        AzureVectorStyleAssets assets = CreateAssets(
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "symbol",
+                "source-layer": "poi",
+                "layout": {
+                  "text-field": "AA",
+                  "text-font": ["Roboto-Regular"],
+                  "text-size": 24
+                }
+              }]
+            }
+            """,
+            "{}",
+            PixelBytes(0),
+            1,
+            1);
+        assets.GlyphAtlas.AddRangeForTest(new AzureGlyphRange(
+            "Roboto-Regular",
+            0,
+            new Dictionary<int, AzureGlyph>
+            {
+                ['A'] = new(
+                    'A',
+                    GlyphBitmap(21, 128),
+                    15,
+                    15,
+                    0,
+                    -5,
+                    15),
+            }));
+        VectorTileFeatureCollection features = CreateFeatures();
+
+        await assets.PrepareTexturesAsync(
+            features,
+            10,
+            CancellationToken.None);
+        VectorTileSymbol[] normal =
+            assets.ResolveSymbols(features, 10, 1).Symbols;
+        VectorTileSymbol[] scaled =
+            assets.ResolveSymbols(features, 10, 2).Symbols;
+
+        Assert.HasCount(2, normal);
+        Assert.HasCount(2, scaled);
+        for (int index = 0; index < normal.Length; index++)
+        {
+            Assert.AreEqual(normal[index].Width * 2, scaled[index].Width, 0.000001);
+            Assert.AreEqual(normal[index].Height * 2, scaled[index].Height, 0.000001);
+        }
+        Assert.AreEqual(
+            (normal[1].OffsetX - normal[0].OffsetX) * 2,
+            scaled[1].OffsetX - scaled[0].OffsetX,
+            0.000001);
+    }
+
+    [TestMethod]
     public void InvalidStyleDocumentsFailClosed()
     {
         string[] invalidStyles =
