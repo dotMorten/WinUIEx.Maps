@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Text;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using WinUIEx.Maps.Rendering;
@@ -165,7 +166,7 @@ public sealed class AzureVectorStyleTests
     }
 
     [TestMethod]
-    public void UnsupportedPointStyleFormsAreTypedAndLinePlacementIsParsed()
+    public void AdvancedPointStylesAndLinePlacementAreParsed()
     {
         AzureSymbolStyle style = AzureSymbolStyle.Parse(Encoding.UTF8.GetBytes(
             """
@@ -210,7 +211,7 @@ public sealed class AzureVectorStyleTests
                 {
                   "type": "symbol", "source": "base", "source-layer": "poi",
                   "layout": {
-                    "icon-image": ["to-string", ["get", "bkt"]]
+                    "icon-image": ["number-format", ["get", "bkt"], {}]
                   }
                 },
                 {
@@ -225,8 +226,8 @@ public sealed class AzureVectorStyleTests
             }
             """));
 
-        Assert.AreEqual(2, style.LayerCount);
-        Assert.AreEqual(5, style.UnsupportedLayerCount);
+        Assert.AreEqual(4, style.LayerCount);
+        Assert.AreEqual(3, style.UnsupportedLayerCount);
         Assert.AreEqual(
             1,
             style.GetUnsupportedLayerCount(
@@ -236,11 +237,11 @@ public sealed class AzureVectorStyleTests
             style.GetUnsupportedLayerCount(
                 AzureStyleLayerParseResult.UnsupportedSymbolPlacement));
         Assert.AreEqual(
-            1,
+            0,
             style.GetUnsupportedLayerCount(
                 AzureStyleLayerParseResult.UnsupportedTextFit));
         Assert.AreEqual(
-            1,
+            0,
             style.GetUnsupportedLayerCount(
                 AzureStyleLayerParseResult.UnsupportedIconRotation));
         Assert.AreEqual(
@@ -286,6 +287,15 @@ public sealed class AzureVectorStyleTests
             AzureStyleIconResult.EvaluationFailure,
             style.Layers[1].EvaluateIcon(
                 context,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
                 out _,
                 out _,
                 out _,
@@ -372,6 +382,149 @@ public sealed class AzureVectorStyleTests
     }
 
     [TestMethod]
+    public async Task AdvancedSymbolStylesResolveAsOneFittedGroup()
+    {
+        AzureVectorStyleAssets assets = CreateAssets(
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "symbol",
+                "source-layer": "poi",
+                "layout": {
+                  "icon-image": "marker",
+                  "icon-rotate": 30,
+                  "icon-rotation-alignment": "viewport",
+                  "icon-text-fit": "both",
+                  "icon-text-fit-padding": [1, 2, 3, 4],
+                  "icon-allow-overlap": true,
+                  "icon-ignore-placement": false,
+                  "icon-optional": true,
+                  "text-field": ["to-string", ["get", "route"]],
+                  "text-font": ["Roboto-Regular"],
+                  "text-size": [
+                    "*",
+                    10,
+                    ["number", ["get", "shield-scale"], 0.8]
+                  ],
+                  "text-rotation-alignment": "viewport",
+                  "text-allow-overlap": false,
+                  "text-ignore-placement": true,
+                  "text-optional": false,
+                  "symbol-sort-key": 7
+                },
+                "paint": {
+                  "icon-color": "#804020",
+                  "icon-opacity": 0.5
+                }
+              }]
+            }
+            """,
+            """
+            {
+              "marker": {
+                "x": 0, "y": 0, "width": 10, "height": 10,
+                "pixelRatio": 1, "visible": true
+              }
+            }
+            """,
+            PixelBytes(Enumerable.Repeat((byte)9, 100).ToArray()),
+            10,
+            10);
+        assets.GlyphAtlas.AddRangeForTest(new AzureGlyphRange(
+            "Roboto-Regular",
+            0,
+            new Dictionary<int, AzureGlyph>
+            {
+                ['5'] = new('5', GlyphBitmap(8, 128), 2, 2, 0, 2, 3),
+            }));
+        VectorTileFeatureCollection features = CreateFeatures(
+            new VectorTileProperty(
+                "route",
+                VectorTileValue.FromUInt(5)),
+            new VectorTileProperty(
+                "shield-scale",
+                VectorTileValue.FromDouble(1.2)));
+
+        await assets.PrepareTexturesAsync(features, 10, CancellationToken.None);
+        VectorTileSymbol[] symbols = assets.ResolveSymbols(features, 10).Symbols;
+        VectorTileSymbol icon = Assert.ContainsSingle(
+            symbols.Where(symbol => symbol.Kind == VectorSymbolKind.Icon));
+        VectorTileSymbol glyph = Assert.ContainsSingle(
+            symbols.Where(symbol => symbol.Kind == VectorSymbolKind.Text));
+        double glyphLeft = glyph.OffsetX - (glyph.Width / 2);
+        double glyphTop = glyph.OffsetY - (glyph.Height / 2);
+
+        Assert.AreEqual(glyph.SymbolGroupId, icon.SymbolGroupId);
+        Assert.AreEqual(4, glyph.Width, 0.000001);
+        Assert.IsTrue(icon.ViewportAligned);
+        Assert.IsTrue(glyph.ViewportAligned);
+        Assert.AreEqual(Math.PI / 6, icon.Rotation, 0.000001);
+        Assert.AreEqual(
+            Math.Max(10, glyph.Width + 6),
+            icon.Width,
+            0.000001);
+        Assert.AreEqual(
+            Math.Max(10, glyph.Height + 4),
+            icon.Height,
+            0.000001);
+        Assert.AreEqual(glyphLeft + ((glyph.Width - 2) / 2), icon.OffsetX, 0.000001);
+        Assert.AreEqual(glyphTop + ((glyph.Height + 2) / 2), icon.OffsetY, 0.000001);
+        Assert.IsTrue(icon.IconPaint.IsTinted);
+        Assert.AreEqual(0.25098, icon.IconPaint.Color.X, 0.00001);
+        Assert.AreEqual(0.12549, icon.IconPaint.Color.Y, 0.00001);
+        Assert.AreEqual(0.062745, icon.IconPaint.Color.Z, 0.00001);
+        Assert.AreEqual(0.5, icon.IconPaint.Color.W, 0.00001);
+        Assert.AreEqual(7, icon.SortKey);
+        Assert.IsTrue(icon.AllowOverlap);
+        Assert.IsFalse(icon.IgnorePlacement);
+        Assert.IsTrue(icon.Optional);
+        Assert.AreEqual(7, glyph.SortKey);
+        Assert.IsFalse(glyph.AllowOverlap);
+        Assert.IsTrue(glyph.IgnorePlacement);
+        Assert.IsFalse(glyph.Optional);
+    }
+
+    [TestMethod]
+    public async Task TextFitIconIsSuppressedWhenItsTextDoesNotResolve()
+    {
+        AzureVectorStyleAssets assets = CreateAssets(
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "symbol",
+                "source-layer": "poi",
+                "layout": {
+                  "icon-image": "marker",
+                  "icon-text-fit": "both",
+                  "text-field": ["get", "missing"],
+                  "text-font": ["Roboto-Regular"]
+                }
+              }]
+            }
+            """,
+            """
+            {
+              "marker": {
+                "x": 0, "y": 0, "width": 10, "height": 10,
+                "pixelRatio": 1, "visible": true
+              }
+            }
+            """,
+            PixelBytes(Enumerable.Repeat((byte)9, 100).ToArray()),
+            10,
+            10);
+
+        await assets.PrepareTexturesAsync(
+            CreateFeatures(),
+            10,
+            CancellationToken.None);
+
+        Assert.IsEmpty(assets.ResolveSymbols(CreateFeatures(), 10).Symbols);
+    }
+
+    [TestMethod]
     public void LineLayersResolvePaintWidthCapsAndJoins()
     {
         AzureVectorStyleAssets assets = CreateAssets(
@@ -430,9 +583,9 @@ public sealed class AzureVectorStyleTests
     }
 
     [TestMethod]
-    public void PatternedAndDashedLineLayersAreExplicitlySkipped()
+    public async Task PatternedAndDashedLineLayersResolve()
     {
-        AzureSymbolStyle style = AzureSymbolStyle.Parse(Encoding.UTF8.GetBytes(
+        AzureVectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -445,7 +598,10 @@ public sealed class AzureVectorStyleTests
                 {
                   "type": "line",
                   "source-layer": "boundary",
-                  "paint": { "line-dasharray": [2, 1] }
+                  "paint": {
+                    "line-width": 4,
+                    "line-dasharray": [2, 1]
+                  }
                 },
                 {
                   "type": "line",
@@ -454,17 +610,93 @@ public sealed class AzureVectorStyleTests
                 }
               ]
             }
-            """));
+            """,
+            """
+            {
+              "road-pattern": {
+                "x": 0, "y": 0, "width": 4, "height": 2,
+                "pixelRatio": 2, "visible": true
+              }
+            }
+            """,
+            PixelBytes(1, 2, 3, 4, 5, 6, 7, 8),
+            4,
+            2);
+        VectorTileFeatureCollection features = new(
+        [
+            CreateLineFeature("road"),
+            CreateLineFeature("boundary"),
+        ]);
 
-        Assert.AreEqual(1, style.LayerCount);
+        VectorSpriteTextureData texture = Assert.ContainsSingle(
+            await assets.PrepareTexturesAsync(
+                features,
+                10,
+                CancellationToken.None));
+        VectorTileSymbol pattern = Assert.ContainsSingle(
+            assets.ResolveSymbols(features, 10).Symbols);
+        VectorLineResolution lines = assets.ResolveLines(features, 10);
+        VectorTileStyledLine dashed = Assert.ContainsSingle(
+            lines.Lines.Where(line => line.StyleLayerOrder == 1));
+
         Assert.AreEqual(
+            AzureSpriteAtlas.CreateTextureId("road", "road-pattern"),
+            texture.TextureId);
+        Assert.AreEqual(texture.TextureId, pattern.TextureId);
+        Assert.AreEqual(2, pattern.Width, 0.000001);
+        Assert.AreEqual(1, pattern.Height, 0.000001);
+        Assert.AreEqual(2, pattern.LineSpacing, 0.000001);
+        Assert.IsTrue(pattern.ContinuousLinePlacement);
+        Assert.AreSequenceEqual([8d, 4d], dashed.Style.DashArray!);
+        Assert.HasCount(2, lines.Lines);
+    }
+
+    [TestMethod]
+    public void AdvancedLineStylesResolve()
+    {
+        AzureVectorStyleAssets assets = CreateAssets(
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "line",
+                "source-layer": "road",
+                "layout": {
+                  "line-join": "miter",
+                  "line-miter-limit": 3
+                },
+                "paint": {
+                  "line-width": 6,
+                  "line-offset": 3,
+                  "line-gap-width": 4,
+                  "line-blur": 2,
+                  "line-gradient": [
+                    "interpolate", ["linear"], ["line-progress"],
+                    0, "#ff0000",
+                    0.5, "#00ff00",
+                    1, "#0000ff"
+                  ]
+                }
+              }]
+            }
+            """,
+            "{}",
+            PixelBytes(0),
             1,
-            style.GetUnsupportedLayerCount(
-                AzureStyleLayerParseResult.UnsupportedLinePattern));
-        Assert.AreEqual(
-            1,
-            style.GetUnsupportedLayerCount(
-                AzureStyleLayerParseResult.UnsupportedLineDashArray));
+            1);
+
+        VectorTileStyledLine line = Assert.ContainsSingle(
+            assets.ResolveLines(CreateLineFeatures(), 10).Lines);
+
+        Assert.AreEqual(6, line.Style.Width, 0.000001);
+        Assert.AreEqual(3, line.Style.Offset, 0.000001);
+        Assert.AreEqual(4, line.Style.GapWidth, 0.000001);
+        Assert.AreEqual(2, line.Style.Blur, 0.000001);
+        Assert.AreEqual(3, line.Style.MiterLimit, 0.000001);
+        Assert.AreEqual(VectorLineJoin.Miter, line.Style.Join);
+        Assert.HasCount(3, line.Style.Gradient);
+        Assert.AreEqual(new Vector4(1, 0, 0, 1), line.Style.Gradient[0].Color);
+        Assert.AreEqual(new Vector4(0, 0, 1, 1), line.Style.Gradient[2].Color);
     }
 
     [TestMethod]
@@ -509,9 +741,9 @@ public sealed class AzureVectorStyleTests
     }
 
     [TestMethod]
-    public void PatternedFillLayersAreExplicitlySkipped()
+    public async Task PatternedFillsAndExplicitOutlinesResolve()
     {
-        AzureSymbolStyle style = AzureSymbolStyle.Parse(Encoding.UTF8.GetBytes(
+        AzureVectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -519,22 +751,47 @@ public sealed class AzureVectorStyleTests
                 {
                   "type": "fill",
                   "source-layer": "land",
-                  "paint": { "fill-pattern": "land-pattern" }
-                },
-                {
-                  "type": "fill",
-                  "source-layer": "land",
-                  "paint": { "fill-color": "#ffffff" }
+                  "paint": {
+                    "fill-pattern": "land-pattern",
+                    "fill-opacity": 0.5,
+                    "fill-outline-color": "#33669980"
+                  }
                 }
               ]
             }
-            """));
+            """,
+            """
+            {
+              "land-pattern": {
+                "x": 0, "y": 0, "width": 4, "height": 2,
+                "pixelRatio": 2, "visible": true
+              }
+            }
+            """,
+            PixelBytes(1, 2, 3, 4, 5, 6, 7, 8),
+            4,
+            2);
+        VectorTileFeatureCollection features = CreatePolygonFeatures("park");
 
-        Assert.AreEqual(1, style.LayerCount);
-        Assert.AreEqual(
-            1,
-            style.GetUnsupportedLayerCount(
-                AzureStyleLayerParseResult.UnsupportedFillPattern));
+        VectorSpriteTextureData texture = Assert.ContainsSingle(
+            await assets.PrepareTexturesAsync(
+                features,
+                10,
+                CancellationToken.None));
+        VectorTileStyledPolygon polygon = Assert.ContainsSingle(
+            assets.ResolvePolygons(features, 10).Polygons);
+
+        Assert.AreEqual(texture.TextureId, polygon.Style.PatternTextureId);
+        Assert.AreEqual(2, polygon.Style.PatternWidth, 0.000001);
+        Assert.AreEqual(1, polygon.Style.PatternHeight, 0.000001);
+        Assert.AreEqual(0.5, polygon.Style.Opacity, 0.000001);
+        Assert.AreEqual(Vector4.Zero, polygon.Style.Color);
+        Vector4 outline = polygon.Style.OutlineColor!.Value;
+        Assert.AreEqual(0.050196, outline.X, 0.00001);
+        Assert.AreEqual(0.100392, outline.Y, 0.00001);
+        Assert.AreEqual(0.150588, outline.Z, 0.00001);
+        Assert.AreEqual(0.25098, outline.W, 0.00001);
+        Assert.IsNotEmpty(polygon.Rings);
     }
 
     [TestMethod]
@@ -880,6 +1137,17 @@ public sealed class AzureVectorStyleTests
                 []),
         ]);
     }
+
+    private static VectorTileFeature CreateLineFeature(string sourceLayer) =>
+        new(
+            sourceLayer,
+            VectorTileGeometryType.LineString,
+            [],
+            [],
+            [new VectorTileLine(
+                [new VectorTilePoint(0.1, 0.5),
+                 new VectorTilePoint(0.9, 0.5)])],
+            []);
 
     private static byte[] CreateAtlasPixels() =>
         PixelBytes(0, 1, 2, 3, 4, 5, 6, 7);

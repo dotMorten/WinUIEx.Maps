@@ -3,6 +3,7 @@ using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Security.Cryptography;
 using System.Text;
@@ -348,12 +349,84 @@ internal sealed class AzureVectorStyleAssets
             symbols,
             ref counts,
             CancellationToken.None);
+        ApplyTextFit(symbols);
         return new VectorSymbolResolution(
             symbols.ToArray(),
             counts.EvaluationFailureCount,
             counts.UnavailableSpriteCount,
             counts.ResolvedGlyphCount,
             counts.UnavailableGlyphCount);
+    }
+
+    private static void ApplyTextFit(List<VectorTileSymbol> symbols)
+    {
+        Dictionary<long, (double Left, double Top, double Right, double Bottom)>
+            textBounds = [];
+        foreach (VectorTileSymbol symbol in symbols)
+        {
+            if (symbol.Kind != VectorSymbolKind.Text ||
+                symbol.SymbolGroupId < 0)
+            {
+                continue;
+            }
+            double left = symbol.OffsetX - (symbol.Width / 2);
+            double top = symbol.OffsetY - (symbol.Height / 2);
+            double right = left + symbol.Width;
+            double bottom = top + symbol.Height;
+            if (textBounds.TryGetValue(symbol.SymbolGroupId, out var bounds))
+            {
+                textBounds[symbol.SymbolGroupId] = (
+                    Math.Min(bounds.Left, left),
+                    Math.Min(bounds.Top, top),
+                    Math.Max(bounds.Right, right),
+                    Math.Max(bounds.Bottom, bottom));
+            }
+            else
+            {
+                textBounds[symbol.SymbolGroupId] = (left, top, right, bottom);
+            }
+        }
+
+        for (int index = symbols.Count - 1; index >= 0; index--)
+        {
+            VectorTileSymbol icon = symbols[index];
+            if (icon.Kind != VectorSymbolKind.Icon ||
+                icon.TextFit == VectorIconTextFit.None)
+            {
+                continue;
+            }
+            if (!textBounds.TryGetValue(icon.SymbolGroupId, out var bounds))
+            {
+                symbols.RemoveAt(index);
+                continue;
+            }
+            Vector4 padding = icon.TextFitPadding;
+            double fittedLeft = bounds.Left - padding.W;
+            double fittedTop = bounds.Top - padding.X;
+            double fittedRight = bounds.Right + padding.Y;
+            double fittedBottom = bounds.Bottom + padding.Z;
+            bool fitWidth = icon.TextFit is
+                VectorIconTextFit.Width or VectorIconTextFit.Both;
+            bool fitHeight = icon.TextFit is
+                VectorIconTextFit.Height or VectorIconTextFit.Both;
+            double fittedWidth = fittedRight - fittedLeft;
+            double fittedHeight = fittedBottom - fittedTop;
+            symbols[index] = icon with
+            {
+                Width = fitWidth
+                    ? Math.Max(icon.Width, fittedWidth)
+                    : icon.Width,
+                Height = fitHeight
+                    ? Math.Max(icon.Height, fittedHeight)
+                    : icon.Height,
+                OffsetX = fitWidth
+                    ? (fittedLeft + fittedRight) / 2
+                    : icon.OffsetX,
+                OffsetY = fitHeight
+                    ? (fittedTop + fittedBottom) / 2
+                    : icon.OffsetY,
+            };
+        }
     }
 
     internal VectorLineResolution ResolveLines(
@@ -805,20 +878,25 @@ internal sealed class AzureVectorStyleAssets
                             line.Points,
                             text,
                             nextLabelId++,
+                            CreateSymbolGroupId(layer.Order, line.Points),
                             symbols,
                             ref counts);
                     }
                 }
                 else
                 {
-                    foreach (VectorTilePoint point in feature.Points)
+                    for (int pointIndex = 0;
+                        pointIndex < feature.Points.Length;
+                        pointIndex++)
                     {
+                        VectorTilePoint point = feature.Points[pointIndex];
                         AddTextSymbols(
                             layer.Order,
                             point,
                             null,
                             text,
                             nextLabelId++,
+                            CreateSymbolGroupId(layer.Order, feature, pointIndex),
                             symbols,
                             ref counts);
                     }
@@ -833,6 +911,7 @@ internal sealed class AzureVectorStyleAssets
         VectorTilePoint[]? linePoints,
         AzureTextStyle text,
         int labelId,
+        long symbolGroupId,
         List<VectorTileSymbol> symbols,
         ref VectorStyleResolutionCounts counts)
     {
@@ -917,7 +996,13 @@ internal sealed class AzureVectorStyleAssets
                     paint,
                     labelId,
                     linePoints,
-                    text.LineSpacing));
+                    text.LineSpacing,
+                    ViewportAligned: text.ViewportAligned,
+                    SymbolGroupId: symbolGroupId,
+                    SortKey: text.SortKey,
+                    AllowOverlap: text.AllowOverlap,
+                    IgnorePlacement: text.IgnorePlacement,
+                    Optional: text.Optional));
                 counts.ResolvedGlyphCount++;
             }
         }
@@ -997,7 +1082,16 @@ internal sealed class AzureVectorStyleAssets
                         out double offsetY,
                         out double anchorX,
                         out double anchorY,
-                        out double spacing);
+                        out double spacing,
+                        out double rotation,
+                        out bool viewportAligned,
+                        out VectorIconPaint iconPaint,
+                        out VectorIconTextFit textFit,
+                        out Vector4 textFitPadding,
+                        out double sortKey,
+                        out bool allowOverlap,
+                        out bool ignorePlacement,
+                        out bool optional);
                 if (icon != AzureStyleIconResult.Resolved)
                 {
                     if (icon == AzureStyleIconResult.EvaluationFailure)
@@ -1065,13 +1159,28 @@ internal sealed class AzureVectorStyleAssets
                             displayOffsetX,
                             displayOffsetY,
                             LinePoints: line.Points,
-                            LineSpacing: spacing));
+                            LineSpacing: spacing,
+                            Rotation: rotation,
+                            ViewportAligned: viewportAligned,
+                            IconPaint: iconPaint,
+                            SymbolGroupId: CreateSymbolGroupId(
+                                layer.Order,
+                                line.Points),
+                            SortKey: sortKey,
+                            AllowOverlap: allowOverlap,
+                            IgnorePlacement: ignorePlacement,
+                            Optional: optional,
+                            TextFit: textFit,
+                            TextFitPadding: textFitPadding));
                     }
                 }
                 else
                 {
-                    foreach (VectorTilePoint point in feature.Points)
+                    for (int pointIndex = 0;
+                        pointIndex < feature.Points.Length;
+                        pointIndex++)
                     {
+                        VectorTilePoint point = feature.Points[pointIndex];
                         symbols.Add(new VectorTileSymbol(
                             layer.Order,
                             point.X,
@@ -1080,13 +1189,34 @@ internal sealed class AzureVectorStyleAssets
                             width,
                             height,
                             displayOffsetX,
-                            displayOffsetY));
+                            displayOffsetY,
+                            Rotation: rotation,
+                            ViewportAligned: viewportAligned,
+                            IconPaint: iconPaint,
+                            SymbolGroupId: CreateSymbolGroupId(
+                                layer.Order,
+                                feature,
+                                pointIndex),
+                            SortKey: sortKey,
+                            AllowOverlap: allowOverlap,
+                            IgnorePlacement: ignorePlacement,
+                            Optional: optional,
+                            TextFit: textFit,
+                            TextFitPadding: textFitPadding));
                     }
                 }
             }
         }
         return counts;
     }
+
+    private static long CreateSymbolGroupId(
+        int order,
+        object identity,
+        int geometryIndex = 0) =>
+        ((long)(uint)RuntimeHelpers.GetHashCode(identity) << 32) |
+        ((long)(order & 0xFFFF) << 16) |
+        (uint)(geometryIndex & 0xFFFF);
 
     private struct VectorStyleResolutionCounts
     {
@@ -1394,23 +1524,6 @@ internal sealed class AzureSymbolStyle
             return AzureStyleLayerParseResult.InvalidDefinition;
         }
 
-        if (layout.TryGetProperty("icon-text-fit", out JsonElement iconTextFit) &&
-            (iconTextFit.ValueKind != JsonValueKind.String ||
-             !string.Equals(
-                 iconTextFit.GetString(),
-                 "none",
-                 StringComparison.Ordinal)))
-        {
-            return AzureStyleLayerParseResult.UnsupportedTextFit;
-        }
-        if (layout.TryGetProperty("icon-rotate", out JsonElement iconRotate) &&
-            (!iconRotate.TryGetDouble(out double rotation) ||
-             !double.IsFinite(rotation) ||
-             rotation != 0))
-        {
-            return AzureStyleLayerParseResult.UnsupportedIconRotation;
-        }
-
         if (!layout.TryGetProperty("icon-image", out JsonElement iconImage) ||
             !AzureStyleExpression.TryParse(iconImage, out AzureStyleExpression? iconImageExpression))
         {
@@ -1448,7 +1561,72 @@ internal sealed class AzureSymbolStyle
                 layout,
                 "symbol-spacing",
                 AzureStyleValue.FromNumber(250),
-                out AzureStyleExpression symbolSpacing))
+                out AzureStyleExpression symbolSpacing) ||
+            !TryParseOptionalExpression(
+                layout,
+                "icon-rotate",
+                AzureStyleValue.FromNumber(0),
+                out AzureStyleExpression iconRotate) ||
+            !TryParseOptionalExpression(
+                layout,
+                "icon-rotation-alignment",
+                AzureStyleValue.FromString("auto"),
+                out AzureStyleExpression iconRotationAlignment) ||
+            !TryParseOptionalExpression(
+                layout,
+                "icon-text-fit",
+                AzureStyleValue.FromString("none"),
+                out AzureStyleExpression iconTextFit) ||
+            !TryParseOptionalExpression(
+                layout,
+                "icon-text-fit-padding",
+                AzureStyleValue.FromArray(
+                [
+                    AzureStyleValue.FromNumber(0),
+                    AzureStyleValue.FromNumber(0),
+                    AzureStyleValue.FromNumber(0),
+                    AzureStyleValue.FromNumber(0),
+                ]),
+                out AzureStyleExpression iconTextFitPadding) ||
+            !TryParseOptionalExpression(
+                layout,
+                "symbol-sort-key",
+                AzureStyleValue.FromNumber(0),
+                out AzureStyleExpression symbolSortKey) ||
+            !TryParseOptionalExpression(
+                layout,
+                "icon-allow-overlap",
+                AzureStyleValue.FromBoolean(false),
+                out AzureStyleExpression iconAllowOverlap) ||
+            !TryParseOptionalExpression(
+                layout,
+                "icon-ignore-placement",
+                AzureStyleValue.FromBoolean(false),
+                out AzureStyleExpression iconIgnorePlacement) ||
+            !TryParseOptionalExpression(
+                layout,
+                "icon-optional",
+                AzureStyleValue.FromBoolean(false),
+                out AzureStyleExpression iconOptional))
+        {
+            return AzureStyleLayerParseResult.UnsupportedExpression;
+        }
+        JsonElement paint = default;
+        bool hasPaint = layer.TryGetProperty("paint", out paint);
+        if (hasPaint && paint.ValueKind != JsonValueKind.Object)
+        {
+            return AzureStyleLayerParseResult.InvalidDefinition;
+        }
+        if (!TryParseOptionalExpression(
+                hasPaint ? paint : default,
+                "icon-opacity",
+                AzureStyleValue.FromNumber(1),
+                out AzureStyleExpression iconOpacity) ||
+            !TryParseOptionalExpression(
+                hasPaint ? paint : default,
+                "icon-color",
+                AzureStyleValue.Null,
+                out AzureStyleExpression iconColor))
         {
             return AzureStyleLayerParseResult.UnsupportedExpression;
         }
@@ -1492,7 +1670,17 @@ internal sealed class AzureSymbolStyle
             iconImageExpression,
             iconSize,
             iconOffset,
-            iconAnchor);
+            iconAnchor,
+            iconRotate,
+            iconRotationAlignment,
+            iconTextFit,
+            iconTextFitPadding,
+            symbolSortKey,
+            iconAllowOverlap,
+            iconIgnorePlacement,
+            iconOptional,
+            iconOpacity,
+            iconColor);
         return AzureStyleLayerParseResult.Parsed;
     }
 
@@ -1577,9 +1765,34 @@ internal sealed class AzureSymbolStyle
                 out AzureStyleExpression textTransform) ||
             !TryParseOptionalExpression(
                 layout,
+                "text-rotation-alignment",
+                AzureStyleValue.FromString("auto"),
+                out AzureStyleExpression textRotationAlignment) ||
+            !TryParseOptionalExpression(
+                layout,
                 "symbol-spacing",
                 AzureStyleValue.FromNumber(250),
-                out AzureStyleExpression symbolSpacing))
+                out AzureStyleExpression symbolSpacing) ||
+            !TryParseOptionalExpression(
+                layout,
+                "symbol-sort-key",
+                AzureStyleValue.FromNumber(0),
+                out AzureStyleExpression symbolSortKey) ||
+            !TryParseOptionalExpression(
+                layout,
+                "text-allow-overlap",
+                AzureStyleValue.FromBoolean(false),
+                out AzureStyleExpression textAllowOverlap) ||
+            !TryParseOptionalExpression(
+                layout,
+                "text-ignore-placement",
+                AzureStyleValue.FromBoolean(false),
+                out AzureStyleExpression textIgnorePlacement) ||
+            !TryParseOptionalExpression(
+                layout,
+                "text-optional",
+                AzureStyleValue.FromBoolean(false),
+                out AzureStyleExpression textOptional))
         {
             return AzureStyleLayerParseResult.UnsupportedExpression;
         }
@@ -1659,9 +1872,14 @@ internal sealed class AzureSymbolStyle
             textRadialOffset,
             textLetterSpacing,
             textTransform,
+            textRotationAlignment,
             textColor,
             textHaloColor,
-            textHaloWidth);
+            textHaloWidth,
+            symbolSortKey,
+            textAllowOverlap,
+            textIgnorePlacement,
+            textOptional);
         return AzureStyleLayerParseResult.Parsed;
     }
 
@@ -2096,7 +2314,17 @@ internal sealed class AzureSymbolStyleLayer(
     AzureStyleExpression iconImage,
     AzureStyleExpression iconSize,
     AzureStyleExpression iconOffset,
-    AzureStyleExpression iconAnchor)
+    AzureStyleExpression iconAnchor,
+    AzureStyleExpression iconRotate,
+    AzureStyleExpression iconRotationAlignment,
+    AzureStyleExpression iconTextFit,
+    AzureStyleExpression iconTextFitPadding,
+    AzureStyleExpression symbolSortKey,
+    AzureStyleExpression iconAllowOverlap,
+    AzureStyleExpression iconIgnorePlacement,
+    AzureStyleExpression iconOptional,
+    AzureStyleExpression iconOpacity,
+    AzureStyleExpression iconColor)
 {
     internal int Order { get; } = order;
 
@@ -2142,7 +2370,16 @@ internal sealed class AzureSymbolStyleLayer(
         out double offsetY,
         out double anchorX,
         out double anchorY,
-        out double spacing)
+        out double spacing,
+        out double rotation,
+        out bool viewportAligned,
+        out VectorIconPaint paint,
+        out VectorIconTextFit textFit,
+        out Vector4 textFitPadding,
+        out double sortKey,
+        out bool allowOverlap,
+        out bool ignorePlacement,
+        out bool optional)
     {
         spriteName = string.Empty;
         size = 0;
@@ -2151,6 +2388,15 @@ internal sealed class AzureSymbolStyleLayer(
         anchorX = 0;
         anchorY = 0;
         spacing = 0;
+        rotation = 0;
+        viewportAligned = false;
+        paint = VectorIconPaint.Default;
+        textFit = VectorIconTextFit.None;
+        textFitPadding = default;
+        sortKey = 0;
+        allowOverlap = false;
+        ignorePlacement = false;
+        optional = false;
         if (!iconImage.TryEvaluate(context, out AzureStyleValue image) ||
             image.Kind != AzureStyleValueKind.String)
         {
@@ -2184,12 +2430,154 @@ internal sealed class AzureSymbolStyleLayer(
             !symbolSpacing.TryEvaluate(context, out AzureStyleValue spacingValue) ||
             !spacingValue.TryGetNumber(out spacing) ||
             !double.IsFinite(spacing) ||
-            spacing <= 0)
+            spacing <= 0 ||
+            !iconRotate.TryEvaluate(context, out AzureStyleValue rotationValue) ||
+            !rotationValue.TryGetNumber(out rotation) ||
+            !double.IsFinite(rotation) ||
+            !iconRotationAlignment.TryEvaluate(
+                context,
+                out AzureStyleValue alignmentValue) ||
+            !TryGetViewportAlignment(
+                alignmentValue,
+                Placement,
+                out viewportAligned) ||
+            !iconTextFit.TryEvaluate(context, out AzureStyleValue fitValue) ||
+            fitValue.Kind != AzureStyleValueKind.String ||
+            !TryGetTextFit(fitValue.StringValue, out textFit) ||
+            !iconTextFitPadding.TryEvaluate(
+                context,
+                out AzureStyleValue paddingValue) ||
+            !TryGetTextFitPadding(paddingValue, out textFitPadding) ||
+            !symbolSortKey.TryEvaluate(context, out AzureStyleValue sortValue) ||
+            !sortValue.TryGetNumber(out sortKey) ||
+            !double.IsFinite(sortKey) ||
+            !TryEvaluateBoolean(
+                iconAllowOverlap,
+                context,
+                out allowOverlap) ||
+            !TryEvaluateBoolean(
+                iconIgnorePlacement,
+                context,
+                out ignorePlacement) ||
+            !TryEvaluateBoolean(iconOptional, context, out optional) ||
+            !iconOpacity.TryEvaluate(context, out AzureStyleValue opacityValue) ||
+            !opacityValue.TryGetNumber(out double opacity) ||
+            !double.IsFinite(opacity) ||
+            !iconColor.TryEvaluate(context, out AzureStyleValue colorValue) ||
+            !TryGetIconPaint(colorValue, out paint))
         {
             return AzureStyleIconResult.EvaluationFailure;
         }
         spriteName = image.StringValue;
+        rotation = rotation * Math.PI / 180;
+        opacity = Math.Clamp(opacity, 0, 1);
+        paint = paint with
+        {
+            Color = paint.Color * (float)opacity,
+        };
+        if (paint.Color.W <= 0)
+        {
+            return AzureStyleIconResult.NoIcon;
+        }
         return AzureStyleIconResult.Resolved;
+    }
+
+    private static bool TryGetViewportAlignment(
+        AzureStyleValue value,
+        AzureSymbolPlacement placement,
+        out bool viewportAligned)
+    {
+        viewportAligned = value.StringValue switch
+        {
+            "viewport" => true,
+            "map" => false,
+            "auto" => placement == AzureSymbolPlacement.Point,
+            _ => false,
+        };
+        return value.Kind == AzureStyleValueKind.String &&
+            value.StringValue is "viewport" or "map" or "auto";
+    }
+
+    private static bool TryEvaluateBoolean(
+        AzureStyleExpression expression,
+        AzureStyleEvaluationContext context,
+        out bool value)
+    {
+        value = false;
+        if (!expression.TryEvaluate(context, out AzureStyleValue result) ||
+            result.Kind != AzureStyleValueKind.Boolean)
+        {
+            return false;
+        }
+        value = result.BooleanValue;
+        return true;
+    }
+
+    private static bool TryGetTextFit(
+        string? value,
+        out VectorIconTextFit fit)
+    {
+        fit = value switch
+        {
+            "none" => VectorIconTextFit.None,
+            "width" => VectorIconTextFit.Width,
+            "height" => VectorIconTextFit.Height,
+            "both" => VectorIconTextFit.Both,
+            _ => (VectorIconTextFit)(-1),
+        };
+        return (int)fit >= 0;
+    }
+
+    private static bool TryGetTextFitPadding(
+        AzureStyleValue value,
+        out Vector4 padding)
+    {
+        padding = default;
+        if (value is not
+            {
+                Kind: AzureStyleValueKind.Array,
+                ArrayValue.Length: 4
+            } ||
+            value.ArrayValue is not { } values ||
+            !values[0].TryGetNumber(out double top) ||
+            !values[1].TryGetNumber(out double right) ||
+            !values[2].TryGetNumber(out double bottom) ||
+            !values[3].TryGetNumber(out double left) ||
+            !double.IsFinite(top) ||
+            !double.IsFinite(right) ||
+            !double.IsFinite(bottom) ||
+            !double.IsFinite(left) ||
+            top < 0 ||
+            right < 0 ||
+            bottom < 0 ||
+            left < 0)
+        {
+            return false;
+        }
+        padding = new Vector4(
+            (float)top,
+            (float)right,
+            (float)bottom,
+            (float)left);
+        return true;
+    }
+
+    private static bool TryGetIconPaint(
+        AzureStyleValue value,
+        out VectorIconPaint paint)
+    {
+        if (value.Kind == AzureStyleValueKind.Null)
+        {
+            paint = VectorIconPaint.Default;
+            return true;
+        }
+        if (!AzureTextStyleLayer.TryParseColor(value, out Vector4 color))
+        {
+            paint = default;
+            return false;
+        }
+        paint = new VectorIconPaint(color, true);
+        return true;
     }
 
     private static bool TryGetAnchorOffsets(
@@ -2226,6 +2614,15 @@ internal sealed class AzureSymbolStyleLayer(
         iconSize.CollectZoomStops(stops);
         iconOffset.CollectZoomStops(stops);
         iconAnchor.CollectZoomStops(stops);
+        iconRotate.CollectZoomStops(stops);
+        iconTextFit.CollectZoomStops(stops);
+        iconTextFitPadding.CollectZoomStops(stops);
+        symbolSortKey.CollectZoomStops(stops);
+        iconAllowOverlap.CollectZoomStops(stops);
+        iconIgnorePlacement.CollectZoomStops(stops);
+        iconOptional.CollectZoomStops(stops);
+        iconOpacity.CollectZoomStops(stops);
+        iconColor.CollectZoomStops(stops);
     }
 }
 
@@ -2637,9 +3034,14 @@ internal sealed class AzureTextStyleLayer(
     AzureStyleExpression textRadialOffset,
     AzureStyleExpression textLetterSpacing,
     AzureStyleExpression textTransform,
+    AzureStyleExpression textRotationAlignment,
     AzureStyleExpression textColor,
     AzureStyleExpression textHaloColor,
-    AzureStyleExpression textHaloWidth)
+    AzureStyleExpression textHaloWidth,
+    AzureStyleExpression symbolSortKey,
+    AzureStyleExpression textAllowOverlap,
+    AzureStyleExpression textIgnorePlacement,
+    AzureStyleExpression textOptional)
 {
     internal int Order { get; } = order;
 
@@ -2714,6 +3116,13 @@ internal sealed class AzureTextStyleLayer(
             !double.IsFinite(letterSpacing) ||
             !textTransform.TryEvaluate(context, out AzureStyleValue transformValue) ||
             transformValue.Kind != AzureStyleValueKind.String ||
+            !textRotationAlignment.TryEvaluate(
+                context,
+                out AzureStyleValue alignmentValue) ||
+            !TryGetViewportAlignment(
+                alignmentValue,
+                Placement,
+                out bool viewportAligned) ||
             !textColor.TryEvaluate(context, out AzureStyleValue colorValue) ||
             !TryParseColor(colorValue, out Vector4 color) ||
             !textHaloColor.TryEvaluate(context, out AzureStyleValue haloColorValue) ||
@@ -2724,7 +3133,19 @@ internal sealed class AzureTextStyleLayer(
             !symbolSpacing.TryEvaluate(context, out AzureStyleValue spacingValue) ||
             !spacingValue.TryGetNumber(out double spacing) ||
             !double.IsFinite(spacing) ||
-            spacing <= 0)
+            spacing <= 0 ||
+            !symbolSortKey.TryEvaluate(context, out AzureStyleValue sortValue) ||
+            !sortValue.TryGetNumber(out double sortKey) ||
+            !double.IsFinite(sortKey) ||
+            !TryEvaluateBoolean(
+                textAllowOverlap,
+                context,
+                out bool allowOverlap) ||
+            !TryEvaluateBoolean(
+                textIgnorePlacement,
+                context,
+                out bool ignorePlacement) ||
+            !TryEvaluateBoolean(textOptional, context, out bool optional))
         {
             return AzureStyleTextResult.EvaluationFailure;
         }
@@ -2761,7 +3182,12 @@ internal sealed class AzureTextStyleLayer(
             radialOffset,
             letterSpacing,
             new VectorTextPaint(color, haloColor, haloWidth),
-            spacing);
+            spacing,
+            sortKey,
+            allowOverlap,
+            ignorePlacement,
+            optional,
+            viewportAligned);
         return AzureStyleTextResult.Resolved;
     }
 
@@ -2781,9 +3207,45 @@ internal sealed class AzureTextStyleLayer(
         textRadialOffset.CollectZoomStops(stops);
         textLetterSpacing.CollectZoomStops(stops);
         textTransform.CollectZoomStops(stops);
+        textRotationAlignment.CollectZoomStops(stops);
         textColor.CollectZoomStops(stops);
         textHaloColor.CollectZoomStops(stops);
         textHaloWidth.CollectZoomStops(stops);
+        symbolSortKey.CollectZoomStops(stops);
+        textAllowOverlap.CollectZoomStops(stops);
+        textIgnorePlacement.CollectZoomStops(stops);
+        textOptional.CollectZoomStops(stops);
+    }
+
+    private static bool TryEvaluateBoolean(
+        AzureStyleExpression expression,
+        AzureStyleEvaluationContext context,
+        out bool value)
+    {
+        value = false;
+        if (!expression.TryEvaluate(context, out AzureStyleValue result) ||
+            result.Kind != AzureStyleValueKind.Boolean)
+        {
+            return false;
+        }
+        value = result.BooleanValue;
+        return true;
+    }
+
+    private static bool TryGetViewportAlignment(
+        AzureStyleValue value,
+        AzureSymbolPlacement placement,
+        out bool viewportAligned)
+    {
+        viewportAligned = value.StringValue switch
+        {
+            "viewport" => true,
+            "map" => false,
+            "auto" => placement == AzureSymbolPlacement.Point,
+            _ => false,
+        };
+        return value.Kind == AzureStyleValueKind.String &&
+            value.StringValue is "viewport" or "map" or "auto";
     }
 
     private static bool TryGetFontStack(
@@ -2914,7 +3376,12 @@ internal readonly record struct AzureTextStyle(
     double RadialOffset,
     double LetterSpacing,
     VectorTextPaint Paint,
-    double LineSpacing);
+    double LineSpacing,
+    double SortKey,
+    bool AllowOverlap,
+    bool IgnorePlacement,
+    bool Optional,
+    bool ViewportAligned);
 
 internal enum AzureSymbolPlacement
 {
@@ -3001,6 +3468,9 @@ internal enum AzureStyleExpressionOperator
     InterpolateLinear,
     Let,
     Var,
+    ToString,
+    Multiply,
+    Number,
 }
 
 /// <summary>
@@ -3559,10 +4029,14 @@ internal sealed class AzureStyleExpression
             "concat" => AzureStyleExpressionOperator.Concat,
             "match" => AzureStyleExpressionOperator.Match,
             "step" => AzureStyleExpressionOperator.Step,
+            "to-string" => AzureStyleExpressionOperator.ToString,
+            "*" => AzureStyleExpressionOperator.Multiply,
+            "number" => AzureStyleExpressionOperator.Number,
             _ => default,
         };
         return operation is "==" or "!" or "all" or "any" or "in" or
-            "case" or "coalesce" or "concat" or "match" or "step";
+            "case" or "coalesce" or "concat" or "match" or "step" or
+            "to-string" or "*" or "number";
     }
 
     private static bool HasValidArgumentCount(
@@ -3580,6 +4054,9 @@ internal sealed class AzureStyleExpression
                 count >= 1,
             AzureStyleExpressionOperator.Match => count >= 4 && (count & 1) == 0,
             AzureStyleExpressionOperator.Step => count >= 4 && (count & 1) == 0,
+            AzureStyleExpressionOperator.ToString => count == 1,
+            AzureStyleExpressionOperator.Multiply => count >= 2,
+            AzureStyleExpressionOperator.Number => count >= 1,
             _ => false,
         };
 
@@ -3656,6 +4133,12 @@ internal sealed class AzureStyleExpression
                 return TryEvaluateInterpolate(context, variables, out value);
             case AzureStyleExpressionOperator.Let:
                 return TryEvaluateLet(context, variables, out value);
+            case AzureStyleExpressionOperator.ToString:
+                return TryEvaluateToString(context, variables, out value);
+            case AzureStyleExpressionOperator.Multiply:
+                return TryEvaluateMultiply(context, variables, out value);
+            case AzureStyleExpressionOperator.Number:
+                return TryEvaluateNumber(context, variables, out value);
             default:
                 value = default;
                 return false;
@@ -3825,6 +4308,86 @@ internal sealed class AzureStyleExpression
         }
         value = AzureStyleValue.FromString(builder.ToString());
         return true;
+    }
+
+    private bool TryEvaluateToString(
+        AzureStyleEvaluationContext context,
+        Dictionary<string, AzureStyleValue>? variables,
+        out AzureStyleValue value)
+    {
+        if (!TryEvaluateArgument(0, context, variables, out AzureStyleValue input))
+        {
+            value = default;
+            return false;
+        }
+        string? text = input.Kind switch
+        {
+            AzureStyleValueKind.Null => string.Empty,
+            AzureStyleValueKind.Boolean =>
+                input.BooleanValue ? "true" : "false",
+            AzureStyleValueKind.Number =>
+                input.NumberValue.ToString(
+                    "G",
+                    CultureInfo.InvariantCulture),
+            AzureStyleValueKind.String => input.StringValue,
+            _ => null,
+        };
+        if (text is null || text.Length > MaximumStringLength)
+        {
+            value = default;
+            return false;
+        }
+        value = AzureStyleValue.FromString(text);
+        return true;
+    }
+
+    private bool TryEvaluateMultiply(
+        AzureStyleEvaluationContext context,
+        Dictionary<string, AzureStyleValue>? variables,
+        out AzureStyleValue value)
+    {
+        double product = 1;
+        foreach (AzureStyleExpression argument in _arguments)
+        {
+            if (!argument.TryEvaluate(
+                    context,
+                    variables,
+                    out AzureStyleValue factor) ||
+                !factor.TryGetNumber(out double number))
+            {
+                value = default;
+                return false;
+            }
+            product *= number;
+            if (!double.IsFinite(product))
+            {
+                value = default;
+                return false;
+            }
+        }
+        value = AzureStyleValue.FromNumber(product);
+        return true;
+    }
+
+    private bool TryEvaluateNumber(
+        AzureStyleEvaluationContext context,
+        Dictionary<string, AzureStyleValue>? variables,
+        out AzureStyleValue value)
+    {
+        foreach (AzureStyleExpression argument in _arguments)
+        {
+            if (argument.TryEvaluate(
+                    context,
+                    variables,
+                    out AzureStyleValue candidate) &&
+                candidate.Kind == AzureStyleValueKind.Number)
+            {
+                value = candidate;
+                return true;
+            }
+        }
+        value = default;
+        return false;
     }
 
     private bool TryEvaluateMatch(

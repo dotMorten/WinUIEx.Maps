@@ -83,6 +83,24 @@ public sealed class MapControlEventSourceTests
             6, 1, 18, 8, 2, 0.25, 1);
         MapControlEventSource.Log.VectorLineSymbolPlacementSummary(
             6, 240, 180, 150);
+        MapControlEventSource.Log.VectorGeometryFrameCacheSummary(
+            6, 1, 1, 750000, 12000000);
+        MapControlEventSource.Log.VectorGeometryDeferredRebuildSummary(
+            6, 1, 2, 96, -24);
+        MapControlEventSource.Log.VectorGeometryPreparationSummary(
+            6, 1, 750000, 120000, 85.5, 4.25);
+        MapControlEventSource.Log.VectorLabelTextureReadinessSummary(
+            6, 12, 84);
+        MapControlEventSource.Log.VectorLabelFadeSummary(
+            6, 8, 42);
+        MapControlEventSource.Log.VectorLineDecorationSummary(
+            6, 2, 14, 112);
+        MapControlEventSource.Log.VectorPolygonDecorationSummary(
+            6, 9, 180, 72);
+        MapControlEventSource.Log.VectorAdvancedLineStyleSummary(
+            6, 3, 4, 5, 6, 7);
+        MapControlEventSource.Log.VectorAdvancedSymbolStyleSummary(
+            6, 8, 9, 10, 11, 12);
 
         CapturedEvent wave = listener.Single(11);
         Assert.AreEqual("TileWaveStart", wave.Name);
@@ -268,6 +286,80 @@ public sealed class MapControlEventSourceTests
         Assert.AreEqual(240, lineSymbols.Payload[1]);
         Assert.AreEqual(180, lineSymbols.Payload[2]);
         Assert.AreEqual(150, lineSymbols.Payload[3]);
+        CapturedEvent geometryFrameCache = listener.Single(61);
+        Assert.AreSequenceEqual(
+            ["style", "geometryKind", "reused", "vertexCount", "retainedBytes"],
+            geometryFrameCache.PayloadNames);
+        Assert.AreEqual(1, geometryFrameCache.Payload[1]);
+        Assert.AreEqual(1, geometryFrameCache.Payload[2]);
+        Assert.AreEqual(750000, geometryFrameCache.Payload[3]);
+        Assert.AreEqual(12000000L, geometryFrameCache.Payload[4]);
+        CapturedEvent deferredGeometry = listener.Single(62);
+        Assert.AreSequenceEqual(
+            ["style", "geometryKind", "pendingTileCount", "offsetX", "offsetY"],
+            deferredGeometry.PayloadNames);
+        Assert.AreEqual(2, deferredGeometry.Payload[2]);
+        Assert.AreEqual(96d, deferredGeometry.Payload[3]);
+        Assert.AreEqual(-24d, deferredGeometry.Payload[4]);
+        CapturedEvent preparedGeometry = listener.Single(63);
+        Assert.AreSequenceEqual(
+            ["style", "accepted", "lineVertexCount", "polygonVertexCount",
+             "preparationMilliseconds", "uploadMilliseconds"],
+            preparedGeometry.PayloadNames);
+        Assert.AreEqual(1, preparedGeometry.Payload[1]);
+        Assert.AreEqual(750000, preparedGeometry.Payload[2]);
+        Assert.AreEqual(120000, preparedGeometry.Payload[3]);
+        Assert.AreEqual(85.5d, preparedGeometry.Payload[4]);
+        CapturedEvent labelReadiness = listener.Single(64);
+        Assert.AreSequenceEqual(
+            ["style", "pendingLabelCount", "pendingGlyphCount"],
+            labelReadiness.PayloadNames);
+        Assert.AreEqual(12, labelReadiness.Payload[1]);
+        Assert.AreEqual(84, labelReadiness.Payload[2]);
+        CapturedEvent labelFade = listener.Single(65);
+        Assert.AreSequenceEqual(
+            ["style", "fadingLabelCount", "fadingGlyphCount"],
+            labelFade.PayloadNames);
+        Assert.AreEqual(8, labelFade.Payload[1]);
+        Assert.AreEqual(42, labelFade.Payload[2]);
+        CapturedEvent lineDecoration = listener.Single(66);
+        Assert.AreSequenceEqual(
+            ["style", "decorationKind", "candidateLineCount",
+             "drawablePrimitiveCount"],
+            lineDecoration.PayloadNames);
+        Assert.AreEqual(2, lineDecoration.Payload[1]);
+        Assert.AreEqual(14, lineDecoration.Payload[2]);
+        Assert.AreEqual(112, lineDecoration.Payload[3]);
+        CapturedEvent polygonDecoration = listener.Single(67);
+        Assert.AreSequenceEqual(
+            ["style", "patternedPolygonCount", "patternTriangleCount",
+             "outlineTriangleCount"],
+            polygonDecoration.PayloadNames);
+        Assert.AreEqual(9, polygonDecoration.Payload[1]);
+        Assert.AreEqual(180, polygonDecoration.Payload[2]);
+        Assert.AreEqual(72, polygonDecoration.Payload[3]);
+        CapturedEvent advancedLine = listener.Single(68);
+        Assert.AreSequenceEqual(
+            ["style", "offsetLineCount", "gapLineCount",
+             "gradientLineCount", "blurredLineCount", "miterLineCount"],
+            advancedLine.PayloadNames);
+        Assert.AreEqual(3, advancedLine.Payload[1]);
+        Assert.AreEqual(4, advancedLine.Payload[2]);
+        Assert.AreEqual(5, advancedLine.Payload[3]);
+        Assert.AreEqual(6, advancedLine.Payload[4]);
+        Assert.AreEqual(7, advancedLine.Payload[5]);
+        CapturedEvent advancedSymbol = listener.Single(69);
+        Assert.AreSequenceEqual(
+            ["style", "rotatedIconCount", "tintedIconCount",
+             "fittedIconCount", "sortedSymbolCount",
+             "collisionOverrideSymbolCount"],
+            advancedSymbol.PayloadNames);
+        Assert.AreEqual(8, advancedSymbol.Payload[1]);
+        Assert.AreEqual(9, advancedSymbol.Payload[2]);
+        Assert.AreEqual(10, advancedSymbol.Payload[3]);
+        Assert.AreEqual(11, advancedSymbol.Payload[4]);
+        Assert.AreEqual(12, advancedSymbol.Payload[5]);
+        Assert.AreEqual(4.25d, preparedGeometry.Payload[5]);
         Assert.DoesNotContain(captured => captured.Id == 0, listener.Events);
     }
 
@@ -281,7 +373,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 60),
+            Enumerable.Range(1, 69),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }

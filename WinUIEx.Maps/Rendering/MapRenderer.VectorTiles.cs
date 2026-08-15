@@ -238,7 +238,6 @@ internal sealed partial class MapRenderer
             out int pendingTextureGlyphCount);
         VectorSymbolPlacement[] readyPlacements = allPlacements
             .Where(placement =>
-                placement.Kind != VectorSymbolKind.Text ||
                 placement.CollisionGroup < 0 ||
                 !incompleteLabelGroups.Contains(placement.CollisionGroup))
             .ToArray();
@@ -250,11 +249,11 @@ internal sealed partial class MapRenderer
         renderResult.PendingTextureGlyphCount = pendingTextureGlyphCount;
         int fadingLabelCount = 0;
         int fadingGlyphCount = 0;
+        List<VectorSymbolPlacement> drawablePlacements = [];
         foreach (VectorTileDrawData drawTile in drawTiles)
         {
             VectorSymbolPlacement[] placements = drawTile.Placements
                 .Where(placement =>
-                    placement.Kind != VectorSymbolKind.Text ||
                     placement.CollisionGroup < 0 ||
                     collision.AcceptedGroups.Contains(
                         placement.CollisionGroup))
@@ -264,12 +263,17 @@ internal sealed partial class MapRenderer
                 layer.FadeDuration,
                 ref fadingLabelCount,
                 ref fadingGlyphCount);
-            DrawVectorPlacements(
-                context,
-                placements,
-                drawTile.Opacity,
-                ref renderResult);
+            drawablePlacements.AddRange(placements.Select(placement =>
+                placement with
+                {
+                    Opacity = placement.Opacity * drawTile.Opacity,
+                }));
         }
+        DrawVectorPlacements(
+            context,
+            drawablePlacements.ToArray(),
+            1,
+            ref renderResult);
 
         MapControlEventSource.Log.VectorSymbolRenderBatch(
             layer.Style,
@@ -312,6 +316,13 @@ internal sealed partial class MapRenderer
             2,
             renderResult.PatternLineCandidateCount,
             renderResult.PatternInstanceCount);
+        MapControlEventSource.Log.VectorAdvancedSymbolStyleSummary(
+            layer.Style,
+            renderResult.RotatedIconCount,
+            renderResult.TintedIconCount,
+            renderResult.FittedIconCount,
+            renderResult.SortedSymbolCount,
+            renderResult.CollisionOverrideSymbolCount);
         return activeFade;
     }
 
@@ -418,22 +429,62 @@ internal sealed partial class MapRenderer
         renderResult.PatternInstanceCount +=
             placements.Count(placement =>
                 placement.IsContinuousLinePlacement);
+        renderResult.RotatedIconCount += symbols.Count(symbol =>
+            symbol.Kind == VectorSymbolKind.Icon &&
+            Math.Abs(symbol.Rotation) > 1e-7);
+        renderResult.TintedIconCount += symbols.Count(symbol =>
+            symbol.Kind == VectorSymbolKind.Icon &&
+            symbol.IconPaint.IsTinted);
+        renderResult.FittedIconCount += symbols.Count(symbol =>
+            symbol.Kind == VectorSymbolKind.Icon &&
+            symbol.TextFit != VectorIconTextFit.None);
+        renderResult.SortedSymbolCount += symbols.Count(symbol =>
+            Math.Abs(symbol.SortKey) > 1e-7);
+        renderResult.CollisionOverrideSymbolCount += symbols.Count(symbol =>
+            symbol.AllowOverlap ||
+            symbol.IgnorePlacement ||
+            symbol.Optional);
         if (placements.Length == 0)
         {
             return opacity < layer.Opacity;
         }
 
-        Dictionary<(int LabelId, int PlacementIndex), long> collisionGroups = [];
+        AssignSymbolCollisionGroups(placements, ref nextCollisionGroup);
+        drawTiles.Add(new VectorTileDrawData(placements, opacity));
+        return opacity < layer.Opacity;
+    }
+
+    internal static void AssignSymbolCollisionGroups(
+        VectorSymbolPlacement[] placements,
+        ref long nextCollisionGroup)
+    {
+        HashSet<(long SymbolGroupId, int PlacementIndex)> splitGroups = [
+            .. placements
+                .Where(placement =>
+                    placement.SymbolGroupId >= 0 &&
+                    placement.Optional)
+                .Select(placement => (
+                    placement.SymbolGroupId,
+                    placement.PlacementIndex)),
+        ];
+        Dictionary<(long SymbolGroupId, int PlacementIndex, int Component),
+            long> collisionGroups = [];
+        Dictionary<(long SymbolGroupId, int PlacementIndex), long>
+            collisionFamilies = [];
         for (int index = 0; index < placements.Length; index++)
         {
             VectorSymbolPlacement placement = placements[index];
-            if (placement.Kind != VectorSymbolKind.Text ||
-                placement.LabelId < 0)
+            if (placement.SymbolGroupId < 0)
             {
                 continue;
             }
-            (int LabelId, int PlacementIndex) key =
-                (placement.LabelId, placement.PlacementIndex);
+            (long SymbolGroupId, int PlacementIndex) symbolKey =
+                (placement.SymbolGroupId, placement.PlacementIndex);
+            int component = splitGroups.Contains(symbolKey)
+                ? (placement.Kind == VectorSymbolKind.Icon ? 1 : 2)
+                : 0;
+            (long SymbolGroupId, int PlacementIndex, int Component) key =
+                (placement.SymbolGroupId, placement.PlacementIndex, component);
             if (!collisionGroups.TryGetValue(
                     key,
                     out long collisionGroup))
@@ -441,13 +492,19 @@ internal sealed partial class MapRenderer
                 collisionGroup = nextCollisionGroup++;
                 collisionGroups.Add(key, collisionGroup);
             }
+            if (!collisionFamilies.TryGetValue(
+                    symbolKey,
+                    out long collisionFamily))
+            {
+                collisionFamily = collisionGroup;
+                collisionFamilies.Add(symbolKey, collisionFamily);
+            }
             placements[index] = placement with
             {
                 CollisionGroup = collisionGroup,
+                CollisionFamily = collisionFamily,
             };
         }
-        drawTiles.Add(new VectorTileDrawData(placements, opacity));
-        return opacity < layer.Opacity;
     }
 
     private unsafe void DrawVectorPlacements(
@@ -493,11 +550,11 @@ internal sealed partial class MapRenderer
                         0))
                 : new TileConstants(
                     new Vector4(1, 1, 0, 0),
-                    new Vector4(1, 0, 0, 1),
+                    batch.IconPaint.Color,
                     new Vector4(1, 0, 1, 0),
                     new Vector4(
                         (float)(opacity * batch.Opacity),
-                        0,
+                        batch.IconPaint.IsTinted ? 1 : 0,
                         0,
                         0));
             UpdateSubresource(context, _constantBufferPointer, &layerConstants);
@@ -571,7 +628,7 @@ internal sealed partial class MapRenderer
     {
         List<VectorSymbolPlacement> projected = new(symbols.Count);
         Dictionary<
-            (int LabelId, int StyleLayerOrder, VectorTilePoint[] Path),
+            (long SymbolGroupId, int StyleLayerOrder, VectorTilePoint[] Path),
             List<VectorTileSymbol>>
             lineGroups = [];
         foreach (VectorTileSymbol symbol in symbols)
@@ -589,8 +646,11 @@ internal sealed partial class MapRenderer
                 continue;
             }
 
-            (int LabelId, int StyleLayerOrder, VectorTilePoint[] Path) key =
-                (symbol.LabelId, symbol.StyleLayerOrder, linePoints);
+            long symbolGroupId = symbol.SymbolGroupId >= 0
+                ? symbol.SymbolGroupId
+                : symbol.LabelId;
+            (long SymbolGroupId, int StyleLayerOrder, VectorTilePoint[] Path) key =
+                (symbolGroupId, symbol.StyleLayerOrder, linePoints);
             if (!lineGroups.TryGetValue(
                     key,
                     out List<VectorTileSymbol>? group))
@@ -623,8 +683,8 @@ internal sealed partial class MapRenderer
         pendingGlyphCount = 0;
         foreach (VectorSymbolPlacement placement in placements)
         {
-            if (placement.Kind != VectorSymbolKind.Text ||
-                placement.CollisionGroup < 0 ||
+            if (placement.CollisionGroup < 0 ||
+                placement.Optional ||
                 isTextureAvailable(placement.TextureId))
             {
                 continue;
@@ -678,8 +738,7 @@ internal sealed partial class MapRenderer
         for (int index = 0; index < placements.Length; index++)
         {
             VectorSymbolPlacement placement = placements[index];
-            if (placement.Kind != VectorSymbolKind.Text ||
-                placement.CollisionGroup < 0 ||
+            if (placement.CollisionGroup < 0 ||
                 !readyTimestamps.TryGetValue(
                     placement.CollisionGroup,
                     out long readyTimestamp))
@@ -696,7 +755,10 @@ internal sealed partial class MapRenderer
             {
                 activeFade = true;
                 fadingGroups.Add(placement.CollisionGroup);
-                fadingGlyphCount++;
+                if (placement.Kind == VectorSymbolKind.Text)
+                {
+                    fadingGlyphCount++;
+                }
             }
             placements[index] = placement with
             {
@@ -730,17 +792,7 @@ internal sealed partial class MapRenderer
             y += viewportHeight / 2;
             double left = x - (symbol.Width / 2) + symbol.OffsetX;
             double top = y - (symbol.Height / 2) + symbol.OffsetY;
-            if (!MapCamera.IsRectangleVisible(
-                left,
-                top,
-                symbol.Width,
-                symbol.Height,
-                viewportWidth,
-                viewportHeight))
-            {
-                return;
-            }
-            projected.Add(new VectorSymbolPlacement(
+            VectorSymbolPlacement placement = new(
                 symbol.StyleLayerOrder,
                 symbol.TextureId,
                 left,
@@ -750,7 +802,28 @@ internal sealed partial class MapRenderer
                 symbol.Kind,
                 symbol.Paint,
                 symbol.LabelId,
-                Opacity: symbol.Opacity));
+                Rotation: symbol.Rotation,
+                Opacity: symbol.Opacity,
+                IconPaint: symbol.IconPaint,
+                SymbolGroupId: symbol.SymbolGroupId,
+                SortKey: symbol.SortKey,
+                AllowOverlap: symbol.AllowOverlap,
+                IgnorePlacement: symbol.IgnorePlacement,
+                Optional: symbol.Optional);
+            GetVectorSymbolBounds(
+                placement,
+                out double boundsLeft,
+                out double boundsTop,
+                out double boundsRight,
+                out double boundsBottom);
+            if (boundsRight <= 0 ||
+                boundsBottom <= 0 ||
+                boundsLeft >= viewportWidth ||
+                boundsTop >= viewportHeight)
+            {
+                return;
+            }
+            projected.Add(placement);
     }
 
     private static void AddProjectedLineSymbols(
@@ -818,7 +891,7 @@ internal sealed partial class MapRenderer
                     path,
                     distances,
                     centerDistance,
-                    out _,
+                    out MapScreenPoint centerPosition,
                     out MapScreenPoint centerTangent))
             {
                 continue;
@@ -840,26 +913,36 @@ internal sealed partial class MapRenderer
             bool valid = true;
             foreach (VectorTileSymbol symbol in symbols)
             {
-                double symbolDistance = centerDistance +
-                    (reverse ? -symbol.OffsetX : symbol.OffsetX);
-                if (!TryGetSmoothedPathPosition(
-                        path,
-                        distances,
-                        symbolDistance,
-                        Math.Clamp(symbol.Height / 4, 2, 6),
-                        out MapScreenPoint position,
-                        out MapScreenPoint tangent))
+                MapScreenPoint position;
+                MapScreenPoint tangent;
+                if (symbol.ViewportAligned)
                 {
-                    valid = false;
-                    break;
+                    position = centerPosition;
+                    tangent = centerTangent;
                 }
-                double rotation = Math.Atan2(tangent.Y, tangent.X);
+                else
+                {
+                    double symbolDistance = centerDistance +
+                        (reverse ? -symbol.OffsetX : symbol.OffsetX);
+                    if (!TryGetSmoothedPathPosition(
+                            path,
+                            distances,
+                            symbolDistance,
+                            Math.Clamp(symbol.Height / 4, 2, 6),
+                            out position,
+                            out tangent))
+                    {
+                        valid = false;
+                        break;
+                    }
+                }
+                double pathRotation = Math.Atan2(tangent.Y, tangent.X);
                 if (reverse)
                 {
-                    rotation = NormalizeRadians(rotation + Math.PI);
+                    pathRotation = NormalizeRadians(pathRotation + Math.PI);
                 }
                 double relativeRotation = NormalizeRadians(
-                    rotation - centerRotation);
+                    pathRotation - centerRotation);
                 minimumRelativeRotation = Math.Min(
                     minimumRelativeRotation,
                     relativeRotation);
@@ -867,7 +950,7 @@ internal sealed partial class MapRenderer
                     maximumRelativeRotation,
                     relativeRotation);
                 if (previousRotation is double previous &&
-                    Math.Abs(NormalizeRadians(rotation - previous)) >
+                    Math.Abs(NormalizeRadians(pathRotation - previous)) >
                         Math.PI / 4 ||
                     maximumRelativeRotation - minimumRelativeRotation >
                         Math.PI / 4)
@@ -875,12 +958,23 @@ internal sealed partial class MapRenderer
                     valid = false;
                     break;
                 }
-                previousRotation = rotation;
-                double normalX = -Math.Sin(rotation);
-                double normalY = Math.Cos(rotation);
-                double centerX = position.X + (normalX * symbol.OffsetY);
-                double centerY = position.Y + (normalY * symbol.OffsetY);
-                if (previousOffset is double offset)
+                previousRotation = pathRotation;
+                double centerX;
+                double centerY;
+                if (symbol.ViewportAligned)
+                {
+                    centerX = position.X + symbol.OffsetX;
+                    centerY = position.Y + symbol.OffsetY;
+                }
+                else
+                {
+                    double normalX = -Math.Sin(pathRotation);
+                    double normalY = Math.Cos(pathRotation);
+                    centerX = position.X + (normalX * symbol.OffsetY);
+                    centerY = position.Y + (normalY * symbol.OffsetY);
+                }
+                if (!symbol.ViewportAligned &&
+                    previousOffset is double offset)
                 {
                     double expectedSpacing = Math.Abs(symbol.OffsetX - offset);
                     double deltaX = centerX - previousCenter.X;
@@ -895,7 +989,9 @@ internal sealed partial class MapRenderer
                         break;
                     }
                 }
-                previousOffset = symbol.OffsetX;
+                previousOffset = symbol.ViewportAligned
+                    ? null
+                    : symbol.OffsetX;
                 previousCenter = new MapScreenPoint(centerX, centerY);
                 double left = centerX - (symbol.Width / 2);
                 double top = centerY - (symbol.Height / 2);
@@ -909,10 +1005,19 @@ internal sealed partial class MapRenderer
                     symbol.Kind,
                     symbol.Paint,
                     symbol.LabelId,
-                    Rotation: rotation,
+                    Rotation: symbol.ViewportAligned
+                        ? symbol.Rotation
+                        : NormalizeRadians(
+                            pathRotation + symbol.Rotation),
                     PlacementIndex: placementIndex,
                     IsLinePlacement: true,
                     Opacity: symbol.Opacity,
+                    IconPaint: symbol.IconPaint,
+                    SymbolGroupId: symbol.SymbolGroupId,
+                    SortKey: symbol.SortKey,
+                    AllowOverlap: symbol.AllowOverlap,
+                    IgnorePlacement: symbol.IgnorePlacement,
+                    Optional: symbol.Optional,
                     IsContinuousLinePlacement:
                         symbol.ContinuousLinePlacement);
                 GetVectorSymbolBounds(
@@ -1072,8 +1177,7 @@ internal sealed partial class MapRenderer
         int sequence = 0;
         foreach (VectorSymbolPlacement placement in placements)
         {
-            if (placement.Kind != VectorSymbolKind.Text ||
-                placement.CollisionGroup < 0)
+            if (placement.CollisionGroup < 0)
             {
                 continue;
             }
@@ -1090,6 +1194,10 @@ internal sealed partial class MapRenderer
                 candidate = new LabelCollisionCandidate(
                     placement.CollisionGroup,
                     placement.StyleLayerOrder,
+                    placement.SortKey,
+                    placement.CollisionFamily >= 0
+                        ? placement.CollisionFamily
+                        : placement.CollisionGroup,
                     sequence++,
                     left,
                     top,
@@ -1110,7 +1218,13 @@ internal sealed partial class MapRenderer
                 candidate.Right = Math.Max(candidate.Right, right);
                 candidate.Bottom = Math.Max(candidate.Bottom, bottom);
             }
-            candidate.GlyphCount++;
+            candidate.SortKey = Math.Min(candidate.SortKey, placement.SortKey);
+            candidate.AllowOverlap &= placement.AllowOverlap;
+            candidate.IgnorePlacement &= placement.IgnorePlacement;
+            if (placement.Kind == VectorSymbolKind.Text)
+            {
+                candidate.GlyphCount++;
+            }
         }
 
         HashSet<long> acceptedGroups = [];
@@ -1118,13 +1232,15 @@ internal sealed partial class MapRenderer
         int suppressedGlyphCount = 0;
         foreach (LabelCollisionCandidate candidate in candidates.Values
             .OrderByDescending(candidate => candidate.StyleLayerOrder)
+            .ThenBy(candidate => candidate.SortKey)
             .ThenBy(candidate => candidate.Sequence))
         {
             LabelCollisionRectangle bounds = new(
                 candidate.Left - collisionPadding,
                 candidate.Top - collisionPadding,
                 candidate.Right + collisionPadding,
-                candidate.Bottom + collisionPadding);
+                candidate.Bottom + collisionPadding,
+                candidate.CollisionFamily);
             int firstCellX = (int)Math.Floor(bounds.Left / gridCellSize);
             int lastCellX = (int)Math.Floor(bounds.Right / gridCellSize);
             int firstCellY = (int)Math.Floor(bounds.Top / gridCellSize);
@@ -1140,6 +1256,7 @@ internal sealed partial class MapRenderer
                             out List<LabelCollisionRectangle>? occupied))
                     {
                         overlaps = occupied.Any(existing =>
+                            existing.CollisionFamily != candidate.CollisionFamily &&
                             bounds.Left < existing.Right &&
                             bounds.Right > existing.Left &&
                             bounds.Top < existing.Bottom &&
@@ -1147,13 +1264,17 @@ internal sealed partial class MapRenderer
                     }
                 }
             }
-            if (overlaps)
+            if (overlaps && !candidate.AllowOverlap)
             {
                 suppressedGlyphCount += candidate.GlyphCount;
                 continue;
             }
 
             acceptedGroups.Add(candidate.CollisionGroup);
+            if (candidate.IgnorePlacement)
+            {
+                continue;
+            }
             for (int y = firstCellY; y <= lastCellY; y++)
             {
                 for (int x = firstCellX; x <= lastCellX; x++)
@@ -1181,40 +1302,47 @@ internal sealed partial class MapRenderer
         IReadOnlyList<VectorSymbolPlacement> placements)
     {
         List<VectorSymbolBatch> batches = [];
-        foreach (IGrouping<int, VectorSymbolPlacement> styleLayer in
-            placements
-                .OrderBy(placement => placement.StyleLayerOrder)
-                .GroupBy(placement => placement.StyleLayerOrder))
+        VectorBatchKey? currentKey = null;
+        int currentOrder = -1;
+        List<VectorSymbolPlacement> currentPlacements = [];
+        foreach (VectorSymbolPlacement placement in placements
+            .OrderBy(placement => placement.StyleLayerOrder)
+            .ThenBy(placement => placement.SortKey))
         {
-            Dictionary<VectorBatchKey, List<VectorSymbolPlacement>> grouped = [];
-            List<VectorBatchKey> textureOrder = [];
-            foreach (VectorSymbolPlacement placement in styleLayer)
-            {
-                VectorBatchKey key = new(
-                    placement.TextureId,
-                    placement.Kind,
-                    placement.Paint,
-                    placement.Opacity);
-                if (!grouped.TryGetValue(
-                        key,
-                        out List<VectorSymbolPlacement>? batch))
-                {
-                    batch = [];
-                    grouped.Add(key, batch);
-                    textureOrder.Add(key);
-                }
-                batch.Add(placement);
-            }
-            foreach (VectorBatchKey key in textureOrder)
+            VectorBatchKey key = new(
+                placement.TextureId,
+                placement.Kind,
+                placement.Paint,
+                placement.IconPaint,
+                placement.Opacity);
+            if (currentKey is VectorBatchKey previous &&
+                (previous != key ||
+                 currentOrder != placement.StyleLayerOrder))
             {
                 batches.Add(new VectorSymbolBatch(
-                    styleLayer.Key,
-                    key.TextureId,
-                    key.Kind,
-                    key.Paint,
-                    key.Opacity,
-                    grouped[key].ToArray()));
+                    currentOrder,
+                    previous.TextureId,
+                    previous.Kind,
+                    previous.Paint,
+                    previous.IconPaint,
+                    previous.Opacity,
+                    currentPlacements.ToArray()));
+                currentPlacements.Clear();
             }
+            currentKey = key;
+            currentOrder = placement.StyleLayerOrder;
+            currentPlacements.Add(placement);
+        }
+        if (currentKey is VectorBatchKey final)
+        {
+            batches.Add(new VectorSymbolBatch(
+                currentOrder,
+                final.TextureId,
+                final.Kind,
+                final.Paint,
+                final.IconPaint,
+                final.Opacity,
+                currentPlacements.ToArray()));
         }
         return batches.ToArray();
     }
@@ -1405,6 +1533,11 @@ internal sealed partial class MapRenderer
         internal int LineSymbolDrawnCount;
         internal int PatternLineCandidateCount;
         internal int PatternInstanceCount;
+        internal int RotatedIconCount;
+        internal int TintedIconCount;
+        internal int FittedIconCount;
+        internal int SortedSymbolCount;
+        internal int CollisionOverrideSymbolCount;
     }
 
     internal readonly record struct LabelCollisionResult(
@@ -1416,6 +1549,8 @@ internal sealed partial class MapRenderer
     private sealed class LabelCollisionCandidate(
         long collisionGroup,
         int styleLayerOrder,
+        double sortKey,
+        long collisionFamily,
         int sequence,
         double left,
         double top,
@@ -1424,19 +1559,24 @@ internal sealed partial class MapRenderer
     {
         internal long CollisionGroup { get; } = collisionGroup;
         internal int StyleLayerOrder { get; } = styleLayerOrder;
+        internal double SortKey { get; set; } = sortKey;
+        internal long CollisionFamily { get; } = collisionFamily;
         internal int Sequence { get; } = sequence;
         internal double Left { get; set; } = left;
         internal double Top { get; set; } = top;
         internal double Right { get; set; } = right;
         internal double Bottom { get; set; } = bottom;
         internal int GlyphCount { get; set; }
+        internal bool AllowOverlap { get; set; } = true;
+        internal bool IgnorePlacement { get; set; } = true;
     }
 
     private readonly record struct LabelCollisionRectangle(
         double Left,
         double Top,
         double Right,
-        double Bottom);
+        double Bottom,
+        long CollisionFamily);
 
     private sealed record VectorTileDrawData(
         VectorSymbolPlacement[] Placements,
@@ -1446,6 +1586,7 @@ internal sealed partial class MapRenderer
         long TextureId,
         VectorSymbolKind Kind,
         VectorTextPaint Paint,
+        VectorIconPaint IconPaint,
         double Opacity);
 
     private readonly record struct QueuedVectorTile(

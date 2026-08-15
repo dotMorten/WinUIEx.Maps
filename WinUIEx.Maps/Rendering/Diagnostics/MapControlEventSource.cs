@@ -1654,4 +1654,35 @@ internal sealed class MapControlEventSource : EventSource
                 miterLineCount);
         }
     }
+
+    /// <summary>
+    /// Records advanced symbol-style usage without symbol names or feature properties.
+    /// </summary>
+    [Event(
+        69,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Icons | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorAdvancedSymbolStyleSummary(
+        int style,
+        int rotatedIconCount,
+        int tintedIconCount,
+        int fittedIconCount,
+        int sortedSymbolCount,
+        int collisionOverrideSymbolCount)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Icons | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                69,
+                style,
+                rotatedIconCount,
+                tintedIconCount,
+                fittedIconCount,
+                sortedSymbolCount,
+                collisionOverrideSymbolCount);
+        }
+    }
 }

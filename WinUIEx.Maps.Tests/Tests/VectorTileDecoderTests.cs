@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using System.Numerics;
 using System.Text;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using WinUIEx.Maps.Rendering;
@@ -374,6 +376,185 @@ public sealed class VectorTileDecoderTests
     }
 
     [TestMethod]
+    public void CombinedLineIconAndTextShareEveryPlacementCenter()
+    {
+        VisibleTile tile = new(
+            new TileId(2, 1, 1),
+            1,
+            100,
+            50,
+            256);
+        VectorTilePoint[] path =
+        [
+            new VectorTilePoint(0.1, 0.5),
+            new VectorTilePoint(0.9, 0.5),
+        ];
+        VectorSymbolPlacement[] placements = MapRenderer.ProjectVectorSymbols(
+            [
+                new VectorTileSymbol(
+                    3, 0, 0, -1, 100, 20, 0, 0,
+                    LinePoints: path,
+                    LineSpacing: 100,
+                    SymbolGroupId: 42),
+                new VectorTileSymbol(
+                    3, 0, 0, -2, 8, 10, -4, 0,
+                    VectorSymbolKind.Text,
+                    LabelId: 7,
+                    LinePoints: path,
+                    LineSpacing: 100,
+                    SymbolGroupId: 42),
+                new VectorTileSymbol(
+                    3, 0, 0, -3, 8, 10, 4, 0,
+                    VectorSymbolKind.Text,
+                    LabelId: 7,
+                    LinePoints: path,
+                    LineSpacing: 100,
+                    SymbolGroupId: 42),
+            ],
+            tile,
+            640,
+            480,
+            0,
+            0);
+
+        Assert.HasCount(3, placements);
+        Assert.IsTrue(placements.All(placement =>
+            placement.PlacementIndex == 0));
+        Assert.AreEqual(
+            placements[0].Left + (placements[0].Width / 2),
+            (placements[1].Left + (placements[1].Width / 2) +
+             placements[2].Left + (placements[2].Width / 2)) / 2,
+            0.000001);
+    }
+
+    [TestMethod]
+    public void ViewportAlignedLineSymbolStaysRigidAtPathCenter()
+    {
+        VisibleTile tile = new(
+            new TileId(2, 1, 1),
+            1,
+            100,
+            50,
+            256);
+        VectorTilePoint[] path =
+        [
+            new VectorTilePoint(0.5, 0.1),
+            new VectorTilePoint(0.5, 0.9),
+        ];
+        VectorSymbolPlacement[] placements = MapRenderer.ProjectVectorSymbols(
+            [
+                new VectorTileSymbol(
+                    3, 0, 0, -1, 40, 20, 0, 0,
+                    LinePoints: path,
+                    LineSpacing: 500,
+                    SymbolGroupId: 42,
+                    ViewportAligned: true),
+                new VectorTileSymbol(
+                    3, 0, 0, -2, 8, 10, -4, 0,
+                    VectorSymbolKind.Text,
+                    LabelId: 7,
+                    LinePoints: path,
+                    LineSpacing: 500,
+                    SymbolGroupId: 42,
+                    ViewportAligned: true),
+                new VectorTileSymbol(
+                    3, 0, 0, -3, 8, 10, 4, 0,
+                    VectorSymbolKind.Text,
+                    LabelId: 7,
+                    LinePoints: path,
+                    LineSpacing: 500,
+                    SymbolGroupId: 42,
+                    ViewportAligned: true),
+            ],
+            tile,
+            640,
+            480,
+            0,
+            0);
+
+        Assert.HasCount(3, placements);
+        Assert.IsTrue(placements.All(placement =>
+            placement.Rotation == 0));
+        double iconCenterX = placements[0].Left +
+            (placements[0].Width / 2);
+        Assert.AreEqual(
+            iconCenterX - 4,
+            placements[1].Left + (placements[1].Width / 2),
+            0.000001);
+        Assert.AreEqual(
+            iconCenterX + 4,
+            placements[2].Left + (placements[2].Width / 2),
+            0.000001);
+    }
+
+    [TestMethod]
+    public void ContinuousLinePatternsPlaceTouchingSpriteInstances()
+    {
+        VisibleTile tile = new(
+            new TileId(2, 1, 1),
+            1,
+            100,
+            50,
+            256);
+        VectorSymbolPlacement[] placements = MapRenderer.ProjectVectorSymbols(
+            [new VectorTileSymbol(
+                3,
+                0,
+                0,
+                -1,
+                20,
+                8,
+                0,
+                0,
+                LinePoints:
+                [
+                    new VectorTilePoint(0.1, 0.5),
+                    new VectorTilePoint(0.9, 0.5),
+                ],
+                LineSpacing: 20,
+                ContinuousLinePlacement: true)],
+            tile,
+            640,
+            480,
+            0,
+            0);
+        VectorSymbolPlacement reversed = MapRenderer.ProjectVectorSymbols(
+            [new VectorTileSymbol(
+                3,
+                0,
+                0,
+                -1,
+                20,
+                8,
+                0,
+                0,
+                LinePoints:
+                [
+                    new VectorTilePoint(0.9, 0.5),
+                    new VectorTilePoint(0.1, 0.5),
+                ],
+                LineSpacing: 20,
+                ContinuousLinePlacement: true)],
+            tile,
+            640,
+            480,
+            0,
+            0)[0];
+
+        Assert.HasCount(10, placements);
+        Assert.IsTrue(placements.All(placement =>
+            placement.IsContinuousLinePlacement));
+        for (int index = 1; index < placements.Length; index++)
+        {
+            Assert.AreEqual(
+                placements[index - 1].Left + placements[index - 1].Width,
+                placements[index].Left,
+                0.000001);
+        }
+        Assert.AreEqual(Math.PI, Math.Abs(reversed.Rotation), 0.000001);
+    }
+
+    [TestMethod]
     public void LineSymbolsFollowGentleCurvesButRejectDistortedBends()
     {
         VisibleTile tile = new(
@@ -497,6 +678,131 @@ public sealed class VectorTileDecoderTests
     }
 
     [TestMethod]
+    public void DashedVectorLinesPreservePhaseAcrossSourceSegments()
+    {
+        VectorLineStyle style = new(
+            new(1, 0, 0, 1),
+            2,
+            VectorLineCap.Butt,
+            VectorLineJoin.Bevel,
+            [10, 5]);
+
+        MapScreenPoint[] segmented = MapRenderer.ExpandVectorLineTriangles(
+            [new MapScreenPoint(0, 0),
+             new MapScreenPoint(8, 0),
+             new MapScreenPoint(20, 0)],
+            style,
+            100,
+            100);
+        Assert.AreSequenceEqual(
+            [0d, 8d, 10d, 15d, 20d],
+            segmented.Select(point => point.X).Distinct().Order().ToArray());
+    }
+
+    [TestMethod]
+    public void VectorLineOffsetMovesToTheRightOfPathDirection()
+    {
+        MapScreenPoint[] triangles = MapRenderer.ExpandVectorLineTriangles(
+            [new MapScreenPoint(0, 10), new MapScreenPoint(20, 10)],
+            new VectorLineStyle(
+                Vector4.One,
+                2,
+                VectorLineCap.Butt,
+                VectorLineJoin.Bevel,
+                Offset: 5),
+            100,
+            100);
+
+        Assert.AreEqual(4, triangles.Min(point => point.Y), 0.000001);
+        Assert.AreEqual(6, triangles.Max(point => point.Y), 0.000001);
+    }
+
+    [TestMethod]
+    public void VectorLineGapWidthCreatesTwoCasingBands()
+    {
+        MapScreenPoint[] triangles = MapRenderer.ExpandVectorLineTriangles(
+            [new MapScreenPoint(0, 10), new MapScreenPoint(20, 10)],
+            new VectorLineStyle(
+                Vector4.One,
+                2,
+                VectorLineCap.Butt,
+                VectorLineJoin.Bevel,
+                GapWidth: 4),
+            100,
+            100);
+
+        Assert.AreSequenceEqual(
+            [6d, 8d, 12d, 14d],
+            triangles.Select(point => point.Y).Distinct().Order().ToArray());
+    }
+
+    [TestMethod]
+    public void VectorLineMiterJoinUsesIntersectionWithinLimit()
+    {
+        MapScreenPoint join = new(10, 10);
+        MapScreenPoint[] triangles = MapRenderer.ExpandVectorLineTriangles(
+            [new MapScreenPoint(0, 10),
+             join,
+             new MapScreenPoint(10, 20)],
+            new VectorLineStyle(
+                Vector4.One,
+                4,
+                VectorLineCap.Butt,
+                VectorLineJoin.Miter,
+                MiterLimit: 3),
+            100,
+            100);
+
+        Assert.IsTrue(triangles.Max(point => Math.Sqrt(
+            Math.Pow(point.X - join.X, 2) +
+            Math.Pow(point.Y - join.Y, 2))) > 2.5);
+    }
+
+    [TestMethod]
+    public void VectorLineGradientInterpolatesByProgress()
+    {
+        ImmutableArray<VectorLineGradientStop> gradient =
+        [
+            new(0, new Vector4(1, 0, 0, 1)),
+            new(0.5, new Vector4(0, 1, 0, 1)),
+            new(1, new Vector4(0, 0, 1, 1)),
+        ];
+
+        Assert.AreEqual(
+            new Vector4(0.5f, 0.5f, 0, 1),
+            MapRenderer.ResolveLineGradientColor(gradient, 0.25));
+        Assert.AreEqual(
+            new Vector4(0, 0.5f, 0.5f, 1),
+            MapRenderer.ResolveLineGradientColor(gradient, 0.75));
+    }
+
+    [TestMethod]
+    public void VectorLineGradientAndBlurCreateBoundedOrderedBatches()
+    {
+        MapRenderer.VectorLineStyleBatchMetrics metrics =
+            MapRenderer.GetVectorLineStyleBatchMetrics(
+                [new MapScreenPoint(0, 20), new MapScreenPoint(256, 20)],
+                new VectorLineStyle(
+                    Vector4.One,
+                    4,
+                    VectorLineCap.Butt,
+                    VectorLineJoin.Miter,
+                    Blur: 3,
+                    Gradient:
+                    [
+                        new(0, new Vector4(1, 0, 0, 1)),
+                        new(1, new Vector4(0, 0, 1, 1)),
+                    ]),
+                300,
+                100);
+
+        Assert.AreEqual(4, metrics.PassCount);
+        Assert.IsGreaterThan(4, metrics.BatchCount);
+        Assert.IsLessThanOrEqualTo(132, metrics.BatchCount);
+        Assert.IsGreaterThan(32, metrics.TriangleCount);
+    }
+
+    [TestMethod]
     public void VectorGeometryFallbackCrossfadesByDistanceAndReplacement()
     {
         Assert.AreEqual(
@@ -566,25 +872,206 @@ public sealed class VectorTileDecoderTests
     }
 
     [TestMethod]
-    public void SymbolBatchesGroupTexturesInFirstSeenOrder()
+    public void PolygonOutlineExpandsDecodedRings()
+    {
+        VisibleTile tile = new(
+            new TileId(2, 1, 1),
+            1,
+            100,
+            50,
+            256);
+        MapScreenPoint[] triangles =
+            MapRenderer.ExpandVectorPolygonOutlineTriangles(
+            [new VectorTileRing(
+                [new VectorTilePoint(0.25, 0.25),
+                 new VectorTilePoint(0.75, 0.25),
+                 new VectorTilePoint(0.75, 0.75),
+                 new VectorTilePoint(0.25, 0.75),
+                 new VectorTilePoint(0.25, 0.25)])],
+            tile,
+            640,
+            480,
+            0,
+            0);
+
+        Assert.IsNotEmpty(triangles);
+        Assert.AreEqual(163.5, triangles.Min(point => point.X), 0.000001);
+        Assert.AreEqual(292.5, triangles.Max(point => point.X), 0.000001);
+    }
+
+    [TestMethod]
+    public void PolygonPatternPhaseContinuesAcrossTileBoundaries()
+    {
+        VisibleTile left = new(
+            new TileId(2, 1, 1),
+            1,
+            100,
+            50,
+            256);
+        VisibleTile right = left with
+        {
+            Id = new TileId(2, 2, 1),
+            WorldX = 2,
+            Left = 356,
+        };
+
+        Vector2 leftCoordinate =
+            MapRenderer.GetVectorPolygonPatternTextureCoordinates(
+                [new VectorTilePoint(1, 0.5)],
+                left,
+                10,
+                6)[0];
+        Vector2 rightCoordinate =
+            MapRenderer.GetVectorPolygonPatternTextureCoordinates(
+                [new VectorTilePoint(0, 0.5)],
+                right,
+                10,
+                6)[0];
+
+        Assert.AreEqual(
+            leftCoordinate.X - MathF.Floor(leftCoordinate.X),
+            rightCoordinate.X - MathF.Floor(rightCoordinate.X),
+            0.000001);
+        Assert.AreEqual(
+            leftCoordinate.Y - MathF.Floor(leftCoordinate.Y),
+            rightCoordinate.Y - MathF.Floor(rightCoordinate.Y),
+            0.000001);
+    }
+
+    [TestMethod]
+    public void SymbolBatchesPreserveConsecutiveSortOrder()
     {
         VectorSymbolBatch[] batches = MapRenderer.BatchVectorSymbolsByTexture(
         [
+            new(5, -2, 30, 0, 10, 10),
             new(4, -2, 0, 0, 10, 10),
             new(4, -1, 10, 0, 10, 10),
             new(4, -2, 20, 0, 10, 10),
-            new(5, -2, 30, 0, 10, 10),
         ]);
 
-        Assert.AreEqual(3, batches.Length);
+        Assert.AreEqual(4, batches.Length);
         Assert.AreEqual(4, batches[0].StyleLayerOrder);
         Assert.AreEqual(-2, batches[0].TextureId);
-        Assert.AreEqual(2, batches[0].Placements.Length);
+        Assert.AreEqual(1, batches[0].Placements.Length);
         Assert.AreEqual(-1, batches[1].TextureId);
         Assert.AreEqual(1, batches[1].Placements.Length);
-        Assert.AreEqual(5, batches[2].StyleLayerOrder);
         Assert.AreEqual(-2, batches[2].TextureId);
         Assert.AreEqual(1, batches[2].Placements.Length);
+        Assert.AreEqual(5, batches[3].StyleLayerOrder);
+        Assert.AreEqual(-2, batches[3].TextureId);
+        Assert.AreEqual(1, batches[3].Placements.Length);
+    }
+
+    [TestMethod]
+    public void SymbolRotationPaintAndSortKeySurviveProjectionAndBatching()
+    {
+        VectorIconPaint paint = new(new Vector4(0.2f, 0.1f, 0.05f, 0.5f), true);
+        VectorSymbolPlacement placement = Assert.ContainsSingle(
+            MapRenderer.ProjectVectorSymbols(
+                [new VectorTileSymbol(
+                    3, 0.5, 0.5, -10, 20, 10, 0, 0,
+                    Rotation: Math.PI / 3,
+                    IconPaint: paint,
+                    SortKey: 4)],
+                new VisibleTile(new TileId(2, 1, 1), 1, 100, 50, 256),
+                640,
+                480,
+                0,
+                0));
+        VectorSymbolBatch batch = Assert.ContainsSingle(
+            MapRenderer.BatchVectorSymbolsByTexture([placement]));
+
+        Assert.AreEqual(Math.PI / 3, placement.Rotation, 0.000001);
+        Assert.AreEqual(4, placement.SortKey);
+        Assert.AreEqual(paint, batch.IconPaint);
+    }
+
+    [TestMethod]
+    public void OptionalIconAndTextUseIndependentCollisionGroups()
+    {
+        VectorSymbolPlacement[] placements =
+        [
+            new(
+                2, -1, 0, 0, 10, 10,
+                SymbolGroupId: 7,
+                Optional: true),
+            new(
+                2, -2, 0, 0, 10, 10,
+                VectorSymbolKind.Text,
+                SymbolGroupId: 7),
+            new(
+                2, -3, 20, 0, 10, 10,
+                SymbolGroupId: 8),
+            new(
+                2, -4, 20, 0, 10, 10,
+                VectorSymbolKind.Text,
+                SymbolGroupId: 8),
+        ];
+        long nextGroup = 0;
+
+        MapRenderer.AssignSymbolCollisionGroups(placements, ref nextGroup);
+
+        Assert.AreNotEqual(
+            placements[0].CollisionGroup,
+            placements[1].CollisionGroup);
+        Assert.AreEqual(
+            placements[2].CollisionGroup,
+            placements[3].CollisionGroup);
+        Assert.AreEqual(3, nextGroup);
+        MapRenderer.LabelCollisionResult collision =
+            MapRenderer.ResolveLabelCollisions(placements);
+        Assert.IsTrue(collision.AcceptedGroups.Contains(
+            placements[0].CollisionGroup));
+        Assert.IsTrue(collision.AcceptedGroups.Contains(
+            placements[1].CollisionGroup));
+    }
+
+    [TestMethod]
+    public void CollisionHonorsSortOverlapAndIgnorePlacement()
+    {
+        MapRenderer.LabelCollisionResult result =
+            MapRenderer.ResolveLabelCollisions(
+            [
+                new(
+                    2, -1, 0, 0, 20, 20,
+                    CollisionGroup: 10,
+                    SortKey: 10),
+                new(
+                    2, -2, 0, 0, 20, 20,
+                    CollisionGroup: 20,
+                    SortKey: 1),
+                new(
+                    2, -3, 0, 0, 20, 20,
+                    CollisionGroup: 30,
+                    SortKey: 20,
+                    AllowOverlap: true,
+                    IgnorePlacement: true),
+            ]);
+
+        Assert.IsFalse(result.AcceptedGroups.Contains(10));
+        Assert.IsTrue(result.AcceptedGroups.Contains(20));
+        Assert.IsTrue(result.AcceptedGroups.Contains(30));
+    }
+
+    [TestMethod]
+    public void RequiredCombinedSymbolsWaitForEveryTexture()
+    {
+        VectorSymbolPlacement[] placements =
+        [
+            new(2, -1, 0, 0, 10, 10, CollisionGroup: 10),
+            new(
+                2, -2, 0, 0, 10, 10,
+                VectorSymbolKind.Text,
+                CollisionGroup: 10),
+        ];
+
+        HashSet<long> incomplete = MapRenderer.FindIncompleteLabelGroups(
+            placements,
+            textureId => textureId == -2,
+            out int pendingGlyphCount);
+
+        Assert.AreSequenceEqual([10L], incomplete);
+        Assert.AreEqual(1, pendingGlyphCount);
     }
 
     [TestMethod]
@@ -610,6 +1097,29 @@ public sealed class VectorTileDecoderTests
         Assert.IsFalse(result.AcceptedGroups.Contains(10));
         Assert.IsTrue(result.AcceptedGroups.Contains(20));
         Assert.IsTrue(result.AcceptedGroups.Contains(30));
+    }
+
+    [TestMethod]
+    public void LabelsWaitUntilEveryGlyphTextureIsAvailable()
+    {
+        VectorSymbolPlacement[] placements =
+        [
+            new(
+                2, -1, 0, 0, 8, 10, VectorSymbolKind.Text, default, 0, 10),
+            new(
+                2, -2, 8, 0, 8, 10, VectorSymbolKind.Text, default, 0, 10),
+            new(
+                2, -3, 20, 0, 8, 10, VectorSymbolKind.Text, default, 1, 20),
+            new(0, -4, 30, 0, 8, 10),
+        ];
+
+        HashSet<long> incomplete = MapRenderer.FindIncompleteLabelGroups(
+            placements,
+            textureId => textureId is -1 or -3 or -4,
+            out int pendingGlyphCount);
+
+        Assert.AreSequenceEqual([10L], incomplete);
+        Assert.AreEqual(2, pendingGlyphCount);
     }
 
     [TestMethod]

@@ -74,7 +74,17 @@ internal readonly record struct VectorTileSymbol(
     VectorTilePoint[]? LinePoints = null,
     double LineSpacing = 250,
     double Opacity = 1,
-    bool ContinuousLinePlacement = false);
+    bool ContinuousLinePlacement = false,
+    double Rotation = 0,
+    VectorIconPaint IconPaint = default,
+    long SymbolGroupId = -1,
+    double SortKey = 0,
+    bool AllowOverlap = false,
+    bool IgnorePlacement = false,
+    bool Optional = false,
+    VectorIconTextFit TextFit = VectorIconTextFit.None,
+    bool ViewportAligned = false,
+    Vector4 TextFitPadding = default);
 
 /// <summary>
 /// Describes one projected vector symbol rectangle ready for texture batching.
@@ -94,7 +104,14 @@ internal readonly record struct VectorSymbolPlacement(
     int PlacementIndex = 0,
     bool IsLinePlacement = false,
     double Opacity = 1,
-    bool IsContinuousLinePlacement = false);
+    bool IsContinuousLinePlacement = false,
+    VectorIconPaint IconPaint = default,
+    long SymbolGroupId = -1,
+    double SortKey = 0,
+    bool AllowOverlap = false,
+    bool IgnorePlacement = false,
+    bool Optional = false,
+    long CollisionFamily = -1);
 
 /// <summary>
 /// Carries resolved point symbols and privacy-safe aggregate failures for one display zoom.
@@ -114,6 +131,7 @@ internal sealed record VectorSymbolBatch(
     long TextureId,
     VectorSymbolKind Kind,
     VectorTextPaint Paint,
+    VectorIconPaint IconPaint,
     double Opacity,
     VectorSymbolPlacement[] Placements);
 
@@ -127,6 +145,22 @@ internal readonly record struct VectorTextPaint(
     Vector4 Color,
     Vector4 HaloColor,
     double HaloOffset);
+
+internal readonly record struct VectorIconPaint(
+    Vector4 Color,
+    bool IsTinted)
+{
+    internal static VectorIconPaint Default { get; } =
+        new(Vector4.One, false);
+}
+
+internal enum VectorIconTextFit
+{
+    None,
+    Width,
+    Height,
+    Both,
+}
 
 internal sealed record VectorTileStyledLine(
     int StyleLayerOrder,

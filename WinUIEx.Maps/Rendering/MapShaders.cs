@@ -119,7 +119,12 @@ struct PixelInput
 
 float4 main(PixelInput input) : SV_TARGET
 {
-    return IconTexture.Sample(IconSampler, input.TexCoord) * Opacity.x;
+    float4 sampled = IconTexture.Sample(IconSampler, input.TexCoord);
+    float4 tinted = float4(
+        Rotation.rgb * sampled.a,
+        Rotation.a * sampled.a);
+    float4 ordinary = sampled * Rotation.a;
+    return lerp(ordinary, tinted, Opacity.y) * Opacity.x;
 }
 """;
 
