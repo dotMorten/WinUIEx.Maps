@@ -44,6 +44,7 @@ internal sealed class MapControlEventSource : EventSource
         public const EventKeywords Icons = (EventKeywords)0x20;
         public const EventKeywords Errors = (EventKeywords)0x40;
         public const EventKeywords CustomTiles = (EventKeywords)0x80;
+        public const EventKeywords VectorTiles = (EventKeywords)0x100;
     }
 
     /// <summary>
@@ -61,6 +62,7 @@ internal sealed class MapControlEventSource : EventSource
         public const EventTask Cache = (EventTask)7;
         public const EventTask Icons = (EventTask)8;
         public const EventTask CustomTiles = (EventTask)9;
+        public const EventTask VectorTiles = (EventTask)10;
     }
 
     /// <summary>
@@ -1053,6 +1055,518 @@ internal sealed class MapControlEventSource : EventSource
         if (IsEnabled(EventLevel.Informational, Keywords.Camera))
         {
             WriteEvent(48, pitch, isImmediate);
+        }
+    }
+
+    /// <summary>
+    /// Records generation-checked Azure vector tile commits and decoded point counts.
+    /// </summary>
+    [Event(
+        49,
+        Level = EventLevel.Informational,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorTileCommitSummary(
+        int style,
+        int acceptedCount,
+        int staleDroppedCount,
+        int acceptedPointCount,
+        int preparedSpriteCount,
+        int cacheEntryCount,
+        long cacheBytes)
+    {
+        if (IsEnabled(
+            EventLevel.Informational,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                49,
+                style,
+                acceptedCount,
+                staleDroppedCount,
+                acceptedPointCount,
+                preparedSpriteCount,
+                cacheEntryCount,
+                cacheBytes);
+        }
+    }
+
+    /// <summary>
+    /// Records one successful per-style Style Spec and sprite-atlas acquisition.
+    /// </summary>
+    [Event(
+        50,
+        Level = EventLevel.Informational,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorStyleAssetsLoaded(
+        int style,
+        int symbolLayerCount,
+        int unsupportedLayerCount,
+        int spriteEntryCount,
+        int atlasWidth,
+        int atlasHeight,
+        double durationMilliseconds)
+    {
+        if (IsEnabled(
+            EventLevel.Informational,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                50,
+                style,
+                symbolLayerCount,
+                unsupportedLayerCount,
+                spriteEntryCount,
+                atlasWidth,
+                atlasHeight,
+                durationMilliseconds);
+        }
+    }
+
+    /// <summary>
+    /// Records aggregate Azure vector-symbol draw batching for a rendered layer.
+    /// </summary>
+    [Event(
+        51,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Icons | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorSymbolRenderBatch(
+        int style,
+        int candidateCount,
+        int drawableCount,
+        int evaluationFailureCount,
+        int unavailableSpriteCount,
+        int textureBatchCount,
+        int drawCallCount)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Icons | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                51,
+                style,
+                candidateCount,
+                drawableCount,
+                evaluationFailureCount,
+                unavailableSpriteCount,
+                textureBatchCount,
+                drawCallCount);
+        }
+    }
+
+    /// <summary>
+    /// Records one successful bounded Azure glyph-range acquisition and decode.
+    /// </summary>
+    [Event(
+        52,
+        Level = EventLevel.Informational,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorGlyphRangeLoaded(
+        int style,
+        int glyphCount,
+        int encodedByteCount,
+        double durationMilliseconds)
+    {
+        if (IsEnabled(
+            EventLevel.Informational,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                52,
+                style,
+                glyphCount,
+                encodedByteCount,
+                durationMilliseconds);
+        }
+    }
+
+    /// <summary>
+    /// Records aggregate point-label glyph batching without label or font content.
+    /// </summary>
+    [Event(
+        53,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Icons | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorLabelRenderBatch(
+        int style,
+        int candidateGlyphCount,
+        int drawableGlyphCount,
+        int evaluationFailureCount,
+        int unavailableGlyphCount,
+        int textureBatchCount,
+        int drawCallCount)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Icons | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                53,
+                style,
+                candidateGlyphCount,
+                drawableGlyphCount,
+                evaluationFailureCount,
+                unavailableGlyphCount,
+                textureBatchCount,
+                drawCallCount);
+        }
+    }
+
+    /// <summary>
+    /// Records a definitive unavailable Azure glyph range without font or label content.
+    /// </summary>
+    [Event(
+        54,
+        Level = EventLevel.Warning,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles | Keywords.Errors,
+        Task = Tasks.VectorTiles)]
+    public void VectorGlyphRangeUnavailable(
+        int style,
+        int rangeStart,
+        int statusCode,
+        string exceptionType,
+        double durationMilliseconds)
+    {
+        if (IsEnabled(
+            EventLevel.Warning,
+            Keywords.Tiles | Keywords.VectorTiles | Keywords.Errors))
+        {
+            WriteEvent(
+                54,
+                style,
+                rangeStart,
+                statusCode,
+                exceptionType,
+                durationMilliseconds);
+        }
+    }
+
+    /// <summary>
+    /// Records aggregate screen-space label collision decisions without label content.
+    /// </summary>
+    [Event(
+        55,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Icons | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorLabelCollisionSummary(
+        int style,
+        int candidateLabelCount,
+        int acceptedLabelCount,
+        int suppressedLabelCount,
+        int suppressedGlyphCount)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Icons | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                55,
+                style,
+                candidateLabelCount,
+                acceptedLabelCount,
+                suppressedLabelCount,
+                suppressedGlyphCount);
+        }
+    }
+
+    /// <summary>
+    /// Records aggregate vector-line evaluation and triangle batching.
+    /// </summary>
+    [Event(
+        56,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorLineRenderBatch(
+        int style,
+        int candidateLineCount,
+        int drawableLineCount,
+        int triangleCount,
+        int evaluationFailureCount,
+        int drawCallCount)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                56,
+                style,
+                candidateLineCount,
+                drawableLineCount,
+                triangleCount,
+                evaluationFailureCount,
+                drawCallCount);
+        }
+    }
+
+    /// <summary>
+    /// Records retained vector-line fallback instances and distant-level suppression.
+    /// </summary>
+    [Event(
+        57,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorLineFallbackSummary(
+        int style,
+        int candidateInstanceCount,
+        int drawnInstanceCount,
+        int suppressedDistantInstanceCount,
+        double maximumZoomDifference)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                57,
+                style,
+                candidateInstanceCount,
+                drawnInstanceCount,
+                suppressedDistantInstanceCount,
+                maximumZoomDifference);
+        }
+    }
+
+    /// <summary>
+    /// Records aggregate vector-polygon evaluation, tessellation, and drawing.
+    /// </summary>
+    [Event(
+        58,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorPolygonRenderBatch(
+        int style,
+        int candidatePolygonCount,
+        int drawablePolygonCount,
+        int triangleCount,
+        int evaluationFailureCount,
+        int suppressedFallbackInstanceCount,
+        int drawCallCount)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                58,
+                style,
+                candidatePolygonCount,
+                drawablePolygonCount,
+                triangleCount,
+                evaluationFailureCount,
+                suppressedFallbackInstanceCount,
+                drawCallCount);
+        }
+    }
+
+    /// <summary>
+    /// Records retained vector geometry fading during active-tile replacement.
+    /// </summary>
+    [Event(
+        59,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorGeometryFallbackOpacitySummary(
+        int style,
+        int geometryKind,
+        int fallbackInstanceCount,
+        int fadedInstanceCount,
+        int suppressedInstanceCount,
+        double minimumOpacity,
+        double maximumOpacity)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                59,
+                style,
+                geometryKind,
+                fallbackInstanceCount,
+                fadedInstanceCount,
+                suppressedInstanceCount,
+                minimumOpacity,
+                maximumOpacity);
+        }
+    }
+
+    /// <summary>
+    /// Records line-following icon and glyph components through projection and drawing.
+    /// </summary>
+    [Event(
+        60,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Icons | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorLineSymbolPlacementSummary(
+        int style,
+        int candidateComponentCount,
+        int projectedComponentCount,
+        int drawnComponentCount)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Icons | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                60,
+                style,
+                candidateComponentCount,
+                projectedComponentCount,
+                drawnComponentCount);
+        }
+    }
+
+    /// <summary>
+    /// Records whether retained GPU line or polygon geometry was reused for a translated
+    /// frame, including its vertex count and native buffer bytes.
+    /// </summary>
+    [Event(
+        61,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorGeometryFrameCacheSummary(
+        int style,
+        int geometryKind,
+        int reused,
+        int vertexCount,
+        long retainedBytes)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                61,
+                style,
+                geometryKind,
+                reused,
+                vertexCount,
+                retainedBytes);
+        }
+    }
+
+    /// <summary>
+    /// Records a whole-frame geometry rebuild deferred during active panning while newly
+    /// available tiles are rendered incrementally.
+    /// </summary>
+    [Event(
+        62,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorGeometryDeferredRebuildSummary(
+        int style,
+        int geometryKind,
+        int pendingTileCount,
+        double offsetX,
+        double offsetY)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                62,
+                style,
+                geometryKind,
+                pendingTileCount,
+                offsetX,
+                offsetY);
+        }
+    }
+
+    /// <summary>
+    /// Records background vector geometry preparation and immutable GPU-buffer creation
+    /// before the prepared frame is published.
+    /// </summary>
+    [Event(
+        63,
+        Level = EventLevel.Informational,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorGeometryPreparationSummary(
+        int style,
+        int accepted,
+        int lineVertexCount,
+        int polygonVertexCount,
+        double preparationMilliseconds,
+        double uploadMilliseconds)
+    {
+        if (IsEnabled(
+            EventLevel.Informational,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                63,
+                style,
+                accepted,
+                lineVertexCount,
+                polygonVertexCount,
+                preparationMilliseconds,
+                uploadMilliseconds);
+        }
+    }
+
+    /// <summary>
+    /// Records whole labels withheld until every required glyph texture is available.
+    /// </summary>
+    [Event(
+        64,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Icons | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorLabelTextureReadinessSummary(
+        int style,
+        int pendingLabelCount,
+        int pendingGlyphCount)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Icons | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                64,
+                style,
+                pendingLabelCount,
+                pendingGlyphCount);
+        }
+    }
+
+    /// <summary>
+    /// Records complete labels fading from their newest required glyph texture.
+    /// </summary>
+    [Event(
+        65,
+        Level = EventLevel.Verbose,
+        Keywords = Keywords.Icons | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorLabelFadeSummary(
+        int style,
+        int fadingLabelCount,
+        int fadingGlyphCount)
+    {
+        if (IsEnabled(
+            EventLevel.Verbose,
+            Keywords.Icons | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                65,
+                style,
+                fadingLabelCount,
+                fadingGlyphCount);
         }
     }
 }

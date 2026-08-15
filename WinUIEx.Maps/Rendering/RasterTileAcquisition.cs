@@ -1,10 +1,12 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Net;
-using System.Net.Http.Headers;
-using System.Net.Sockets;
 using System.Runtime.InteropServices.WindowsRuntime;
 using Windows.Graphics.Imaging;
+using Windows.Web.Http.Filters;
+using WinRtHttpClient = Windows.Web.Http.HttpClient;
+using WinRtHttpCompletionOption = Windows.Web.Http.HttpCompletionOption;
+using WinRtHttpMethod = Windows.Web.Http.HttpMethod;
+using WinRtHttpRequestMessage = Windows.Web.Http.HttpRequestMessage;
 
 namespace WinUIEx.Maps.Rendering;
 
@@ -29,7 +31,7 @@ namespace WinUIEx.Maps.Rendering;
 internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisitionSession
 {
     private const int EncodedTileOverheadAllowance = 1024 * 1024;
-    private static readonly HttpClient HttpClient = CreateHttpClient();
+    private static readonly WinRtHttpClient HttpClient = CreateHttpClient();
     private readonly string _tileUrl;
     private readonly TileLayerBounds _bounds;
     private readonly bool _isTms;
@@ -109,19 +111,24 @@ internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisition
     {
         long downloadStarted = Stopwatch.GetTimestamp();
         string requestUrl = ExpandUrl(id);
-        using HttpRequestMessage request = RasterTileHttp.CreateRequest(
-            HttpMethod.Get,
-            requestUrl);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("image/*"));
-        using HttpResponseMessage response = await HttpClient.SendAsync(
-            request,
-            HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-
         int maximumEncodedBytes = checked(
             (TileSize * TileSize * 4) + EncodedTileOverheadAllowance);
-        byte[] encoded = await RasterTileHttp.ReadBoundedAsync(
+        using WinRtHttpRequestMessage request = new(
+            WinRtHttpMethod.Get,
+            new Uri(requestUrl));
+        request.Headers.Accept.ParseAdd("image/*");
+        using Windows.Web.Http.HttpResponseMessage response = await HttpClient
+            .SendRequestAsync(request, WinRtHttpCompletionOption.ResponseHeadersRead)
+            .AsTask(cancellationToken)
+            .ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Raster tile request failed with HTTP {(int)response.StatusCode}.",
+                inner: null,
+                (System.Net.HttpStatusCode)(int)response.StatusCode);
+        }
+        byte[] encoded = await WinRtHttpContentReader.ReadBoundedAsync(
                 response.Content,
                 maximumEncodedBytes,
                 cancellationToken)
@@ -297,60 +304,19 @@ internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisition
         }
     }
 
-    /// <summary>
-    /// Creates the shared custom-tile HTTP client with bounded lifetime, timeout, and product
-    /// identification.
-    /// </summary>
-    private static HttpClient CreateHttpClient()
+    private static WinRtHttpClient CreateHttpClient()
     {
-        SocketsHttpHandler handler = new()
-        {
-            ConnectCallback = ConnectAsync,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-        };
-        HttpClient client = new(handler)
-        {
-            DefaultRequestVersion = HttpVersion.Version20,
-            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
-            Timeout = TimeSpan.FromSeconds(30),
-        };
+        WinRtHttpClient client = new(CreateHttpFilter());
         client.DefaultRequestHeaders.UserAgent.ParseAdd("WinUIEx.Maps/1.0");
         return client;
     }
 
-    /// <summary>
-    /// Connects to the first selected DNS address and transfers successful socket ownership
-    /// to a network stream.
-    /// </summary>
-    private static async ValueTask<Stream> ConnectAsync(
-        SocketsHttpConnectionContext context,
-        CancellationToken cancellationToken)
+    internal static HttpBaseProtocolFilter CreateHttpFilter()
     {
-        IPAddress[] addresses = await Dns.GetHostAddressesAsync(
-            context.DnsEndPoint.Host,
-            cancellationToken).ConfigureAwait(false);
-        Exception? lastError = null;
-        foreach (IPAddress address in RasterTileHttp.SelectConnectionAddresses(addresses))
-        {
-            Socket socket = new(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
-            {
-                NoDelay = true,
-            };
-            try
-            {
-                await socket.ConnectAsync(
-                    address,
-                    context.DnsEndPoint.Port,
-                    cancellationToken).ConfigureAwait(false);
-                return new NetworkStream(socket, ownsSocket: true);
-            }
-            catch (SocketException exception)
-            {
-                lastError = exception;
-                socket.Dispose();
-            }
-        }
-        throw new HttpRequestException("No resolved address accepted a connection.", lastError);
+        HttpBaseProtocolFilter filter = new();
+        filter.CacheControl.ReadBehavior = HttpCacheReadBehavior.Default;
+        filter.CacheControl.WriteBehavior = HttpCacheWriteBehavior.Default;
+        return filter;
     }
 
     /// <summary>
@@ -379,58 +345,34 @@ internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisition
     }
 }
 
-/// <summary>
-/// Provides shared bounded HTTP content reading and deterministic DNS-address selection for
-/// immutable raster acquisition sessions.
-/// </summary>
-/// <remarks>
-/// The helper owns no source configuration and logs nothing. Callers retain ownership of
-/// response objects, while <see cref="ReadBoundedAsync"/> owns only the content stream it
-/// opens and enforces both declared and observed byte limits before image decoding.
-/// </remarks>
-internal static class RasterTileHttp
+internal static class WinRtHttpContentReader
 {
-    /// <summary>
-    /// Creates a raster request that actually opts into HTTP/2 when supported. Explicit
-    /// <see cref="HttpRequestMessage"/> instances otherwise retain their HTTP/1.1 defaults
-    /// even when the owning client's defaults request HTTP/2.
-    /// </summary>
-    internal static HttpRequestMessage CreateRequest(HttpMethod method, string requestUri) =>
-        new(method, requestUri)
-        {
-            Version = HttpVersion.Version20,
-            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
-        };
-
-    /// <summary>
-    /// Reads HTTP content into memory while enforcing a hard encoded-byte limit from both
-    /// headers and streamed data.
-    /// </summary>
-    /// <remarks>
-    /// Owns and asynchronously disposes the response content stream but leaves the
-    /// <see cref="HttpContent"/> lifetime with the caller.
-    /// </remarks>
     internal static async Task<byte[]> ReadBoundedAsync(
-        HttpContent content,
+        Windows.Web.Http.IHttpContent content,
         int maximumBytes,
         CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
-        if (content.Headers.ContentLength > maximumBytes)
+        ulong? declaredLength = content.Headers.ContentLength;
+        if (declaredLength > (ulong)maximumBytes)
         {
             throw new InvalidDataException(
-                "The encoded raster tile exceeds the configured size limit.");
+                "The encoded map response exceeds the configured size limit.");
         }
-
-        await using Stream contentStream = await content.ReadAsStreamAsync(cancellationToken)
-            .ConfigureAwait(false);
+        using Windows.Storage.Streams.IInputStream input =
+            await content.ReadAsInputStreamAsync()
+                .AsTask(cancellationToken)
+                .ConfigureAwait(false);
+        using Stream stream = input.AsStreamForRead();
         using MemoryStream buffer = new(Math.Min(
             maximumBytes,
-            (int)(content.Headers.ContentLength ?? 16 * 1024)));
+            declaredLength is null
+                ? 16 * 1024
+                : checked((int)declaredLength.Value)));
         byte[] chunk = new byte[16 * 1024];
         while (true)
         {
-            int read = await contentStream.ReadAsync(chunk, cancellationToken)
+            int read = await stream.ReadAsync(chunk, cancellationToken)
                 .ConfigureAwait(false);
             if (read == 0)
             {
@@ -439,23 +381,9 @@ internal static class RasterTileHttp
             if (buffer.Length + read > maximumBytes)
             {
                 throw new InvalidDataException(
-                    "The encoded raster tile exceeds the configured size limit.");
+                    "The encoded map response exceeds the configured size limit.");
             }
             buffer.Write(chunk, 0, read);
         }
     }
-
-    /// <summary>
-    /// Chooses at most one IPv4 and one IPv6 address, preferring IPv4, to bound connection
-    /// attempts for a DNS result.
-    /// </summary>
-    internal static IPAddress[] SelectConnectionAddresses(IEnumerable<IPAddress> addresses) =>
-        addresses
-            .Where(address =>
-                address.AddressFamily is AddressFamily.InterNetwork or
-                    AddressFamily.InterNetworkV6)
-            .OrderBy(address => address.AddressFamily == AddressFamily.InterNetwork ? 0 : 1)
-            .GroupBy(address => address.AddressFamily)
-            .Select(group => group.First())
-            .ToArray();
 }

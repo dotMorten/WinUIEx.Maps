@@ -1,12 +1,15 @@
 using System.Diagnostics;
 using System.Net;
-using System.Net.Http.Headers;
-using System.Net.Sockets;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Windows.Graphics.Imaging;
+using Windows.Web.Http.Filters;
+using WinRtHttpClient = Windows.Web.Http.HttpClient;
+using WinRtHttpCompletionOption = Windows.Web.Http.HttpCompletionOption;
+using WinRtHttpMethod = Windows.Web.Http.HttpMethod;
+using WinRtHttpRequestMessage = Windows.Web.Http.HttpRequestMessage;
 
 namespace WinUIEx.Maps.Rendering;
 
@@ -24,6 +27,7 @@ internal sealed class AzureTileLayer : TileLayer
 {
     private readonly MapStyle _style;
     private readonly string _token;
+    private readonly AzureVectorStyleProvider? _vectorStyleProvider;
 
     /// <summary>
     /// Initializes the hidden base-map layer with the selected Azure style and the
@@ -46,6 +50,10 @@ internal sealed class AzureTileLayer : TileLayer
         }
         _style = style;
         _token = token ?? string.Empty;
+        if (AzureTileAcquisitionSession.IsVectorStyle(style))
+        {
+            _vectorStyleProvider = new AzureVectorStyleProvider(style, _token);
+        }
     }
 
     internal MapStyle Style => _style;
@@ -68,7 +76,10 @@ internal sealed class AzureTileLayer : TileLayer
         new(
             RuntimeId,
             Revision,
-            new AzureTileAcquisitionSession(_style, _token),
+            new AzureTileAcquisitionSession(
+                _style,
+                _token,
+                _vectorStyleProvider),
             MinZoom,
             MaxZoom,
             IsVisible,
@@ -102,10 +113,18 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     private const string DarkGreyTileset = "microsoft.base.darkgrey";
     private const string ImageryTileset = "microsoft.imagery";
     private const string TerrainTileset = "microsoft.terra.main";
-    private static readonly HttpClient HttpClient = CreateHttpClient();
-    private readonly AzureRasterSourceKey _sourceKey;
+    private const string VectorTileset = "microsoft.base";
+    private const string VectorTileMediaType = "application/vnd.mapbox-vector-tile";
+    private const int MaximumEncodedVectorTileBytes = 4 * 1024 * 1024;
+    private const int MaximumAttributionBytes = 1024 * 1024;
+    private const int MaximumErrorResponseBytes = 1024 * 1024;
+    private static readonly Uri AzureBaseUri =
+        new("https://atlas.microsoft.com/");
+    private static readonly WinRtHttpClient HttpClient = CreateHttpClient();
+    private readonly AzureSourceKey _sourceKey;
     private readonly MapStyle _style;
     private readonly string _token;
+    private readonly AzureVectorStyleProvider? _vectorStyleProvider;
 
     /// <summary>
     /// Creates immutable Azure request state that can be shared by concurrent acquisition
@@ -116,15 +135,39 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     /// must not be included in diagnostics or exception text.
     /// </remarks>
     internal AzureTileAcquisitionSession(MapStyle style, string token)
+        : this(
+            style,
+            token,
+            IsVectorStyle(style)
+                ? new AzureVectorStyleProvider(style, token)
+                : null)
+    {
+    }
+
+    /// <summary>
+    /// Creates immutable Azure request state sharing a layer-owned style/sprite cache.
+    /// </summary>
+    internal AzureTileAcquisitionSession(
+        MapStyle style,
+        string token,
+        AzureVectorStyleProvider? vectorStyleProvider)
     {
         _style = style;
         _token = token;
-        _sourceKey = new AzureRasterSourceKey(style, token);
+        _vectorStyleProvider = vectorStyleProvider;
+        _sourceKey = new AzureSourceKey(style, token);
     }
 
     internal override object SourceKey => _sourceKey;
 
     internal override RasterSourceKind SourceKind => RasterSourceKind.Azure;
+
+    internal override LayerRenderKind RenderKind =>
+        IsHybridStyle(_style)
+            ? LayerRenderKind.HybridTiles
+            : IsVectorStyle(_style)
+                ? LayerRenderKind.VectorPoints
+                : LayerRenderKind.RasterTiles;
 
     internal override int TileSize => 256;
 
@@ -161,8 +204,14 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         TileId id,
         CancellationToken cancellationToken)
     {
+        if (IsVectorStyle(_style))
+        {
+            throw new InvalidOperationException(
+                "Vector Azure styles must use vector tile acquisition.");
+        }
+
         DecodedTile tile;
-        if (_style == MapStyle.RoadShadedRelief && id.Zoom <= 6)
+        if (_style == MapStyle.RoadShadedReliefRaster && id.Zoom <= 6)
         {
             int tileSize = GetStyleTileSize(_style, id.Zoom);
             Task<DecodedTile> roadsTask = GetTilePixelsAsync(
@@ -189,7 +238,8 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
             DecodedTile terrain = await terrainTask.ConfigureAwait(false);
             if (terrain.Width != roads.Width || terrain.Height != roads.Height)
             {
-                throw new InvalidOperationException("Map style layers returned different tile dimensions.");
+                throw new InvalidOperationException(
+                    "Map style layers returned different tile dimensions.");
             }
             long compositeStarted = Stopwatch.GetTimestamp();
             tile = new DecodedTile(
@@ -202,7 +252,8 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         }
         else
         {
-            (string tileset, int minimumZoom, int maximumZoom) = GetPrimaryTileset(_style);
+            (string tileset, int minimumZoom, int maximumZoom) =
+                GetPrimaryTileset(_style);
             tile = await GetTilePixelsAsync(
                 id,
                 tileset,
@@ -221,6 +272,123 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
             tile.Height,
             tile.DownloadMilliseconds,
             tile.DecodeMilliseconds);
+    }
+
+    /// <summary>
+    /// Loads the matching style/sprite assets and decodes one Azure base-map vector tile.
+    /// </summary>
+    internal override async Task<DecodedVectorTile> GetVectorTileAsync(
+        TileId id,
+        CancellationToken cancellationToken)
+    {
+        if (!IsVectorStyle(_style))
+        {
+            throw new InvalidOperationException(
+                "Raster Azure styles must use raster tile acquisition.");
+        }
+
+        long downloadStarted = Stopwatch.GetTimestamp();
+        Task<AzureVectorStyleAssets> styleAssetsTask = (_vectorStyleProvider ??
+            throw new InvalidOperationException(
+                "The vector Azure style has no asset provider."))
+            .GetAssetsAsync(cancellationToken);
+        DecodedTile? imagery = IsHybridStyle(_style)
+            ? await GetHybridImageryTileAsync(id, cancellationToken)
+            : null;
+        byte[] encoded;
+        try
+        {
+            encoded = await GetVectorTileBytesAsync(
+                    id,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (AzureMapsRequestException exception) when (IsHybridStyle(_style))
+        {
+            exception.DiagnosticExceptionType =
+                "AzureMapsHybridVectorRequestException";
+            throw;
+        }
+        AzureVectorStyleAssets styleAssets =
+            await styleAssetsTask.ConfigureAwait(false);
+        double downloadMilliseconds =
+            Stopwatch.GetElapsedTime(downloadStarted).TotalMilliseconds -
+            (imagery?.DecodeMilliseconds ?? 0);
+        long decodeStarted = Stopwatch.GetTimestamp();
+        VectorTileFeatureCollection features = VectorTileDecoder.Decode(
+            encoded,
+            cancellationToken);
+        VectorSpriteTextureData[] spriteTextures =
+            await styleAssets.PrepareTexturesAsync(
+                    features,
+                    id.Zoom,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        DecodedRasterTile? background = imagery is null
+            ? null
+            : new DecodedRasterTile(
+                id,
+                imagery.Value.Pixels,
+                imagery.Value.Width,
+                imagery.Value.Height,
+                imagery.Value.DownloadMilliseconds,
+                imagery.Value.DecodeMilliseconds);
+        return new DecodedVectorTile(
+            id,
+            features,
+            styleAssets,
+            spriteTextures,
+            background,
+            downloadMilliseconds,
+            Stopwatch.GetElapsedTime(decodeStarted).TotalMilliseconds +
+                (imagery?.DecodeMilliseconds ?? 0));
+    }
+
+    private async Task<DecodedTile> GetHybridImageryTileAsync(
+        TileId id,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await GetTilePixelsAsync(
+                    id,
+                    ImageryTileset,
+                    1,
+                    19,
+                    256,
+                    BitmapAlphaMode.Ignore,
+                    _token,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (AzureMapsRequestException exception)
+        {
+            exception.DiagnosticExceptionType =
+                "AzureMapsHybridImageryRequestException";
+            throw;
+        }
+    }
+
+    private async Task<byte[]> GetVectorTileBytesAsync(
+        TileId id,
+        CancellationToken cancellationToken)
+    {
+        string path =
+            $"map/tile?api-version={ApiVersion}&tilesetId={VectorTileset}&zoom={id.Zoom}&x={id.X}&y={id.Y}";
+        using Windows.Web.Http.HttpResponseMessage response = await SendAsync(
+            path,
+            _token,
+            VectorTileMediaType,
+            cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(
+            response,
+            $"vector tile '{VectorTileset}'",
+            cancellationToken).ConfigureAwait(false);
+        return await WinRtHttpContentReader.ReadBoundedAsync(
+                response.Content,
+                MaximumEncodedVectorTileBytes,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -260,11 +428,18 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         {
             return [];
         }
-        if (style == MapStyle.RoadShadedRelief && zoom <= 6)
+        if (IsHybridStyle(style))
+        {
+            return [ImageryTileset, VectorTileset];
+        }
+        if (IsVectorStyle(style))
+        {
+            return [VectorTileset];
+        }
+        if (style == MapStyle.RoadShadedReliefRaster && zoom <= 6)
         {
             return [RoadTileset, TerrainTileset];
         }
-
         return [GetPrimaryTileset(style).Tileset];
     }
 
@@ -279,13 +454,54 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     /// Gets the decoded pixel dimension expected for a map style at a zoom level.
     /// </summary>
     internal static int GetStyleTileSize(MapStyle style, int zoom) =>
-        style == MapStyle.RoadShadedRelief && zoom <= 6 ? 512 : 256;
+        style == MapStyle.RoadShadedReliefRaster && zoom <= 6 ? 512 : 256;
 
     /// <summary>
     /// Gets the highest source zoom available for the selected Azure map style.
     /// </summary>
     internal static int GetMaximumTileZoom(MapStyle style) =>
-        style == MapStyle.Satellite ? 19 : MapCamera.MaximumTileZoom;
+        style is MapStyle.Satellite or MapStyle.SatelliteWithRoads
+            ? 19
+            : MapCamera.MaximumTileZoom;
+
+    /// <summary>
+    /// Gets whether the selected style acquires Mapbox Vector Tile payloads.
+    /// </summary>
+    internal static bool IsVectorStyle(MapStyle style) =>
+        style is MapStyle.Road or
+            MapStyle.GrayscaleDark or
+            MapStyle.RoadShadedRelief or
+            MapStyle.BlankAccessible or
+            MapStyle.GrayscaleLight or
+            MapStyle.Night or
+            MapStyle.HighContrastDark or
+            MapStyle.HighContrastLight or
+            MapStyle.SatelliteWithRoads;
+
+    internal static bool IsHybridStyle(MapStyle style) =>
+        style == MapStyle.SatelliteWithRoads;
+
+    /// <summary>
+    /// Maps public styles to the identifiers used by Azure Maps documentation and SDKs.
+    /// </summary>
+    internal static string GetAzureStyleName(MapStyle style) => style switch
+    {
+        MapStyle.RoadRaster => "road",
+        MapStyle.GrayscaleDarkRaster => "grayscale_dark",
+        MapStyle.Satellite => "satellite",
+        MapStyle.RoadShadedReliefRaster => "road_shaded_relief",
+        MapStyle.Blank => "blank",
+        MapStyle.BlankAccessible => "blank_accessible",
+        MapStyle.GrayscaleLight => "grayscale_light",
+        MapStyle.Night => "night",
+        MapStyle.HighContrastDark => "high_contrast_dark",
+        MapStyle.HighContrastLight => "high_contrast_light",
+        MapStyle.SatelliteWithRoads => "satellite_road_labels",
+        MapStyle.Road => "road",
+        MapStyle.GrayscaleDark => "grayscale_dark",
+        MapStyle.RoadShadedRelief => "road_shaded_relief",
+        _ => throw new ArgumentOutOfRangeException(nameof(style)),
+    };
 
     /// <summary>
     /// Alpha-composites a straight-alpha BGRA overlay onto an opaque BGRA background.
@@ -334,14 +550,20 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     {
         const string bounds = "-180,-85.05112878,180,85.05112878";
         string path = $"map/attribution?api-version={ApiVersion}&tilesetId={tileset}&zoom={zoom}&bounds={bounds}";
-        using HttpResponseMessage response = await SendAsync(path, token, cancellationToken).ConfigureAwait(false);
+        using Windows.Web.Http.HttpResponseMessage response = await SendAsync(
+            path,
+            token,
+            "*/*",
+            cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, $"attribution '{tileset}'", cancellationToken).ConfigureAwait(false);
-
-        using Stream content = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        AttributionResponse? attribution = await JsonSerializer.DeserializeAsync(
+        byte[] content = await WinRtHttpContentReader.ReadBoundedAsync(
+                response.Content,
+                MaximumAttributionBytes,
+                cancellationToken)
+            .ConfigureAwait(false);
+        AttributionResponse? attribution = JsonSerializer.Deserialize(
             content,
-            AzureJsonContext.Default.AttributionResponse,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+            AzureJsonContext.Default.AttributionResponse);
 
         return string.Join(
             " ",
@@ -491,12 +713,15 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     {
         long downloadStarted = Stopwatch.GetTimestamp();
         string path = $"map/tile?api-version={ApiVersion}&tilesetId={tileset}&zoom={id.Zoom}&x={id.X}&y={id.Y}&tileSize={tileSize}";
-        using HttpResponseMessage response = await SendAsync(path, token, cancellationToken).ConfigureAwait(false);
-        await EnsureSuccessAsync(response, $"tile '{tileset}'", cancellationToken).ConfigureAwait(false);
-
         int maximumEncodedBytes = checked(
             (tileSize * tileSize * 4) + EncodedTileOverheadAllowance);
-        byte[] encodedPixels = await RasterTileHttp.ReadBoundedAsync(
+        using Windows.Web.Http.HttpResponseMessage response = await SendAsync(
+            path,
+            token,
+            "*/*",
+            cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, $"tile '{tileset}'", cancellationToken).ConfigureAwait(false);
+        byte[] encodedPixels = await WinRtHttpContentReader.ReadBoundedAsync(
                 response.Content,
                 maximumEncodedBytes,
                 cancellationToken)
@@ -566,10 +791,12 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     {
         return style switch
         {
-            MapStyle.Road => (RoadTileset, 0, MapCamera.MaximumTileZoom),
-            MapStyle.GrayscaleDark => (DarkGreyTileset, 0, MapCamera.MaximumTileZoom),
+            MapStyle.RoadRaster => (RoadTileset, 0, MapCamera.MaximumTileZoom),
+            MapStyle.GrayscaleDarkRaster =>
+                (DarkGreyTileset, 0, MapCamera.MaximumTileZoom),
             MapStyle.Satellite => (ImageryTileset, 1, 19),
-            MapStyle.RoadShadedRelief => (RoadTileset, 0, MapCamera.MaximumTileZoom),
+            MapStyle.RoadShadedReliefRaster =>
+                (RoadTileset, 0, MapCamera.MaximumTileZoom),
             _ => throw new ArgumentOutOfRangeException(nameof(style)),
         };
     }
@@ -588,112 +815,75 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     }
 
     /// <summary>
-    /// Sends an authenticated Azure Maps request while leaving response-content ownership
-    /// with the caller.
+    /// Downloads one bounded private styling asset, applying the subscription header only
+    /// when a credential is available.
     /// </summary>
-    /// <remarks>
-    /// Authentication is applied as a header so the credential never becomes part of a URL.
-    /// </remarks>
-    private static async Task<HttpResponseMessage> SendAsync(
+    internal static async Task<byte[]> GetStyleAssetAsync(
         string path,
         string token,
+        string acceptMediaType,
+        int maximumBytes,
         CancellationToken cancellationToken)
     {
-        using HttpRequestMessage request = RasterTileHttp.CreateRequest(HttpMethod.Get, path);
-        request.Headers.TryAddWithoutValidation("subscription-key", token);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
-        return await HttpClient.SendAsync(
-            request,
-            HttpCompletionOption.ResponseHeadersRead,
+        using Windows.Web.Http.HttpResponseMessage response = await SendAsync(
+            path,
+            token,
+            acceptMediaType,
             cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Creates the process-wide Azure HTTP client with bounded connection lifetime, timeout,
-    /// and address-selection behavior.
-    /// </summary>
-    private static HttpClient CreateHttpClient()
-    {
-        SocketsHttpHandler handler = new()
+        if (!response.IsSuccessStatusCode)
         {
-            ConnectCallback = ConnectAsync,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-        };
-        return new HttpClient(handler)
-        {
-            BaseAddress = new Uri("https://atlas.microsoft.com/"),
-            DefaultRequestVersion = HttpVersion.Version20,
-            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
-            Timeout = TimeSpan.FromSeconds(30),
-        };
-    }
-
-    /// <summary>
-    /// Opens a socket to the first eligible resolved address using short per-address
-    /// attempts and transfers ownership of a successful socket to the returned stream.
-    /// </summary>
-    /// <remarks>
-    /// Address selection limits connection attempts by address family, and caller
-    /// cancellation terminates the entire connection sequence.
-    /// </remarks>
-    private static async ValueTask<Stream> ConnectAsync(
-        SocketsHttpConnectionContext context,
-        CancellationToken cancellationToken)
-    {
-        IPAddress[] addresses = await Dns.GetHostAddressesAsync(
-            context.DnsEndPoint.Host,
-            cancellationToken).ConfigureAwait(false);
-        IPAddress[] candidates = RasterTileHttp.SelectConnectionAddresses(addresses);
-        Exception? lastError = null;
-
-        foreach (IPAddress address in candidates)
-        {
-            using CancellationTokenSource attemptCancellation =
-                CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            attemptCancellation.CancelAfter(TimeSpan.FromSeconds(1.5));
-            Socket socket = new(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
-            {
-                NoDelay = true,
-            };
-
-            try
-            {
-                await socket.ConnectAsync(
-                    address,
-                    context.DnsEndPoint.Port,
-                    attemptCancellation.Token).ConfigureAwait(false);
-                return new NetworkStream(socket, ownsSocket: true);
-            }
-            catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
-            {
-                lastError = exception;
-                socket.Dispose();
-            }
-            catch (SocketException exception)
-            {
-                lastError = exception;
-                socket.Dispose();
-            }
+            throw new AzureMapsRequestException(
+                (HttpStatusCode)(int)response.StatusCode,
+                $"Azure Maps style asset request failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).");
         }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        throw new HttpRequestException(
-            $"No address for {context.DnsEndPoint.Host} accepted a connection.",
-            lastError);
+        return await WinRtHttpContentReader.ReadBoundedAsync(
+                response.Content,
+                maximumBytes,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Filters and orders resolved addresses using the shared raster connection policy.
-    /// </summary>
-    internal static IPAddress[] SelectConnectionAddresses(IEnumerable<IPAddress> addresses) =>
-        RasterTileHttp.SelectConnectionAddresses(addresses);
+    private static async Task<Windows.Web.Http.HttpResponseMessage> SendAsync(
+        string path,
+        string token,
+        string acceptMediaType,
+        CancellationToken cancellationToken)
+    {
+        using WinRtHttpRequestMessage request = new(
+            WinRtHttpMethod.Get,
+            new Uri(AzureBaseUri, path));
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            request.Headers.TryAppendWithoutValidation("subscription-key", token);
+        }
+        request.Headers.Accept.ParseAdd(acceptMediaType);
+        return await HttpClient
+            .SendRequestAsync(request, WinRtHttpCompletionOption.ResponseHeadersRead)
+            .AsTask(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static WinRtHttpClient CreateHttpClient()
+    {
+        WinRtHttpClient client = new(CreateHttpFilter());
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("WinUIEx.Maps/1.0");
+        return client;
+    }
+
+    internal static HttpBaseProtocolFilter CreateHttpFilter()
+    {
+        HttpBaseProtocolFilter filter = new();
+        filter.CacheControl.ReadBehavior = HttpCacheReadBehavior.Default;
+        filter.CacheControl.WriteBehavior = HttpCacheWriteBehavior.Default;
+        return filter;
+    }
 
     /// <summary>
     /// Validates an Azure response and, on failure, extracts service error details without
     /// exposing request credentials.
     /// </summary>
     private static async Task EnsureSuccessAsync(
-        HttpResponseMessage response,
+        Windows.Web.Http.HttpResponseMessage response,
         string resource,
         CancellationToken cancellationToken)
     {
@@ -705,11 +895,15 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         string? serviceMessage = null;
         try
         {
-            using Stream content = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            ErrorResponse? error = await JsonSerializer.DeserializeAsync(
+            cancellationToken.ThrowIfCancellationRequested();
+            byte[] content = await WinRtHttpContentReader.ReadBoundedAsync(
+                    response.Content,
+                    MaximumErrorResponseBytes,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            ErrorResponse? error = JsonSerializer.Deserialize(
                 content,
-                AzureJsonContext.Default.ErrorResponse,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                AzureJsonContext.Default.ErrorResponse);
             serviceMessage = string.Join(
                 " ",
                 (error?.Error?.Details ?? [])
@@ -722,7 +916,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         {
         }
         throw new AzureMapsRequestException(
-            response.StatusCode,
+            (HttpStatusCode)(int)response.StatusCode,
             $"Azure Maps {resource} request failed with HTTP {(int)response.StatusCode} ({response.StatusCode})." +
             (string.IsNullOrWhiteSpace(serviceMessage) ? string.Empty : $" {serviceMessage}"));
     }
@@ -779,13 +973,13 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     /// The credential-bearing key must never be logged. Its string representation is
     /// intentionally reduced to the type name.
     /// </remarks>
-    private sealed record AzureRasterSourceKey(MapStyle Style, string Token)
+    private sealed record AzureSourceKey(MapStyle Style, string Token)
     {
         /// <summary>
         /// Returns a non-sensitive diagnostic name without revealing the credential contained
         /// by this equality key.
         /// </summary>
-        public override string ToString() => nameof(AzureRasterSourceKey);
+        public override string ToString() => nameof(AzureSourceKey);
     }
 
     /// <summary>
@@ -820,4 +1014,7 @@ internal sealed class AzureMapsRequestException : Exception
     }
 
     public HttpStatusCode StatusCode { get; }
+
+    internal string DiagnosticExceptionType { get; set; } =
+        nameof(AzureMapsRequestException);
 }

@@ -1,8 +1,10 @@
-using System.Net;
 using System.Reflection;
+using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI.Xaml;
 using WinUIEx.Maps.Rendering;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Windows.Web.Http;
+using Windows.Web.Http.Filters;
 
 namespace WinUIEx.Maps.Tests;
 
@@ -87,7 +89,41 @@ public sealed class TileLayerTests
         Assert.AreEqual(0, options.MinZoom);
         Assert.AreEqual(24, options.MaxZoom);
         Assert.Contains(nameof(MapStyle.Blank), Enum.GetNames<MapStyle>());
-        Assert.AreEqual(0, (int)Enum.Parse<MapStyle>(nameof(MapStyle.Road)));
+        Assert.AreSequenceEqual(
+            [
+                nameof(MapStyle.RoadRaster),
+                nameof(MapStyle.GrayscaleDarkRaster),
+                nameof(MapStyle.Satellite),
+                nameof(MapStyle.RoadShadedReliefRaster),
+                nameof(MapStyle.Blank),
+                nameof(MapStyle.BlankAccessible),
+                nameof(MapStyle.GrayscaleLight),
+                nameof(MapStyle.Night),
+                nameof(MapStyle.HighContrastDark),
+                nameof(MapStyle.HighContrastLight),
+                nameof(MapStyle.SatelliteWithRoads),
+                nameof(MapStyle.Road),
+                nameof(MapStyle.GrayscaleDark),
+                nameof(MapStyle.RoadShadedRelief),
+            ],
+            Enum.GetNames<MapStyle>());
+        Assert.AreEqual(
+            0,
+            (int)Enum.Parse<MapStyle>(nameof(MapStyle.RoadRaster)));
+        Assert.AreEqual(
+            1,
+            (int)Enum.Parse<MapStyle>(nameof(MapStyle.GrayscaleDarkRaster)));
+        Assert.AreEqual(
+            3,
+            (int)Enum.Parse<MapStyle>(nameof(MapStyle.RoadShadedReliefRaster)));
+        Assert.AreEqual(4, (int)Enum.Parse<MapStyle>(nameof(MapStyle.Blank)));
+        Assert.AreEqual(11, (int)Enum.Parse<MapStyle>(nameof(MapStyle.Road)));
+        Assert.AreEqual(
+            12,
+            (int)Enum.Parse<MapStyle>(nameof(MapStyle.GrayscaleDark)));
+        Assert.AreEqual(
+            13,
+            (int)Enum.Parse<MapStyle>(nameof(MapStyle.RoadShadedRelief)));
     }
 
     [TestMethod]
@@ -229,7 +265,7 @@ public sealed class TileLayerTests
         TileLayerSnapshot azure = new(
             100,
             0,
-            new AzureTileAcquisitionSession(MapStyle.Road, "token"),
+            new AzureTileAcquisitionSession(MapStyle.RoadRaster, "token"),
             0,
             24,
             true,
@@ -337,47 +373,43 @@ public sealed class TileLayerTests
     }
 
     [TestMethod]
-    public async Task EncodedTileReadRejectsDeclaredOversizeContent()
+    public void CustomTileHttpClientReadsAndWritesTheResponseCache()
     {
-        using ByteArrayContent content = new(new byte[17]);
+        using HttpBaseProtocolFilter filter =
+            CustomRasterTileAcquisitionSession.CreateHttpFilter();
 
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(
-            () => RasterTileHttp.ReadBoundedAsync(content, 16, CancellationToken.None));
+        Assert.AreEqual(
+            HttpCacheReadBehavior.Default,
+            filter.CacheControl.ReadBehavior);
+        Assert.AreEqual(
+            HttpCacheWriteBehavior.Default,
+            filter.CacheControl.WriteBehavior);
     }
 
     [TestMethod]
-    public async Task EncodedTileReadRejectsStreamingOversizeContent()
+    public async Task EncodedTileReadRejectsDeclaredOversizeContent()
     {
-        using StreamContent content = new(new MemoryStream(new byte[17]));
-        content.Headers.ContentLength = null;
+        using HttpBufferContent content = new(new byte[17].AsBuffer());
 
         await Assert.ThrowsExactlyAsync<InvalidDataException>(
-            () => RasterTileHttp.ReadBoundedAsync(content, 16, CancellationToken.None));
+            () => WinRtHttpContentReader.ReadBoundedAsync(
+                content,
+                16,
+                CancellationToken.None));
     }
 
     [TestMethod]
     public async Task EncodedTileReadAcceptsContentAtLimit()
     {
         byte[] expected = Enumerable.Range(0, 16).Select(value => (byte)value).ToArray();
-        using ByteArrayContent content = new(expected);
+        using HttpBufferContent content = new(expected.AsBuffer());
 
-        byte[] actual = await RasterTileHttp.ReadBoundedAsync(
+        byte[] actual = await WinRtHttpContentReader.ReadBoundedAsync(
             content,
             expected.Length,
             CancellationToken.None);
 
         Assert.AreSequenceEqual(expected, actual);
-    }
-
-    [TestMethod]
-    public void RasterRequestExplicitlyNegotiatesHttp2WithFallback()
-    {
-        using HttpRequestMessage request = RasterTileHttp.CreateRequest(
-            HttpMethod.Get,
-            "https://example.test/tile");
-
-        Assert.AreEqual(HttpVersion.Version20, request.Version);
-        Assert.AreEqual(HttpVersionPolicy.RequestVersionOrLower, request.VersionPolicy);
     }
 
     private static TileLayerSnapshot Snapshot(

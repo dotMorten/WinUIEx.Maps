@@ -392,6 +392,8 @@ public sealed partial class MapControl : Control
         bool runtimeRecreated = false;
         if (_panel is not null)
         {
+            _panel.SizeChanged -= OnPanelSizeChanged;
+            _panel.SizeChanged += OnPanelSizeChanged;
             UpdateCameraTarget(forceImmediate: true);
             _renderer.Attach(_panel);
             _renderer.SetMaximumTileZoom(MapCamera.MaximumTileZoom);
@@ -587,6 +589,10 @@ public sealed partial class MapControl : Control
         DetachLifecycleSubscriptions();
         _rasterTileManager.ReleaseWorkers("XamlRootDetached");
         _renderer.ReleaseDormantResources();
+        if (_panel is not null)
+        {
+            _panel.SizeChanged -= OnPanelSizeChanged;
+        }
     }
 
     private void OnLayersChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -885,7 +891,8 @@ public sealed partial class MapControl : Control
                     0,
                     24,
                     0,
-                    256));
+                    256,
+                    -1));
             }
         }
         return LayerSnapshotPublication.PrependHiddenAzure(
@@ -915,7 +922,8 @@ public sealed partial class MapControl : Control
             snapshot.MinZoom,
             snapshot.MaxZoom,
             snapshot.MinSourceZoom,
-            snapshot.TileSize));
+            snapshot.TileSize,
+            -1));
     }
 
     /// <summary>

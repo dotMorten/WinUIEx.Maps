@@ -11,7 +11,7 @@ namespace MapSample.Samples.Performance;
 
 public sealed partial class ReparentPage : Page
 {
-    private readonly MapControl _map = PerformanceMapFactory.Create();
+    private readonly MapControl _map = PerformanceMapFactory.Create(WinUIEx.Maps.MapStyle.Road);
     private CancellationTokenSource? _moveCancellation;
     private bool _isOnLeft = true;
     private int _moveCount;

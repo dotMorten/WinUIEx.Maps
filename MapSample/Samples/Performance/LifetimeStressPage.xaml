@@ -31,5 +31,16 @@
             x:Name="MapHost"
             Grid.Row="1"
             Margin="32,0,32,32" />
+
+        <ComboBox   Grid.Row="1"
+                    x:Name="StylePicker"
+                    MinWidth="220"
+                    VerticalAlignment="Top"
+                    HorizontalAlignment="Right"
+                    Margin="20"
+                    AutomationProperties.AutomationId="LifetimeMapStyleInput"
+                    DisplayMemberPath="Name"
+                    Header="Map" />
+
     </Grid>
 </Page>

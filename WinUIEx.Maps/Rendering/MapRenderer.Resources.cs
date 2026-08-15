@@ -38,6 +38,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private IntPtr _geometryVertexShaderPointer;
     private IntPtr _pixelShaderPointer;
     private IntPtr _iconPixelShaderPointer;
+    private IntPtr _glyphPixelShaderPointer;
     private IntPtr _geometryPixelShaderPointer;
     private IntPtr _inputLayoutPointer;
     private IntPtr _iconInputLayoutPointer;
@@ -83,6 +84,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         _geometryVertexShaderPointer != IntPtr.Zero &&
         _pixelShaderPointer != IntPtr.Zero &&
         _iconPixelShaderPointer != IntPtr.Zero &&
+        _glyphPixelShaderPointer != IntPtr.Zero &&
         _geometryPixelShaderPointer != IntPtr.Zero &&
         _inputLayoutPointer != IntPtr.Zero &&
         _iconInputLayoutPointer != IntPtr.Zero &&
@@ -113,6 +115,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _iconTextures.Count);
         Interlocked.Increment(ref _deviceEpoch);
         ReleaseRasterTileTextures();
+        ReleaseVectorTiles();
         _lastRequiredTiles.Clear();
         _pendingRasterTiles.Clear();
         while (_rasterPixelUploads.TryDequeue(out _))
@@ -152,6 +155,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         ReleasePointer(ref _geometryInputLayoutPointer);
         ReleasePointer(ref _pixelShaderPointer);
         ReleasePointer(ref _iconPixelShaderPointer);
+        ReleasePointer(ref _glyphPixelShaderPointer);
         ReleasePointer(ref _geometryPixelShaderPointer);
         ReleasePointer(ref _vertexShaderPointer);
         ReleasePointer(ref _iconVertexShaderPointer);
@@ -171,6 +175,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             "vs_4_0");
         IntPtr pixelBlob = CompileShader(MapShaders.Pixel, "main", "ps_4_0");
         IntPtr iconPixelBlob = CompileShader(MapShaders.IconPixel, "main", "ps_4_0");
+        IntPtr glyphPixelBlob = CompileShader(MapShaders.GlyphPixel, "main", "ps_4_0");
         IntPtr geometryPixelBlob = CompileShader(
             MapShaders.GeometryPixel,
             "main",
@@ -207,6 +212,12 @@ internal sealed partial class MapRenderer : DirectXRenderer
                 GetBlobBufferSize(iconPixelBlob),
                 15,
                 "Failed to create the MapIcon pixel shader.");
+            _glyphPixelShaderPointer = CreateShader(
+                DevicePointer,
+                (void*)GetBlobBufferPointer(glyphPixelBlob),
+                GetBlobBufferSize(glyphPixelBlob),
+                15,
+                "Failed to create the vector glyph pixel shader.");
             _geometryPixelShaderPointer = CreateShader(
                 DevicePointer,
                 (void*)GetBlobBufferPointer(geometryPixelBlob),
@@ -217,9 +228,11 @@ internal sealed partial class MapRenderer : DirectXRenderer
             byte[] position = Encoding.ASCII.GetBytes("POSITION\0");
             byte[] texture = Encoding.ASCII.GetBytes("TEXCOORD\0");
             byte[] transform = Encoding.ASCII.GetBytes("TRANSFORM\0");
+            byte[] offset = Encoding.ASCII.GetBytes("OFFSET\0");
             fixed (byte* positionPointer = position)
             fixed (byte* texturePointer = texture)
             fixed (byte* transformPointer = transform)
+            fixed (byte* offsetPointer = offset)
             {
                 D3D11_INPUT_ELEMENT_DESC[] elements =
                 [
@@ -259,6 +272,15 @@ internal sealed partial class MapRenderer : DirectXRenderer
                         InputSlotClass = D3D11_INPUT_CLASSIFICATION.D3D11_INPUT_PER_INSTANCE_DATA,
                         InstanceDataStepRate = 1,
                     },
+                    new()
+                    {
+                        SemanticName = (Windows.Win32.Foundation.PCSTR)offsetPointer,
+                        Format = DXGI_FORMAT.DXGI_FORMAT_R32G32B32A32_FLOAT,
+                        InputSlot = 1,
+                        AlignedByteOffset = 16,
+                        InputSlotClass = D3D11_INPUT_CLASSIFICATION.D3D11_INPUT_PER_INSTANCE_DATA,
+                        InstanceDataStepRate = 1,
+                    },
                 ];
                 fixed (D3D11_INPUT_ELEMENT_DESC* iconElementPointer = iconElements)
                 {
@@ -282,6 +304,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         finally
         {
             ReleasePointer(ref geometryPixelBlob);
+            ReleasePointer(ref glyphPixelBlob);
             ReleasePointer(ref iconPixelBlob);
             ReleasePointer(ref pixelBlob);
             ReleasePointer(ref geometryVertexBlob);

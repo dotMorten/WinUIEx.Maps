@@ -72,7 +72,7 @@ public sealed class MapControlLifecycleTests
                 {
                     Width = 640,
                     Height = 480,
-                    MapStyle = MapStyle.Road,
+                    MapStyle = MapStyle.RoadRaster,
                     Center = new Geopoint(new BasicGeoposition
                     {
                         Longitude = -122.33,
@@ -136,7 +136,7 @@ public sealed class MapControlLifecycleTests
                 {
                     Width = 640,
                     Height = 480,
-                    MapStyle = MapStyle.Road,
+                    MapStyle = MapStyle.RoadRaster,
                     Center = new Geopoint(new BasicGeoposition
                     {
                         Longitude = -122.33,

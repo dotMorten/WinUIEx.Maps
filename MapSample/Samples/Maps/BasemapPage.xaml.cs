@@ -1,7 +1,5 @@
 using MapSample.Services;
 using Microsoft.UI.Xaml.Controls;
-using System;
-using System.Linq;
 using Windows.Devices.Geolocation;
 using WinUIEx.Maps;
 
@@ -12,8 +10,23 @@ public sealed partial class BasemapPage : Page
     public BasemapPage()
     {
         InitializeComponent();
-        StylePicker.ItemsSource = Enum.GetValues<MapStyle>()
-            .Where(static style => style != MapStyle.Blank);
+        StylePicker.ItemsSource = new[]
+        {
+            MapStyle.Road,
+            MapStyle.GrayscaleDark,
+            MapStyle.RoadShadedRelief,
+            MapStyle.BlankAccessible,
+            MapStyle.GrayscaleLight,
+            MapStyle.Night,
+            MapStyle.HighContrastDark,
+            MapStyle.HighContrastLight,
+            MapStyle.SatelliteWithRoads,
+            MapStyle.RoadRaster,
+            MapStyle.GrayscaleDarkRaster,
+            MapStyle.Satellite,
+            MapStyle.RoadShadedReliefRaster,
+            MapStyle.Blank,
+        };
         Map.Center = new Geopoint(new BasicGeoposition
         {
             Longitude = -122.33,

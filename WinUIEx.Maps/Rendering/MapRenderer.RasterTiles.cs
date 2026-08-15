@@ -74,6 +74,7 @@ internal sealed partial class MapRenderer
         MapScene scene,
         Func<TileId, bool> includesTile,
         RasterSourceKind sourceKind,
+        LayerRenderKind renderKind,
         bool clearExistingTiles)
     {
         int retainedTileCount;
@@ -91,6 +92,7 @@ internal sealed partial class MapRenderer
             if (clearExistingTiles)
             {
                 RemoveRasterTilesLocked(sourceId);
+                RemoveVectorTilesLocked(sourceId);
                 state.FallbackTileZooms.Clear();
             }
             else if (previousTileZoom >= 0 && previousTileZoom != scene.TileZoom)
@@ -103,6 +105,7 @@ internal sealed partial class MapRenderer
             state.Scene = scene;
             state.IncludesTile = includesTile;
             state.SourceKind = sourceKind;
+            state.RenderKind = renderKind;
             if (generationChanged)
             {
                 _pendingRasterTiles.RemoveSource(sourceId);
@@ -114,7 +117,10 @@ internal sealed partial class MapRenderer
                 state.FullCoverageReported = false;
                 state.OpaqueCoverageReported = false;
             }
-            retainedTileCount = _rasterTiles.Keys.Count(key => key.SourceId == sourceId);
+            retainedTileCount = renderKind is
+                LayerRenderKind.VectorPoints or LayerRenderKind.HybridTiles
+                ? _vectorTiles.Keys.Count(key => key.SourceId == sourceId)
+                : _rasterTiles.Keys.Count(key => key.SourceId == sourceId);
         }
 
         MapControlEventSource.Log.TileSetActivated(
@@ -133,6 +139,8 @@ internal sealed partial class MapRenderer
         lock (RenderLock)
         {
             RemoveRasterTilesLocked(sourceId);
+            RemoveVectorTilesLocked(sourceId);
+            RemoveVectorSpriteTextures(sourceId);
             _rasterLayers.Remove(sourceId);
             _pendingRasterTiles.RemoveSource(sourceId);
         }
@@ -179,7 +187,7 @@ internal sealed partial class MapRenderer
             foreach (TileId id in required)
             {
                 RasterTileKey key = new(sourceId, id);
-                if (_rasterTiles.ContainsKey(key))
+                if (ContainsTile(state.RenderKind, key))
                 {
                     hitCount++;
                 }
@@ -224,6 +232,7 @@ internal sealed partial class MapRenderer
             reservation = _pendingRasterTiles.TryReserve(tile.Key);
             if (!_rasterLayers.TryGetValue(tile.Key.SourceId, out RasterLayerState? state) ||
                 tile.Generation != state.Generation ||
+                state.RenderKind != LayerRenderKind.RasterTiles ||
                 _rasterTiles.ContainsKey(tile.Key) ||
                 reservation == 0)
             {
@@ -278,6 +287,8 @@ internal sealed partial class MapRenderer
                     completed.Key.SourceId,
                     out RasterLayerState? state) ||
                 completed.Generation != state.Generation ||
+                state.RenderKind is not
+                    (LayerRenderKind.RasterTiles or LayerRenderKind.HybridTiles) ||
                 completed.DeviceEpoch != _deviceEpoch)
             {
                 staleDroppedCount++;
@@ -289,8 +300,30 @@ internal sealed partial class MapRenderer
                 continue;
             }
 
-            if (_rasterTiles.TryAdd(completed.Key, completed.Texture))
+            bool canCommit = !_rasterTiles.ContainsKey(completed.Key) &&
+                (completed.VectorTile is null ||
+                 !_vectorTiles.ContainsKey(completed.Key));
+            if (canCommit)
             {
+                _rasterTiles.Add(completed.Key, completed.Texture);
+                if (completed.VectorTile is VectorTileData vectorTile)
+                {
+                    _vectorTiles.Add(
+                        completed.Key,
+                        new VectorTileCacheEntry(
+                            vectorTile.Features,
+                            vectorTile.StyleAssets,
+                            vectorTile.Style));
+                    OnVectorTilesChanged();
+                    MapControlEventSource.Log.VectorTileCommitSummary(
+                        vectorTile.Style,
+                        1,
+                        0,
+                        vectorTile.Features.PointCount,
+                        vectorTile.SpriteTextures.Length,
+                        _vectorTiles.Count,
+                        _vectorTiles.Values.Sum(tile => tile.ByteSize));
+                }
                 acceptedCount++;
                 if (completed.SourceKind == RasterSourceKind.Custom)
                 {
@@ -452,7 +485,8 @@ internal sealed partial class MapRenderer
                         deviceEpoch,
                         upload.Reservation,
                         tile.SourceKind,
-                        completedTexture));
+                        completedTexture,
+                        upload.VectorTile));
                     completedTexture = null;
                     completedQueued = true;
                     uploadedCount++;
@@ -835,9 +869,14 @@ internal sealed partial class MapRenderer
         RasterLayerState state,
         int activeTileZoom)
     {
-        IEnumerable<int> loadedLevels = _rasterTiles.Keys
-            .Where(key => key.SourceId == sourceId)
-            .Select(key => key.Id.Zoom);
+        IEnumerable<int> loadedLevels = state.RenderKind is
+            LayerRenderKind.VectorPoints or LayerRenderKind.HybridTiles
+            ? _vectorTiles.Keys
+                .Where(key => key.SourceId == sourceId)
+                .Select(key => key.Id.Zoom)
+            : _rasterTiles.Keys
+                .Where(key => key.SourceId == sourceId)
+                .Select(key => key.Id.Zoom);
         state.FallbackTileZooms.Clear();
         state.FallbackTileZooms.UnionWith(
             SelectFallbackTileZooms(loadedLevels, activeTileZoom));
@@ -1007,7 +1046,8 @@ internal sealed partial class MapRenderer
             (total, texture) => total + texture.ByteSize);
         Dictionary<long, LayerRenderSnapshot> eligibleLayers = _layerRenderPlan
             .Where(layer =>
-                layer.Kind == LayerRenderKind.RasterTiles &&
+                layer.Kind is
+                    (LayerRenderKind.RasterTiles or LayerRenderKind.HybridTiles) &&
                 layer.IsVisible &&
                 layer.Opacity > 0 &&
                 _displayZoom >= layer.MinZoom &&
@@ -1105,12 +1145,21 @@ internal sealed partial class MapRenderer
                 continue;
             }
             _rasterTiles.Remove(key);
+            if (_rasterLayers.TryGetValue(
+                    key.SourceId,
+                    out RasterLayerState? layerState) &&
+                layerState.RenderKind == LayerRenderKind.HybridTiles)
+            {
+                if (_vectorTiles.Remove(key))
+                {
+                    OnVectorTilesChanged();
+                }
+            }
             QueueTextureDisposal(texture);
             cacheBytes -= texture.ByteSize;
             evictedBytes += texture.ByteSize;
             evictedCount++;
-            if (_rasterLayers.TryGetValue(key.SourceId, out RasterLayerState? state) &&
-                state.SourceKind == RasterSourceKind.Custom)
+            if (layerState?.SourceKind == RasterSourceKind.Custom)
             {
                 customEvictedCount++;
             }
@@ -1340,6 +1389,7 @@ internal sealed partial class MapRenderer
         internal MapScene? Scene;
         internal Func<TileId, bool> IncludesTile = static _ => true;
         internal RasterSourceKind SourceKind;
+        internal LayerRenderKind RenderKind;
         internal HashSet<int> FallbackTileZooms { get; } = [];
     }
 
@@ -1360,5 +1410,6 @@ internal sealed partial class MapRenderer
         int DeviceEpoch,
         long Reservation,
         RasterSourceKind SourceKind,
-        TileTexture Texture);
+        TileTexture Texture,
+        VectorTileData? VectorTile);
 }

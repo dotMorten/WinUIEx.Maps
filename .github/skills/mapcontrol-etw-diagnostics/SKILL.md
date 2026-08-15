@@ -30,7 +30,8 @@ Keywords:
 | `0x20` | icon raster, textures, instances, and draw batches |
 | `0x40` | failures |
 | `0x80` | custom-source classification within the unified raster pipeline |
-| `0xFF` | all areas |
+| `0x100` | Azure vector-tile decoding, styles, sprites, and point symbols |
+| `0x1FF` | all areas |
 
 Levels are Error (`2`), Warning (`3`), Informational (`4`), and Verbose (`5`).
 Informational is the normal diagnostic level. Verbose adds `SceneChanged` and the
@@ -55,7 +56,7 @@ Informational events:
 
 ```powershell
 dotnet-trace collect --process-id <PID> `
-  --providers WinUIEx-Maps-Rendering:0xFF:4 `
+  --providers WinUIEx-Maps-Rendering:0x1FF:4 `
   --output .\mapcontrol.nettrace
 ```
 
@@ -112,6 +113,23 @@ payload inspection is best in PerfView's Events view.
 | 46 | `TileSchedulerSummary` | Info/Tiles | continuously fed scheduler candidates, starts, completions, peak concurrency, deferrals, and duration |
 | 47 | `CameraHeadingTargetChanged` | Info/Camera | normalized heading target and whether direct manipulation bypasses interpolation |
 | 48 | `CameraPitchTargetChanged` | Info/Camera | normalized pitch target and whether direct manipulation bypasses interpolation |
+| 49 | `VectorTileCommitSummary` | Info/Tiles+VectorTiles | generation-checked vector commits, stale drops, decoded point and prepared sprite counts, and CPU cache size |
+| 50 | `VectorStyleAssetsLoaded` | Info/Tiles+VectorTiles | successful Style Spec/sprite load, supported and explicitly skipped layer counts, atlas dimensions, and duration |
+| 51 | `VectorSymbolRenderBatch` | Verbose/Icons+VectorTiles | aggregate point-symbol candidates, drawable instances, typed evaluation failures, unavailable sprites, texture batches, and draw calls |
+| 52 | `VectorGlyphRangeLoaded` | Info/Tiles+VectorTiles | successful bounded glyph-range acquisition and decode with sanitized glyph/byte counts and duration |
+| 53 | `VectorLabelRenderBatch` | Verbose/Icons+VectorTiles | aggregate point-label glyph candidates, drawable glyphs, evaluation failures, unavailable glyphs, texture batches, and draw calls |
+| 54 | `VectorGlyphRangeUnavailable` | Warning/Tiles+VectorTiles+Errors | definitive 400/404 glyph-range response cached as unavailable so remaining tile imagery and symbols can continue |
+| 55 | `VectorLabelCollisionSummary` | Verbose/Icons+VectorTiles | screen-space label candidates accepted or suppressed by higher-priority overlapping labels, plus suppressed glyph count |
+| 56 | `VectorLineRenderBatch` | Verbose/Tiles+VectorTiles | style-resolved vector line candidates, drawable lines, generated triangle count, evaluation failures, and draw calls |
+| 57 | `VectorLineFallbackSummary` | Verbose/Tiles+VectorTiles | retained line-tile instances drawn from adjacent zooms versus distant fallback instances suppressed to prevent over-generalized cross-screen strokes |
+| 58 | `VectorPolygonRenderBatch` | Verbose/Tiles+VectorTiles | style-resolved polygon candidates, visible tessellated triangles, evaluation failures, distant fallback suppression, and draw calls |
+| 59 | `VectorGeometryFallbackOpacitySummary` | Verbose/Tiles+VectorTiles | retained line or polygon instances smoothly faded by zoom distance and overlapping active-tile readiness instead of abruptly disappearing |
+| 60 | `VectorLineSymbolPlacementSummary` | Verbose/Icons+VectorTiles | line-following icon and glyph components resolved from tile geometry, successfully projected along screen-space paths, and drawn after collision suppression |
+| 61 | `VectorGeometryFrameCacheSummary` | Verbose/Tiles+VectorTiles | GPU line or polygon frame geometry built or reused for translation-only panning, with retained vertex and native-buffer byte counts |
+| 62 | `VectorGeometryDeferredRebuildSummary` | Verbose/Tiles+VectorTiles | whole-scene line or polygon rebuild deferred during active panning while newly available tiles are rendered incrementally, with pending tile count and translated cache offset |
+| 63 | `VectorGeometryPreparationSummary` | Informational/Tiles+VectorTiles | background line/polygon vertex preparation accepted or discarded, separating CPU preparation from immutable GPU-buffer creation |
+| 64 | `VectorLabelTextureReadinessSummary` | Verbose/Icons+VectorTiles | whole labels and glyphs withheld until every texture required by each label is available |
+| 65 | `VectorLabelFadeSummary` | Verbose/Icons+VectorTiles | complete labels and glyphs currently fading from the newest required glyph texture |
 
 ## Reproduce and interpret
 
@@ -132,6 +150,21 @@ payload inspection is best in PerfView's Events view.
   and IDs 38/39 localize upload or stale-generation behavior. `MapStyle.Blank` removes the
   hidden Azure `TileLayer`, so it should produce no Azure tile/attribution work while custom
   IDs continue.
+- **Azure vector tiles:** select Tiles+VectorTiles (`0x108`) and correlate IDs 11–17, 43–46,
+  and 49–63. ID 49 confirms that MVT responses reached generation-checked CPU cache commit,
+  ID 50 distinguishes asset acquisition from tile decode and reports explicitly unsupported
+  style-layer counts, ID 52 reports glyph-range latency, ID 54 reports definitive unavailable
+  ranges without font or label content, verbose IDs 51/53 summarize point-symbol and
+  point-label batching, verbose ID 55 quantifies collision suppression, and verbose ID 56
+  reports direct line geometry generation and drawing, while ID 57 identifies distant
+  fallback suppression during zoom transitions, ID 58 summarizes polygon fills, and ID 59
+  quantifies fallback crossfading, ID 60 reports line-following symbol placement, and ID 61
+  distinguishes geometry rebuilds from translation-only frame reuse, while ID 62 confirms
+  that tile arrivals were handled incrementally instead of forcing an in-motion rebuild, and ID 63
+  separates background geometry preparation from immutable GPU-buffer creation. ID 64 confirms
+  labels are withheld as complete groups while glyph textures are still uploading, and ID 65
+  confirms those complete groups fade after becoming ready. None exposes
+  source-layer names, properties, sprite names, URLs, or service content.
 - **Cache/dedup:** inspect ID 18 over time. A high `pendingDedupCount` is expected while a
   wave is active. Repeated misses for the same stable scene or evictions that cannot return
   below the viewport-aware budget reported by ID 19 indicate shared raster-cache behavior

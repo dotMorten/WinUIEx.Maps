@@ -61,6 +61,28 @@ public sealed class MapControlEventSourceTests
         MapControlEventSource.Log.TileSchedulerSummary(1, 24, 3, 48, 48, 48, 8, 0, 900);
         MapControlEventSource.Log.CameraHeadingTargetChanged(315, true);
         MapControlEventSource.Log.CameraPitchTargetChanged(45, false);
+        MapControlEventSource.Log.VectorTileCommitSummary(6, 4, 1, 120, 7, 18, 4096);
+        MapControlEventSource.Log.VectorStyleAssetsLoaded(
+            6, 36, 5, 1400, 1024, 1024, 250);
+        MapControlEventSource.Log.VectorSymbolRenderBatch(
+            6, 120, 96, 2, 3, 12, 12);
+        MapControlEventSource.Log.VectorGlyphRangeLoaded(6, 220, 74511, 80);
+        MapControlEventSource.Log.VectorLabelRenderBatch(
+            6, 840, 810, 2, 4, 42, 42);
+        MapControlEventSource.Log.VectorGlyphRangeUnavailable(
+            6, 256, 400, "AzureMapsRequestException", 75);
+        MapControlEventSource.Log.VectorLabelCollisionSummary(
+            6, 120, 80, 40, 215);
+        MapControlEventSource.Log.VectorLineRenderBatch(
+            6, 400, 360, 7200, 2, 24);
+        MapControlEventSource.Log.VectorLineFallbackSummary(
+            6, 18, 12, 6, 3);
+        MapControlEventSource.Log.VectorPolygonRenderBatch(
+            6, 250, 220, 4800, 3, 4, 16);
+        MapControlEventSource.Log.VectorGeometryFallbackOpacitySummary(
+            6, 1, 18, 8, 2, 0.25, 1);
+        MapControlEventSource.Log.VectorLineSymbolPlacementSummary(
+            6, 240, 180, 150);
 
         CapturedEvent wave = listener.Single(11);
         Assert.AreEqual("TileWaveStart", wave.Name);
@@ -156,6 +178,96 @@ public sealed class MapControlEventSourceTests
             pitch.PayloadNames);
         Assert.AreEqual(45d, pitch.Payload[0]);
         Assert.AreEqual(false, pitch.Payload[1]);
+        CapturedEvent vectorCommit = listener.Single(49);
+        Assert.AreSequenceEqual(
+            ["style", "acceptedCount", "staleDroppedCount", "acceptedPointCount",
+             "preparedSpriteCount", "cacheEntryCount", "cacheBytes"],
+            vectorCommit.PayloadNames);
+        Assert.AreEqual(120, vectorCommit.Payload[3]);
+        CapturedEvent styleAssets = listener.Single(50);
+        Assert.AreSequenceEqual(
+            ["style", "symbolLayerCount", "unsupportedLayerCount",
+             "spriteEntryCount", "atlasWidth", "atlasHeight",
+             "durationMilliseconds"],
+            styleAssets.PayloadNames);
+        Assert.AreEqual(5, styleAssets.Payload[2]);
+        CapturedEvent vectorBatch = listener.Single(51);
+        Assert.AreSequenceEqual(
+            ["style", "candidateCount", "drawableCount", "evaluationFailureCount",
+             "unavailableSpriteCount", "textureBatchCount", "drawCallCount"],
+            vectorBatch.PayloadNames);
+        Assert.AreEqual(96, vectorBatch.Payload[2]);
+        CapturedEvent glyphRange = listener.Single(52);
+        Assert.AreSequenceEqual(
+            ["style", "glyphCount", "encodedByteCount", "durationMilliseconds"],
+            glyphRange.PayloadNames);
+        Assert.AreEqual(220, glyphRange.Payload[1]);
+        CapturedEvent labelBatch = listener.Single(53);
+        Assert.AreSequenceEqual(
+            ["style", "candidateGlyphCount", "drawableGlyphCount",
+             "evaluationFailureCount", "unavailableGlyphCount",
+             "textureBatchCount", "drawCallCount"],
+            labelBatch.PayloadNames);
+        Assert.AreEqual(810, labelBatch.Payload[2]);
+        CapturedEvent unavailableGlyphRange = listener.Single(54);
+        Assert.AreSequenceEqual(
+            ["style", "rangeStart", "statusCode", "exceptionType",
+             "durationMilliseconds"],
+            unavailableGlyphRange.PayloadNames);
+        Assert.AreEqual(256, unavailableGlyphRange.Payload[1]);
+        Assert.AreEqual(400, unavailableGlyphRange.Payload[2]);
+        CapturedEvent labelCollisions = listener.Single(55);
+        Assert.AreSequenceEqual(
+            ["style", "candidateLabelCount", "acceptedLabelCount",
+             "suppressedLabelCount", "suppressedGlyphCount"],
+            labelCollisions.PayloadNames);
+        Assert.AreEqual(120, labelCollisions.Payload[1]);
+        Assert.AreEqual(80, labelCollisions.Payload[2]);
+        Assert.AreEqual(40, labelCollisions.Payload[3]);
+        Assert.AreEqual(215, labelCollisions.Payload[4]);
+        CapturedEvent vectorLines = listener.Single(56);
+        Assert.AreSequenceEqual(
+            ["style", "candidateLineCount", "drawableLineCount", "triangleCount",
+             "evaluationFailureCount", "drawCallCount"],
+            vectorLines.PayloadNames);
+        Assert.AreEqual(400, vectorLines.Payload[1]);
+        Assert.AreEqual(360, vectorLines.Payload[2]);
+        Assert.AreEqual(7200, vectorLines.Payload[3]);
+        CapturedEvent lineFallback = listener.Single(57);
+        Assert.AreSequenceEqual(
+            ["style", "candidateInstanceCount", "drawnInstanceCount",
+             "suppressedDistantInstanceCount", "maximumZoomDifference"],
+            lineFallback.PayloadNames);
+        Assert.AreEqual(18, lineFallback.Payload[1]);
+        Assert.AreEqual(12, lineFallback.Payload[2]);
+        Assert.AreEqual(6, lineFallback.Payload[3]);
+        Assert.AreEqual(3d, lineFallback.Payload[4]);
+        CapturedEvent vectorPolygons = listener.Single(58);
+        Assert.AreSequenceEqual(
+            ["style", "candidatePolygonCount", "drawablePolygonCount",
+             "triangleCount", "evaluationFailureCount",
+             "suppressedFallbackInstanceCount", "drawCallCount"],
+            vectorPolygons.PayloadNames);
+        Assert.AreEqual(250, vectorPolygons.Payload[1]);
+        Assert.AreEqual(220, vectorPolygons.Payload[2]);
+        Assert.AreEqual(4800, vectorPolygons.Payload[3]);
+        CapturedEvent fallbackOpacity = listener.Single(59);
+        Assert.AreSequenceEqual(
+            ["style", "geometryKind", "fallbackInstanceCount",
+             "fadedInstanceCount", "suppressedInstanceCount",
+             "minimumOpacity", "maximumOpacity"],
+            fallbackOpacity.PayloadNames);
+        Assert.AreEqual(1, fallbackOpacity.Payload[1]);
+        Assert.AreEqual(8, fallbackOpacity.Payload[3]);
+        Assert.AreEqual(0.25d, fallbackOpacity.Payload[5]);
+        CapturedEvent lineSymbols = listener.Single(60);
+        Assert.AreSequenceEqual(
+            ["style", "candidateComponentCount", "projectedComponentCount",
+             "drawnComponentCount"],
+            lineSymbols.PayloadNames);
+        Assert.AreEqual(240, lineSymbols.Payload[1]);
+        Assert.AreEqual(180, lineSymbols.Payload[2]);
+        Assert.AreEqual(150, lineSymbols.Payload[3]);
         Assert.DoesNotContain(captured => captured.Id == 0, listener.Events);
     }
 
@@ -168,7 +280,9 @@ public sealed class MapControlEventSourceTests
             .OfType<EventAttribute>()
             .ToArray();
 
-        Assert.AreSequenceEqual(Enumerable.Range(1, 48), events.Select(attribute => attribute.EventId).Order());
+        Assert.AreSequenceEqual(
+            Enumerable.Range(1, 60),
+            events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }
 
@@ -211,7 +325,10 @@ public sealed class MapControlEventSourceTests
             parameter =>
                 parameter.Name!.Contains("token", StringComparison.OrdinalIgnoreCase) ||
                 parameter.Name.Contains("url", StringComparison.OrdinalIgnoreCase) ||
-                parameter.Name.Contains("query", StringComparison.OrdinalIgnoreCase),
+                parameter.Name.Contains("query", StringComparison.OrdinalIgnoreCase) ||
+                parameter.Name.Contains("sourceLayer", StringComparison.OrdinalIgnoreCase) ||
+                parameter.Name.Contains("propertyName", StringComparison.OrdinalIgnoreCase) ||
+                parameter.Name.Contains("spriteName", StringComparison.OrdinalIgnoreCase),
             eventMethods.SelectMany(method => method.GetParameters()));
 
         string payloadText = string.Join(

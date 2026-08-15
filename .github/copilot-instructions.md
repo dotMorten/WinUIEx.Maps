@@ -7,24 +7,28 @@
 - `MapControl.Layers` owns ordered `MapLayer` instances; the first layer is bottom-most.
   `MapLayer.IsVisible` and `MapLayer.Opacity` apply to all layer kinds. `TileLayer` exposes
   dependency properties, directly inherits `MapLayer`, and is the single representation of
-  every raster source. It is non-sealed only for internal acquisition specialization; there
-  is no public tile-source abstraction. Only immutable `TileLayerSnapshot` and
-  `RasterTileAcquisitionSession` values cross to rendering and scheduling.
+  every public raster source. It is non-sealed only for internal acquisition specialization;
+  there is no public tile-source abstraction. Only immutable `TileLayerSnapshot` and
+  `RasterTileAcquisitionSession` values cross to rendering and scheduling; the internal Azure
+  session may return raster pixels or decoded MVT point geometry.
   `MapElementsLayer.MapElements` owns observable lightweight elements. Both collections are
   replaceable, reject null/duplicate references, and must transfer subscriptions without
   retaining removed layers or elements.
 - `WinUIEx.Maps/Rendering/MapRenderer.*.cs` owns render-thread scene state, D3D resources,
-  the source-keyed raster texture cache, icon textures, the heterogeneous render plan, and
-  draw batching. `RasterTileManager` owns the one latest-scene scheduler, cancellation,
-  bounded request/decode/upload work, and per-source generations for both Azure and custom
-  raster sessions. Do not add a parallel Azure/custom manager, upload queue, cache,
-  fallback, or render path.
+  the source-keyed raster texture cache, vector point cache and GPU point textures, icon
+  textures, the heterogeneous render plan, and draw batching. `RasterTileManager` owns the
+  one latest-scene scheduler, cancellation, bounded request/decode/upload work, shared
+  backpressure, and per-source generations for Azure raster/vector and custom raster
+  sessions. Do not add a parallel Azure/custom/vector manager or independent backpressure
+  pipeline.
 - `MapControl` owns an internal `AzureTileLayer` that is never inserted into or exposed
   through public `Layers`. A non-Blank style creates/configures that hidden layer and its
   immutable Azure acquisition session; `Blank` sets it to null. Snapshot publication
   prepends it below the unchanged public layer plan. Azure style/tileset/authentication,
-  native-size, shaded-relief composition, maximum-zoom, and attribution behavior stays in
-  `AzureTileLayer`/`AzureTileAcquisitionSession`.
+  raster/vector selection, MVT decoding, maximum-zoom, and attribution behavior stays in
+  `AzureTileLayer`/`AzureTileAcquisitionSession`. Vector geometry is decoded on acquisition
+  workers, committed to the renderer's bounded source cache, and drawn as GPU-instanced
+  point textures without rasterizing vector tiles into image tiles.
 - Preserve `MapLayer : DependencyObject` and the lightweight, non-`DependencyObject`
   `MapElement`/`MapIcon` model. Changes may arrive off the UI
   thread, but collection mutation, XAML access, and icon rasterization stay on the UI
@@ -44,8 +48,8 @@
 - Keep D3D access under the renderer's synchronization and keep network/decode work off the
   UI and render threads. Preserve the unified global request/upload backpressure, source
   generations, `CancelAsync`/WinRT cancellation, pending reservations, nearest-covered
-  coarser fallback, device epochs, global GPU cache accounting/eviction, and continuous
-  native texture disposal when changing asynchronous raster work.
+  coarser fallback, device epochs, raster GPU/vector CPU cache accounting and eviction, and
+  continuous native texture disposal when changing asynchronous tile work.
 
 ## Runtime diagnosis and eventing
 
@@ -74,6 +78,9 @@
   `dotnet build .\MapSample\MapSample.csproj --no-restore -p:Platform=x64`.
   Use the `winui-dev-workflow` `BuildAndRun.ps1`/`winapp run` flow when launch behavior must
   be tested; never execute the packaged `.exe` directly.
+- Use `winapp ui` for packaged-app discovery, inspection, navigation, input, and screenshots
+  whenever it supports the required operation. Do not use `UIAutomationClient` for work
+  that WinApp CLI can perform.
 - Before finishing, run `git diff --check`. Add focused unit tests beside the existing
   xUnit tests. Event schema and privacy changes require `EventListener` tests; public API
   removals/additions should have reflection coverage.

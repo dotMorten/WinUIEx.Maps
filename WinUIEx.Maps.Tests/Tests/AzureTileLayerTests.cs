@@ -1,6 +1,6 @@
 using WinUIEx.Maps.Rendering;
-using System.Net;
 using Windows.Graphics.Imaging;
+using Windows.Web.Http.Filters;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace WinUIEx.Maps.Tests;
@@ -9,22 +9,24 @@ namespace WinUIEx.Maps.Tests;
 public sealed class AzureTileLayerTests
 {
     [TestMethod]
-    public void ConnectionCandidatesPreferIPv4AndRetainIPv6Fallback()
+    public void AzureHttpClientReadsAndWritesTheResponseCache()
     {
-        IPAddress ipv6 = IPAddress.Parse("2001:db8::1");
-        IPAddress ipv4 = IPAddress.Parse("192.0.2.1");
+        using HttpBaseProtocolFilter filter =
+            AzureTileAcquisitionSession.CreateHttpFilter();
 
-        IPAddress[] candidates = AzureTileAcquisitionSession.SelectConnectionAddresses(
-            [ipv6, IPAddress.Parse("2001:db8::2"), ipv4, IPAddress.Parse("192.0.2.2")]);
-
-        Assert.AreSequenceEqual([ipv4, ipv6], candidates);
+        Assert.AreEqual(
+            HttpCacheReadBehavior.Default,
+            filter.CacheControl.ReadBehavior);
+        Assert.AreEqual(
+            HttpCacheWriteBehavior.Default,
+            filter.CacheControl.WriteBehavior);
     }
 
     [TestMethod]
-    [DataRow(MapStyle.Road, 10, "microsoft.base.road")]
-    [DataRow(MapStyle.GrayscaleDark, 10, "microsoft.base.darkgrey")]
+    [DataRow(MapStyle.RoadRaster, 10, "microsoft.base.road")]
+    [DataRow(MapStyle.GrayscaleDarkRaster, 10, "microsoft.base.darkgrey")]
     [DataRow(MapStyle.Satellite, 10, "microsoft.imagery")]
-    [DataRow(MapStyle.RoadShadedRelief, 10, "microsoft.base.road")]
+    [DataRow(MapStyle.RoadShadedReliefRaster, 10, "microsoft.base.road")]
     public void RasterStylesUseSupportedRasterTilesets(
         MapStyle style,
         int zoom,
@@ -34,14 +36,54 @@ public sealed class AzureTileLayerTests
     }
 
     [TestMethod]
-    public void ShadedReliefCombinesTerrainAndRoadOverlayAtSupportedZooms()
+    public void VectorStylesUseTheSharedAzureBaseTileset()
+    {
+        foreach (MapStyle style in Enum.GetValues<MapStyle>()
+            .Where(AzureTileAcquisitionSession.IsVectorStyle))
+        {
+            Assert.AreSequenceEqual(
+                style == MapStyle.SatelliteWithRoads
+                    ? ["microsoft.imagery", "microsoft.base"]
+                    : ["microsoft.base"],
+                AzureTileAcquisitionSession.GetTilesetIds(style, 6));
+            Assert.AreEqual(
+                style == MapStyle.SatelliteWithRoads
+                    ? LayerRenderKind.HybridTiles
+                    : LayerRenderKind.VectorPoints,
+                new AzureTileAcquisitionSession(style, "token").RenderKind);
+        }
+    }
+
+    [TestMethod]
+    public void LegacyStylesRetainRasterRendering()
+    {
+        foreach (MapStyle style in new[]
+        {
+            MapStyle.RoadRaster,
+            MapStyle.GrayscaleDarkRaster,
+            MapStyle.Satellite,
+            MapStyle.RoadShadedReliefRaster,
+        })
+        {
+            Assert.AreEqual(
+                LayerRenderKind.RasterTiles,
+                new AzureTileAcquisitionSession(style, "token").RenderKind);
+        }
+    }
+
+    [TestMethod]
+    public void ShadedReliefUsesRoadAndTerrainAtSupportedZooms()
     {
         Assert.AreSequenceEqual(
             ["microsoft.base.road", "microsoft.terra.main"],
-            AzureTileAcquisitionSession.GetTilesetIds(MapStyle.RoadShadedRelief, 6));
-        Assert.AreEqual(512, AzureTileAcquisitionSession.GetTileRequestSize("microsoft.terra.main"));
-        Assert.AreEqual(512, AzureTileAcquisitionSession.GetStyleTileSize(MapStyle.RoadShadedRelief, 6));
-        Assert.AreEqual(256, AzureTileAcquisitionSession.GetStyleTileSize(MapStyle.Road, 6));
+            AzureTileAcquisitionSession.GetTilesetIds(
+                MapStyle.RoadShadedReliefRaster,
+                6));
+        Assert.AreSequenceEqual(
+            ["microsoft.base.road"],
+            AzureTileAcquisitionSession.GetTilesetIds(
+                MapStyle.RoadShadedReliefRaster,
+                7));
     }
 
     [TestMethod]
@@ -89,6 +131,82 @@ public sealed class AzureTileLayerTests
         Assert.AreEqual(
             MapCamera.MaximumTileZoom,
             AzureTileAcquisitionSession.GetMaximumTileZoom(MapStyle.Road));
+        Assert.AreEqual(
+            19,
+            AzureTileAcquisitionSession.GetMaximumTileZoom(
+                MapStyle.SatelliteWithRoads));
+    }
+
+    [TestMethod]
+    public void AzureVectorStylesUseMvtAcquisition()
+    {
+        MapStyle[] vectorStyles =
+        [
+            MapStyle.Road,
+            MapStyle.GrayscaleDark,
+            MapStyle.RoadShadedRelief,
+            MapStyle.BlankAccessible,
+            MapStyle.GrayscaleLight,
+            MapStyle.Night,
+            MapStyle.HighContrastDark,
+            MapStyle.HighContrastLight,
+            MapStyle.SatelliteWithRoads,
+        ];
+
+        foreach (MapStyle style in vectorStyles)
+        {
+            Assert.IsTrue(AzureTileAcquisitionSession.IsVectorStyle(style));
+        }
+        Assert.IsFalse(AzureTileAcquisitionSession.IsVectorStyle(MapStyle.Blank));
+        Assert.IsFalse(
+            AzureTileAcquisitionSession.IsVectorStyle(MapStyle.RoadRaster));
+        Assert.IsFalse(
+            AzureTileAcquisitionSession.IsVectorStyle(
+                MapStyle.GrayscaleDarkRaster));
+        Assert.IsFalse(
+            AzureTileAcquisitionSession.IsVectorStyle(
+                MapStyle.RoadShadedReliefRaster));
+        Assert.IsFalse(AzureTileAcquisitionSession.IsVectorStyle(MapStyle.Satellite));
+        Assert.IsTrue(
+            AzureTileAcquisitionSession.IsHybridStyle(
+                MapStyle.SatelliteWithRoads));
+        Assert.AreEqual(
+            MapCamera.MaximumTileZoom,
+            AzureTileAcquisitionSession.GetMaximumTileZoom(MapStyle.HighContrastDark));
+    }
+
+    [TestMethod]
+    [DataRow(MapStyle.RoadRaster, "road")]
+    [DataRow(MapStyle.GrayscaleDarkRaster, "grayscale_dark")]
+    [DataRow(MapStyle.RoadShadedReliefRaster, "road_shaded_relief")]
+    [DataRow(MapStyle.Road, "road")]
+    [DataRow(MapStyle.GrayscaleDark, "grayscale_dark")]
+    [DataRow(MapStyle.Satellite, "satellite")]
+    [DataRow(MapStyle.RoadShadedRelief, "road_shaded_relief")]
+    [DataRow(MapStyle.Blank, "blank")]
+    [DataRow(MapStyle.BlankAccessible, "blank_accessible")]
+    [DataRow(MapStyle.GrayscaleLight, "grayscale_light")]
+    [DataRow(MapStyle.Night, "night")]
+    [DataRow(MapStyle.HighContrastDark, "high_contrast_dark")]
+    [DataRow(MapStyle.HighContrastLight, "high_contrast_light")]
+    [DataRow(MapStyle.SatelliteWithRoads, "satellite_road_labels")]
+    public void PublicStylesMapToAzureStyleNames(
+        MapStyle style,
+        string expected)
+    {
+        Assert.AreEqual(expected, AzureTileAcquisitionSession.GetAzureStyleName(style));
+    }
+
+    [TestMethod]
+    public void SatelliteRoadStyleAssetsUseServiceSlug()
+    {
+        AzureStyleAssetPaths paths = AzureVectorStyleProvider.GetAssetPaths(
+            MapStyle.SatelliteWithRoads);
+
+        Assert.Contains("satellite_road_labels", paths.Style);
+        Assert.Contains("satellite_road_labels", paths.SpriteIndex);
+        Assert.Contains("satellite_road_labels", paths.SpriteImage);
+        Assert.DoesNotContain("satellite_with_roads", paths.Style);
     }
 
     [TestMethod]

@@ -7,7 +7,7 @@ namespace MapSample.Samples.Performance;
 
 public sealed partial class RemoveReinsertPage : Page
 {
-    private readonly MapControl _map = PerformanceMapFactory.Create();
+    private readonly MapControl _map = PerformanceMapFactory.Create(WinUIEx.Maps.MapStyle.Road);
 
     public RemoveReinsertPage()
     {

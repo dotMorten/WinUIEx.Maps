@@ -959,6 +959,7 @@ internal sealed class RasterTileManager : IDisposable
                     sourceScene,
                     layer.Acquisition.IncludesTile,
                     layer.Acquisition.SourceKind,
+                    layer.Acquisition.RenderKind,
                     clearExistingTiles);
                 CancellationToken cancellationToken = waveCancellation.Token;
                 // Cached fallback coverage is renderer-owned. The scheduler requests only
@@ -1090,20 +1091,66 @@ internal sealed class RasterTileManager : IDisposable
                 entered = true;
                 activeRequests = _requestConcurrency.Enter();
                 requestActive = true;
-                DecodedRasterTile decoded = await acquisition
-                    .GetTileAsync(id, cancellationToken)
-                    .ConfigureAwait(false);
-                cancellationToken.ThrowIfCancellationRequested();
-                long uploadWaitStarted = Stopwatch.GetTimestamp();
-                bool accepted = await _renderer.QueueRasterUploadAsync(
-                    new RasterTileData(
-                        new RasterTileKey(RuntimeId, decoded.Id),
-                        decoded.Pixels,
-                        decoded.Width,
-                        decoded.Height,
+                long uploadWaitStarted;
+                double downloadMilliseconds;
+                double decodeMilliseconds;
+                bool accepted;
+                if (acquisition.RenderKind is
+                    LayerRenderKind.VectorPoints or LayerRenderKind.HybridTiles)
+                {
+                    DecodedVectorTile decoded = await acquisition
+                        .GetVectorTileAsync(id, cancellationToken)
+                        .ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    downloadMilliseconds = decoded.DownloadMilliseconds;
+                    decodeMilliseconds = decoded.DecodeMilliseconds;
+                    uploadWaitStarted = Stopwatch.GetTimestamp();
+                    RasterTileKey key = new(RuntimeId, decoded.Id);
+                    RasterTileData? background = decoded.Background is
+                        DecodedRasterTile raster
+                        ? new RasterTileData(
+                            key,
+                            raster.Pixels,
+                            raster.Width,
+                            raster.Height,
+                            generation,
+                            acquisition.SourceKind)
+                        : null;
+                    VectorTileData vectorTile = new(
+                        key,
+                        decoded.Features,
+                        decoded.StyleAssets,
+                        decoded.SpriteTextures,
+                        background,
                         generation,
-                        acquisition.SourceKind),
-                    cancellationToken).ConfigureAwait(false);
+                        acquisition.TelemetryStyle);
+                    accepted = acquisition.RenderKind == LayerRenderKind.HybridTiles
+                        ? await _renderer.QueueHybridTileAsync(
+                            vectorTile,
+                            cancellationToken).ConfigureAwait(false)
+                        : await _renderer.QueueVectorTileAsync(
+                            vectorTile,
+                            cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    DecodedRasterTile decoded = await acquisition
+                        .GetTileAsync(id, cancellationToken)
+                        .ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    downloadMilliseconds = decoded.DownloadMilliseconds;
+                    decodeMilliseconds = decoded.DecodeMilliseconds;
+                    uploadWaitStarted = Stopwatch.GetTimestamp();
+                    accepted = await _renderer.QueueRasterUploadAsync(
+                        new RasterTileData(
+                            new RasterTileKey(RuntimeId, decoded.Id),
+                            decoded.Pixels,
+                            decoded.Width,
+                            decoded.Height,
+                            generation,
+                            acquisition.SourceKind),
+                        cancellationToken).ConfigureAwait(false);
+                }
                 double uploadWaitMilliseconds =
                     Stopwatch.GetElapsedTime(uploadWaitStarted).TotalMilliseconds;
                 if (accepted)
@@ -1117,8 +1164,8 @@ internal sealed class RasterTileManager : IDisposable
                 MapControlEventSource.Log.TileRequestTiming(
                     (int)acquisition.SourceKind,
                     generation,
-                    decoded.DownloadMilliseconds,
-                    decoded.DecodeMilliseconds,
+                    downloadMilliseconds,
+                    decodeMilliseconds,
                     uploadWaitMilliseconds,
                     Stopwatch.GetElapsedTime(started).TotalMilliseconds,
                     activeRequests,
@@ -1141,7 +1188,7 @@ internal sealed class RasterTileManager : IDisposable
                     generation,
                     (int)exception.StatusCode,
                     "ServiceResponse",
-                    exception.GetType().Name);
+                    exception.DiagnosticExceptionType);
             }
             catch (HttpRequestException exception)
             {

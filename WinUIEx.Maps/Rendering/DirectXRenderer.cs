@@ -254,6 +254,16 @@ internal abstract class DirectXRenderer : IDisposable
     }
 
     /// <summary>
+    /// Releases dormant device resources and removes native panel event subscriptions.
+    /// A later <see cref="Attach"/> call can reconnect the renderer.
+    /// </summary>
+    protected void ReleaseResourcesAndDetachPanel()
+    {
+        ReleaseResources();
+        DetachPanelEvents();
+    }
+
+    /// <summary>
     /// Starts the render thread and device lifecycle once a nonempty XAML surface is
     /// available.
     /// </summary>
@@ -558,6 +568,7 @@ internal abstract class DirectXRenderer : IDisposable
             ReleasePointer(ref _renderTargetPointer);
             ReleasePointer(ref _swapChainPointer);
             ReleasePointer(ref _contextPointer);
+            TrimDevice(_devicePointer);
             ReleasePointer(ref _devicePointer);
             SetSwapChainMemoryPressure(0);
             _initialized = false;

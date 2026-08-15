@@ -31,6 +31,13 @@ namespace WinUIEx.Maps.Rendering;
 /// reservation, version, and device-epoch checks in the specialized partial definitions
 /// prevent stale CPU work or resources from an old device from entering the active frame.
 /// </para>
+/// <para>
+/// Vector line and polygon frame geometry is prepared by one latest-scene background job.
+/// The job consumes immutable style resolutions, projects and expands vertices, and creates
+/// immutable D3D buffers through a retained device reference. The render thread only
+/// validates and swaps the completed buffers, while superseded work is canceled and
+/// disposed without entering the active frame.
+/// </para>
 /// </remarks>
 internal sealed partial class MapRenderer : DirectXRenderer
 {
@@ -107,6 +114,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         }
         lock (RenderLock)
         {
+            CancelVectorGeometryPreparation();
             _layerRenderPlan = plan;
         }
         Volatile.Write(ref _visibleMapElementLayers, visibleMapElementLayers);
@@ -122,10 +130,11 @@ internal sealed partial class MapRenderer : DirectXRenderer
     internal void ReleaseDormantResources()
     {
         SuspendBackgroundWork();
-        ReleaseResources();
+        ReleaseResourcesAndDetachPanel();
         lock (_iconSync)
         {
             _iconPixels.Clear();
+            _vectorSpriteOwnership.Clear();
         }
         while (_iconPixelUploads.TryDequeue(out _))
         {
@@ -443,6 +452,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     {
         UpdateCameraScene();
         ProcessCompletedRasterUploads();
+        ProcessCompletedVectorTiles();
         ProcessCompletedIconUploads();
 
         IntPtr context = ContextPointer;
@@ -467,7 +477,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
             {
                 continue;
             }
-            if (layer.Kind == LayerRenderKind.RasterTiles)
+            if (layer.Kind is
+                LayerRenderKind.RasterTiles or LayerRenderKind.HybridTiles)
             {
                 SetBlendState(context, _blendStatePointer);
                 SetInputLayout(context, _inputLayoutPointer);
@@ -482,12 +493,20 @@ internal sealed partial class MapRenderer : DirectXRenderer
                     _constantBufferPointer);
                 hasRasterFade |= DrawRasterTileLayer(context, layer);
             }
-            else
+            if (layer.Kind is
+                LayerRenderKind.VectorPoints or LayerRenderKind.HybridTiles)
+            {
+                hasRasterFade |= DrawVectorPolygonLayer(context, layer);
+                hasRasterFade |= DrawVectorLineLayer(context, layer);
+                hasRasterFade |= DrawVectorPointLayer(context, layer);
+            }
+            else if (layer.Kind == LayerRenderKind.MapElements)
             {
                 DrawMapElements(context, layer.LayerIndex, layer.Opacity);
             }
         }
         TrimRasterTileCache();
+        TrimVectorTileCache();
         if (hasRasterFade)
         {
             RequestRender();
@@ -779,6 +798,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             return;
         }
         _uploadDisposed = true;
+        CancelVectorGeometryPreparation();
         StopUploadThread();
 
         base.Dispose();

@@ -11,7 +11,7 @@ namespace MapSample.Samples.Performance;
 
 internal static class PerformanceMapFactory
 {
-    internal static MapControl Create()
+    internal static MapControl Create(MapStyle style = MapStyle.RoadRaster)
     {
         MapControl map = new()
         {
@@ -21,7 +21,7 @@ internal static class PerformanceMapFactory
                 Latitude = 47.61,
             }),
             MapServiceToken = MapServiceTokenStore.Current,
-            MapStyle = MapStyle.Road,
+            MapStyle = style,
             ZoomLevel = 10,
         };
 

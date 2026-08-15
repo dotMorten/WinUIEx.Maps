@@ -42,6 +42,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private readonly ConcurrentQueue<long> _removedIconTextureIds = new();
     private readonly Dictionary<long, MapIconPixelData> _iconPixels = [];
     private readonly Dictionary<long, TileTexture> _iconTextures = [];
+    private readonly VectorSpriteOwnershipTracker _vectorSpriteOwnership = new();
     private readonly object _mapElementsSync = new();
     private readonly MapIconSpatialIndex _mapIcons = new();
     private MapGeometrySnapshot[] _mapGeometries = [];
@@ -208,6 +209,61 @@ internal sealed partial class MapRenderer : DirectXRenderer
         }
         _removedIconTextureIds.Enqueue(textureId);
         RequestRender();
+    }
+
+    /// <summary>
+    /// Registers source-owned sprite crops with the existing icon upload and device-epoch
+    /// pipeline, deduplicating stable texture identities across tiles and sources.
+    /// </summary>
+    private void QueueVectorSpriteTextures(
+        long sourceId,
+        IReadOnlyList<VectorSpriteTextureData> textures)
+    {
+        bool queued = false;
+        lock (_iconSync)
+        {
+            foreach (VectorSpriteTextureData texture in textures)
+            {
+                if (!_vectorSpriteOwnership.Add(sourceId, texture.TextureId))
+                {
+                    continue;
+                }
+                MapIconPixelData data = new(
+                    texture.TextureId,
+                    1,
+                    texture.Pixels,
+                    texture.Width,
+                    texture.Height);
+                _iconPixels[texture.TextureId] = data;
+                _iconPixelUploads.Enqueue(data);
+                queued = true;
+            }
+        }
+        if (queued)
+        {
+            _uploadRequested.Set();
+        }
+    }
+
+    /// <summary>
+    /// Releases all sprite identities owned only by a removed vector source.
+    /// </summary>
+    private void RemoveVectorSpriteTextures(long sourceId)
+    {
+        bool removed = false;
+        lock (_iconSync)
+        {
+            foreach (long textureId in _vectorSpriteOwnership.RemoveSource(sourceId))
+            {
+                _iconPixels.Remove(textureId);
+                _removedIconTextureIds.Enqueue(textureId);
+                removed = true;
+            }
+        }
+        if (removed)
+        {
+            RequestRender();
+        }
     }
 
     /// <summary>
@@ -431,8 +487,12 @@ internal sealed partial class MapRenderer : DirectXRenderer
             {
                 continue;
             }
-            instances.Add(new IconInstance(
-                CreateQuadConstants(left, top, icon.Width, icon.Height, 1).Transform));
+            instances.Add(CreateIconInstance(
+                left,
+                top,
+                icon.Width,
+                icon.Height,
+                rotation: 0));
         }
         if (instances.Count == 0)
         {
@@ -511,11 +571,39 @@ internal sealed partial class MapRenderer : DirectXRenderer
             new(opacity, 0, 0, 0));
     }
 
+    private IconInstance CreateIconInstance(
+        double left,
+        double top,
+        double width,
+        double height,
+        double rotation)
+    {
+        double cosine = Math.Cos(rotation);
+        double sine = Math.Sin(rotation);
+        float horizontalX = (float)(2 * width * cosine / Viewport.Width);
+        float horizontalY = (float)(-2 * width * sine / Viewport.Height);
+        float verticalX = (float)(-2 * height * sine / Viewport.Width);
+        float verticalY = (float)(-2 * height * cosine / Viewport.Height);
+        float centerX = (float)(
+            (2 * (left + (width / 2)) / Viewport.Width) - 1);
+        float centerY = (float)(
+            1 - (2 * (top + (height / 2)) / Viewport.Height));
+        return new IconInstance(
+            new Vector4(
+                horizontalX,
+                horizontalY,
+                verticalX,
+                verticalY),
+            new Vector4(centerX, centerY, 0, 0));
+    }
+
     /// <summary>
     /// Stores the normalized-device transform consumed by one instanced icon draw.
     /// </summary>
     [StructLayout(LayoutKind.Sequential)]
-    private readonly record struct IconInstance(Vector4 Transform);
+    private readonly record struct IconInstance(
+        Vector4 Transform,
+        Vector4 Offset);
 
     private readonly record struct IconDrawResult(
         int CandidateCount,

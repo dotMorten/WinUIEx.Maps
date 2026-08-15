@@ -34,8 +34,8 @@ public sealed class RasterTileManagerTests
     [TestMethod]
     [DataRow(MapStyle.Blank, "", false)]
     [DataRow(MapStyle.Blank, null, false)]
-    [DataRow(MapStyle.Road, "", false)]
-    [DataRow(MapStyle.Road, "token", true)]
+    [DataRow(MapStyle.RoadRaster, "", false)]
+    [DataRow(MapStyle.RoadRaster, "token", true)]
     public void HiddenAzureLifecycleIsBlankAndTokenSafe(
         MapStyle style,
         string? token,

@@ -28,6 +28,7 @@ internal static class DirectXInterop
 {
     private static readonly Guid IidSwapChainPanelNative = new("63aad0b8-7c24-40ff-85a8-640d944cc325");
     private static readonly Guid IidDxgiDevice = new("54ec77fa-1377-44e6-8c32-88fd5f44c84c");
+    private static readonly Guid IidDxgiDevice3 = new("6007896c-3244-4afd-bf18-a6d3beda5023");
     private static readonly Guid IidDxgiFactory2 = new("50c83a1c-e072-4c48-87b0-3630fa36a6d0");
     private static readonly Guid IidD3D11Texture2D = new("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
 
@@ -148,6 +149,38 @@ internal static class DirectXInterop
     }
 
     /// <summary>
+    /// Asks DXGI to release temporary allocations retained by a dormant device.
+    /// </summary>
+    internal static unsafe void TrimDevice(IntPtr devicePointer)
+    {
+        if (devicePointer == IntPtr.Zero)
+        {
+            return;
+        }
+
+        IntPtr dxgiDevicePointer = IntPtr.Zero;
+        try
+        {
+            int result = Marshal.QueryInterface(
+                devicePointer,
+                in IidDxgiDevice3,
+                out dxgiDevicePointer);
+            if (result < 0)
+            {
+                return;
+            }
+
+            IntPtr* vtable = *(IntPtr**)dxgiDevicePointer;
+            var trim = (delegate* unmanaged[Stdcall]<IntPtr, void>)vtable[17];
+            trim(dxgiDevicePointer);
+        }
+        finally
+        {
+            ReleasePointer(ref dxgiDevicePointer);
+        }
+    }
+
+    /// <summary>
     /// Creates a composition swap chain without generated COM-interface marshalling.
     /// </summary>
     internal static unsafe IntPtr CreateSwapChainForComposition(
@@ -258,10 +291,27 @@ internal static class DirectXInterop
         D3D11_BUFFER_DESC* description,
         string message)
     {
+        return CreateBuffer(
+            devicePointer,
+            description,
+            null,
+            message);
+    }
+
+    /// <summary>
+    /// Creates a D3D11 buffer initialized from caller-owned data and returns its owned
+    /// native pointer.
+    /// </summary>
+    internal static unsafe IntPtr CreateBuffer(
+        IntPtr devicePointer,
+        D3D11_BUFFER_DESC* description,
+        D3D11_SUBRESOURCE_DATA* data,
+        string message)
+    {
         IntPtr resultPointer = IntPtr.Zero;
         IntPtr* vtable = *(IntPtr**)devicePointer;
         var method = (delegate* unmanaged[Stdcall]<IntPtr, D3D11_BUFFER_DESC*, D3D11_SUBRESOURCE_DATA*, IntPtr*, int>)vtable[3];
-        ThrowIfFailed(new(method(devicePointer, description, null, &resultPointer)), message);
+        ThrowIfFailed(new(method(devicePointer, description, data, &resultPointer)), message);
         return resultPointer;
     }
 

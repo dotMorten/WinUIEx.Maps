@@ -7,6 +7,8 @@ internal enum LayerRenderKind
 {
     MapElements,
     RasterTiles,
+    VectorPoints,
+    HybridTiles,
 }
 
 /// <summary>
@@ -28,7 +30,8 @@ internal readonly record struct LayerRenderSnapshot(
     double MinZoom,
     double MaxZoom,
     int MinSourceZoom,
-    int TileSize);
+    int TileSize,
+    int Style = -1);
 
 /// <summary>
 /// Classifies built-in Azure and custom raster sources for acquisition behavior and
@@ -95,7 +98,7 @@ internal readonly record struct LayerSnapshotPublication(
 
         TileLayerSnapshot snapshot = azureSnapshot;
         LayerRenderSnapshot hiddenRender = new(
-            LayerRenderKind.RasterTiles,
+            snapshot.Acquisition.RenderKind,
             -1,
             snapshot.RuntimeId,
             snapshot.IsVisible,
@@ -104,7 +107,8 @@ internal readonly record struct LayerSnapshotPublication(
             snapshot.MinZoom,
             snapshot.MaxZoom,
             snapshot.MinSourceZoom,
-            snapshot.TileSize);
+            snapshot.TileSize,
+            snapshot.Acquisition.TelemetryStyle);
         return new LayerSnapshotPublication(
             [hiddenRender, .. publicRenderPlan],
             [snapshot, .. publicRasterLayers]);
@@ -153,6 +157,8 @@ internal abstract class RasterTileAcquisitionSession
 
     internal abstract RasterSourceKind SourceKind { get; }
 
+    internal virtual LayerRenderKind RenderKind => LayerRenderKind.RasterTiles;
+
     internal abstract int TileSize { get; }
 
     internal abstract int MinSourceZoom { get; }
@@ -187,6 +193,14 @@ internal abstract class RasterTileAcquisitionSession
     internal abstract Task<DecodedRasterTile> GetTileAsync(
         TileId id,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Acquires and decodes one vector tile into immutable tile-local point and line geometry.
+    /// </summary>
+    internal virtual Task<DecodedVectorTile> GetVectorTileAsync(
+        TileId id,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("This tile source does not provide vector geometry.");
 
     /// <summary>
     /// Acquires attribution for the source zoom, if this session supplies attribution.
