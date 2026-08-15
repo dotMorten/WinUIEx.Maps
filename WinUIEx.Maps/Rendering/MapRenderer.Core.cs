@@ -51,6 +51,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private readonly ManualResetEvent _uploadShutdown = new(false);
     private readonly ManualResetEvent _uploadThreadStopped = new(false);
     private Thread? _uploadThread;
+    private int _uploadPassActive;
+    private bool _hasActiveFrameFade;
     private MapScene? _scene;
     private double _displayLongitude;
     private double _displayLatitude;
@@ -463,6 +465,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         SetIndexBuffer(context, _indexBufferPointer);
         SetVertexShader(context, _vertexShaderPointer, _constantBufferPointer);
 
+        _hasActiveFrameFade = false;
         MapScene? activeScene = _scene;
         if (activeScene is null)
         {
@@ -507,6 +510,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         }
         TrimRasterTileCache();
         TrimVectorTileCache();
+        _hasActiveFrameFade = hasRasterFade;
         if (hasRasterFade)
         {
             RequestRender();
@@ -522,6 +526,30 @@ internal sealed partial class MapRenderer : DirectXRenderer
         if (Volatile.Read(ref _rasterUploadRenderLockWaiters) != 0)
         {
             _rasterUploadEnteredRenderLock.WaitOne(TimeSpan.FromMilliseconds(16));
+        }
+    }
+
+    protected override bool CanCompleteFrameCaptures()
+    {
+        if (_hasActiveFrameFade ||
+            _zoomAnimation.IsActive ||
+            _panAnimation.IsActive ||
+            _headingAnimation.IsActive ||
+            _pitchAnimation.IsActive ||
+            !_completedVectorTiles.IsEmpty ||
+            Volatile.Read(ref _uploadPassActive) != 0 ||
+            !_rasterPixelUploads.IsEmpty ||
+            !_completedRasterUploads.IsEmpty ||
+            !_iconPixelUploads.IsEmpty ||
+            !_completedIconUploads.IsEmpty)
+        {
+            return false;
+        }
+
+        lock (_vectorGeometryPreparationSync)
+        {
+            return _vectorGeometryPreparationJob is null &&
+                _completedVectorGeometryPreparations.IsEmpty;
         }
     }
 
@@ -870,10 +898,19 @@ internal sealed partial class MapRenderer : DirectXRenderer
                 {
                     return;
                 }
-                DrainTextureDisposals();
-                ProcessRasterPixelUploads();
-                ProcessIconPixelUploads();
-                DrainTextureDisposals();
+                Interlocked.Exchange(ref _uploadPassActive, 1);
+                try
+                {
+                    DrainTextureDisposals();
+                    ProcessRasterPixelUploads();
+                    ProcessIconPixelUploads();
+                    DrainTextureDisposals();
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _uploadPassActive, 0);
+                    RequestRender();
+                }
             }
         }
         finally

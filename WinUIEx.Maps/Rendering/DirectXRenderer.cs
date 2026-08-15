@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using WinUIEx.Maps.Rendering.Diagnostics;
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using Windows.Win32.Graphics.Direct3D;
 using Windows.Win32.Graphics.Direct3D11;
@@ -45,6 +46,8 @@ internal abstract class DirectXRenderer : IDisposable
     private readonly AutoResetEvent _renderRequested = new(false);
     private readonly ManualResetEvent _shutdownRequested = new(false);
     private readonly ManualResetEvent _renderThreadStopped = new(true);
+    private readonly object _frameCaptureSync = new();
+    private readonly ConcurrentQueue<FrameCaptureRequest> _frameCaptureRequests = [];
     private SwapChainPanel? _panel;
     private IntPtr _swapChainPointer;
     private IntPtr _devicePointer;
@@ -65,6 +68,25 @@ internal abstract class DirectXRenderer : IDisposable
     protected D3D11_VIEWPORT Viewport => _viewport;
     protected bool IsInitialized => _initialized;
     internal bool HasDeviceResources => _initialized;
+
+    /// <summary>
+    /// Completes with a top-down BGRA copy of the next render frame after derived
+    /// asynchronous work reports that it is ready.
+    /// </summary>
+    internal Task<MapRenderFrame> CaptureFrameAsync(
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        lock (_frameCaptureSync)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var request = new FrameCaptureRequest(cancellationToken);
+            _frameCaptureRequests.Enqueue(request);
+            RequestRender();
+            return request.Task;
+        }
+    }
 
     ~DirectXRenderer()
     {
@@ -112,15 +134,19 @@ internal abstract class DirectXRenderer : IDisposable
     /// </summary>
     public virtual void Dispose()
     {
-        if (_disposed)
+        lock (_frameCaptureSync)
         {
-            return;
+            if (_disposed)
+            {
+                return;
+            }
+            _disposed = true;
         }
 
         Suspend();
         ReleaseResources();
-        _disposed = true;
         DetachPanelEvents();
+        FailFrameCaptures(new ObjectDisposedException(GetType().Name));
         _renderRequested.Dispose();
         _shutdownRequested.Dispose();
         _renderThreadStopped.Dispose();
@@ -150,6 +176,12 @@ internal abstract class DirectXRenderer : IDisposable
     protected virtual void OnRenderPassCompleted()
     {
     }
+
+    /// <summary>
+    /// Determines whether asynchronous renderer work required by a capture has reached the
+    /// render thread.
+    /// </summary>
+    protected virtual bool CanCompleteFrameCaptures() => true;
 
     /// <summary>
     /// Releases renderer-specific device resources while the render lock is held.
@@ -517,6 +549,11 @@ internal abstract class DirectXRenderer : IDisposable
                 SetRenderTarget(_contextPointer, _renderTargetPointer);
                 SetViewport(_contextPointer, _viewport);
                 RenderFrame();
+                if (!_frameCaptureRequests.IsEmpty &&
+                    CanCompleteFrameCaptures())
+                {
+                    CompleteFrameCaptures();
+                }
                 Present(_swapChainPointer);
                 rendered = true;
             }
@@ -527,7 +564,87 @@ internal abstract class DirectXRenderer : IDisposable
         }
         catch (Exception exception)
         {
+            FailFrameCaptures(exception);
             RaiseRendererFailed("The native map renderer failed while drawing a frame.", exception);
+        }
+    }
+
+    private unsafe void CompleteFrameCaptures()
+    {
+        List<FrameCaptureRequest> requests = [];
+        while (_frameCaptureRequests.TryDequeue(
+            out FrameCaptureRequest? request))
+        {
+            if (request.IsCompleted)
+            {
+                request.DisposeCancellationRegistration();
+            }
+            else
+            {
+                requests.Add(request);
+            }
+        }
+        if (requests.Count == 0)
+        {
+            return;
+        }
+
+        int width = checked((int)_viewport.Width);
+        int height = checked((int)_viewport.Height);
+        IntPtr backBuffer = GetBackBuffer(_swapChainPointer);
+        IntPtr staging = IntPtr.Zero;
+        try
+        {
+            D3D11_TEXTURE2D_DESC description = new()
+            {
+                Width = (uint)width,
+                Height = (uint)height,
+                MipLevels = 1,
+                ArraySize = 1,
+                Format = DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc = new DXGI_SAMPLE_DESC { Count = 1, Quality = 0 },
+                Usage = D3D11_USAGE.D3D11_USAGE_STAGING,
+                BindFlags = 0,
+                CPUAccessFlags = D3D11_CPU_ACCESS_FLAG.D3D11_CPU_ACCESS_READ,
+                MiscFlags = 0,
+            };
+            staging = CreateTexture(
+                _devicePointer,
+                &description,
+                null,
+                "Failed to create the map-frame readback texture.");
+            byte[] pixels = ReadTextureBgra(
+                _contextPointer,
+                backBuffer,
+                staging,
+                width,
+                height);
+            var frame = new MapRenderFrame(pixels, width, height);
+            foreach (FrameCaptureRequest request in requests)
+            {
+                request.TrySetResult(frame);
+            }
+        }
+        catch (Exception exception)
+        {
+            foreach (FrameCaptureRequest request in requests)
+            {
+                request.TrySetException(exception);
+            }
+            throw;
+        }
+        finally
+        {
+            ReleasePointer(ref staging);
+            ReleasePointer(ref backBuffer);
+        }
+    }
+
+    private void FailFrameCaptures(Exception exception)
+    {
+        while (_frameCaptureRequests.TryDequeue(out FrameCaptureRequest? request))
+        {
+            request.TrySetException(exception);
         }
     }
 
@@ -549,6 +666,8 @@ internal abstract class DirectXRenderer : IDisposable
             _renderThreadStopped.WaitOne();
         }
         _renderThread = null;
+        FailFrameCaptures(new InvalidOperationException(
+            "The map renderer stopped before the requested frame was captured."));
     }
 
     /// <summary>
@@ -616,4 +735,53 @@ internal abstract class DirectXRenderer : IDisposable
             exception.HResult);
     }
 
+    private sealed class FrameCaptureRequest
+    {
+        private readonly TaskCompletionSource<MapRenderFrame> _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly CancellationTokenRegistration _registration;
+        private readonly CancellationToken _cancellationToken;
+
+        internal FrameCaptureRequest(CancellationToken cancellationToken)
+        {
+            _cancellationToken = cancellationToken;
+            if (cancellationToken.CanBeCanceled)
+            {
+                _registration = cancellationToken.Register(
+                    static state =>
+                        ((FrameCaptureRequest)state!).TrySetCanceled(),
+                    this);
+            }
+        }
+
+        internal Task<MapRenderFrame> Task => _completion.Task;
+
+        internal bool IsCompleted => _completion.Task.IsCompleted;
+
+        internal void TrySetResult(MapRenderFrame frame)
+        {
+            _completion.TrySetResult(frame);
+            _registration.Dispose();
+        }
+
+        internal void TrySetException(Exception exception)
+        {
+            _completion.TrySetException(exception);
+            _registration.Dispose();
+        }
+
+        internal void DisposeCancellationRegistration() =>
+            _registration.Dispose();
+
+        private void TrySetCanceled()
+        {
+            _completion.TrySetCanceled(_cancellationToken);
+        }
+    }
+
 }
+
+internal sealed record MapRenderFrame(
+    ReadOnlyMemory<byte> Pixels,
+    int Width,
+    int Height);

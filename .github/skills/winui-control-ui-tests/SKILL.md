@@ -182,7 +182,26 @@ When diagnosing a missing icon, use the `mapcontrol-etw-diagnostics` skill with 
 
 ## Screenshots
 
-Capture the host window with:
+For map pixel assertions, use the internal asynchronous renderer readback:
+
+```csharp
+using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+MapRenderFrame frame =
+    await map.CaptureRenderedFrameAsync(timeout.Token);
+```
+
+The readback waits for the current raster/vector acquisition wave, pending texture
+uploads, and vector geometry preparation, then copies the completed D3D back buffer to an
+immutable top-down BGRA8 frame. It returns only the map surface, independent of window
+position, title-bar size, DPI, foreground activation, or desktop occlusion. Save it when a
+PNG artifact is useful:
+
+```csharp
+await frame.SavePngAsync(path);
+```
+
+Continue to capture the whole host window when the test needs the actual presented window
+or input diagnostics:
 
 ```csharp
 string path = Path.Combine(
@@ -200,6 +219,71 @@ desktop.
 Capture after the displayed renderer state reaches the desired point. A screenshot taken
 immediately after changing `Center` or `ZoomLevel` can legitimately show an earlier
 animation frame.
+
+## Tailored vector-tile rendering
+
+Use `MapboxVectorTileBuilder` and `TestVectorTileSource` when a vector feature needs a
+precise visual assertion. The builder writes test-only Mapbox Vector Tile protobuf at extent
+4096 and supports point, line, polygon, and typed feature properties:
+
+```csharp
+TileId tileId = new(4, 8, 8);
+byte[] tile = new MapboxVectorTileBuilder()
+    .AddPoint(
+        "markers",
+        2048,
+        2048,
+        new Dictionary<string, object> { ["label"] = "7" })
+    .Build();
+
+TestVectorTileSource source = TestVectorTileSource.Create(
+    tileId,
+    tile,
+    styleJson,
+    spriteJson,
+    spriteBgraPixels,
+    spriteWidth,
+    spriteHeight);
+source.AddGlyphs("TestFont", TestGlyph.Solid('7'));
+
+map.MapStyle = MapStyle.Blank;
+map.Center = new Geopoint(source.TileCenter);
+map.ZoomLevel = tileId.Zoom;
+map.Layers.Add(new TestVectorTileLayer(source));
+```
+
+The internal layer still uses the production scheduler, MVT decoder, style resolver,
+texture preparation/upload, collision logic, and renderer. It supplies only its fixed test
+tile, so neighboring wrapped tiles cannot duplicate the feature. `TestGlyph.Solid` creates
+a deterministic rectangular SDF glyph for geometry assertions rather than typographic
+fidelity.
+
+Use `ConnectedComponentAnalyzer.Find` to locate rendered regions by color. Filters receive
+red, green, blue, and alpha values even though the underlying frame is BGRA:
+
+```csharp
+ConnectedComponent shield = Assert.ContainsSingle(
+    ConnectedComponentAnalyzer.Find(
+        frame,
+        ConnectedComponentAnalyzer.Near(
+            255, 0, 0, tolerance: 8, minimumAlpha: 240),
+        minimumPixelCount: 100));
+ConnectedComponent text = ConnectedComponentAnalyzer.Find(
+        frame,
+        ConnectedComponentAnalyzer.Near(
+            0, 0, 0, tolerance: 24, minimumAlpha: 240),
+        minimumPixelCount: 20)
+    .Single(component => shield.Bounds.Contains(component.Bounds));
+
+Assert.AreEqual(frame.Width / 2d, shield.Bounds.CenterX, 3);
+Assert.AreEqual(frame.Height / 2d, shield.Bounds.CenterY, 3);
+Assert.IsTrue(shield.Bounds.Contains(text.Bounds));
+```
+
+The analyzer uses 8-connectivity, so diagonally touching matching pixels belong to the same
+component. Set a minimum pixel count to reject antialiasing noise, use a small tolerance for
+shader/color rounding, and prefer relative containment and center assertions over fragile
+pixel-perfect snapshots.
 
 ## Waiting and assertions
 

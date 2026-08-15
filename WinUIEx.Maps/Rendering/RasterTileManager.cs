@@ -94,6 +94,25 @@ internal sealed class RasterTileManager : IDisposable
         }
     }
 
+    internal async Task WaitForIdleAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_sync)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                if (_scene is not null &&
+                    _workers.Values.All(worker => worker.IsIdle))
+                {
+                    return;
+                }
+            }
+
+            await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     internal static bool IsAzureAuthenticationFailure(int statusCode) =>
         statusCode is 401 or 403;
 
@@ -541,6 +560,22 @@ internal sealed class RasterTileManager : IDisposable
                 lock (_sync)
                 {
                     return _processingRun is not null;
+                }
+            }
+        }
+
+        internal bool IsIdle
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _suspended ||
+                        _scene is null ||
+                        !ShouldAcquire(_layer, _scene.Zoom) ||
+                        (!_pending &&
+                            _waveCancellation is null &&
+                            _attemptedSceneVersion == _sceneVersion);
                 }
             }
         }

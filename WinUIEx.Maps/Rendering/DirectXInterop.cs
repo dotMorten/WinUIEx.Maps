@@ -323,10 +323,23 @@ internal static class DirectXInterop
         D3D11_TEXTURE2D_DESC* description,
         D3D11_SUBRESOURCE_DATA* data)
     {
+        return CreateTexture(
+            devicePointer,
+            description,
+            data,
+            "Failed to create a map tile texture.");
+    }
+
+    internal static unsafe IntPtr CreateTexture(
+        IntPtr devicePointer,
+        D3D11_TEXTURE2D_DESC* description,
+        D3D11_SUBRESOURCE_DATA* data,
+        string message)
+    {
         IntPtr resultPointer = IntPtr.Zero;
         IntPtr* vtable = *(IntPtr**)devicePointer;
         var method = (delegate* unmanaged[Stdcall]<IntPtr, D3D11_TEXTURE2D_DESC*, D3D11_SUBRESOURCE_DATA*, IntPtr*, int>)vtable[5];
-        ThrowIfFailed(new(method(devicePointer, description, data, &resultPointer)), "Failed to create a map tile texture.");
+        ThrowIfFailed(new(method(devicePointer, description, data, &resultPointer)), message);
         return resultPointer;
     }
 
@@ -506,6 +519,63 @@ internal static class DirectXInterop
             ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, uint, void>)vtable[15])(
                 context,
                 resource,
+                0);
+        }
+    }
+
+    internal static unsafe byte[] ReadTextureBgra(
+        IntPtr context,
+        IntPtr source,
+        IntPtr staging,
+        int width,
+        int height)
+    {
+        IntPtr* vtable = *(IntPtr**)context;
+        ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, IntPtr, void>)vtable[47])(
+            context,
+            staging,
+            source);
+
+        D3D11_MAPPED_SUBRESOURCE mapped = default;
+        var map = (delegate* unmanaged[Stdcall]<
+            IntPtr,
+            IntPtr,
+            uint,
+            D3D11_MAP,
+            uint,
+            D3D11_MAPPED_SUBRESOURCE*,
+            int>)vtable[14];
+        ThrowIfFailed(
+            new(map(
+                context,
+                staging,
+                0,
+                D3D11_MAP.D3D11_MAP_READ,
+                0,
+                &mapped)),
+            "Failed to map the rendered map frame.");
+        try
+        {
+            int destinationPitch = checked(width * 4);
+            byte[] pixels = new byte[checked(destinationPitch * height)];
+            fixed (byte* destination = pixels)
+            {
+                for (int row = 0; row < height; row++)
+                {
+                    Buffer.MemoryCopy(
+                        (byte*)mapped.pData + (row * mapped.RowPitch),
+                        destination + (row * destinationPitch),
+                        destinationPitch,
+                        destinationPitch);
+                }
+            }
+            return pixels;
+        }
+        finally
+        {
+            ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, uint, void>)vtable[15])(
+                context,
+                staging,
                 0);
         }
     }

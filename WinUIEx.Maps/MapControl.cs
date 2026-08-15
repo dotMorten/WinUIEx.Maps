@@ -146,6 +146,21 @@ public sealed partial class MapControl : Control
 
     internal bool RendererHasDeviceResources => _renderer.HasDeviceResources;
 
+    /// <summary>
+    /// Waits for the current tile wave and renderer uploads, then reads back only the map
+    /// surface from the completed D3D frame.
+    /// </summary>
+    internal async Task<MapRenderFrame> CaptureRenderedFrameAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await _rasterTileManager
+            .WaitForIdleAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return await _renderer
+            .CaptureFrameAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     internal int ActiveRasterWorkerCount => _rasterTileManager.ActiveWorkerCount;
 
     internal bool RasterManagerHasScene => _rasterTileManager.HasScene;
@@ -913,7 +928,7 @@ public sealed partial class MapControl : Control
         TileLayerSnapshot snapshot = tileLayer.CreateSnapshot();
         tileLayers.Add(snapshot);
         renderPlan.Add(new LayerRenderSnapshot(
-            LayerRenderKind.RasterTiles,
+            snapshot.Acquisition.RenderKind,
             layerIndex,
             snapshot.RuntimeId,
             snapshot.IsVisible,
