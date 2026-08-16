@@ -1764,4 +1764,17 @@ internal sealed class MapControlEventSource : EventSource
     {
         WriteEvent(73, featureCount, reason, raised);
     }
+
+    /// <summary>
+    /// Records a change to the effective system animation preference.
+    /// </summary>
+    [Event(
+        74,
+        Level = EventLevel.Informational,
+        Keywords = Keywords.Camera | Keywords.Accessibility,
+        Task = Tasks.Accessibility)]
+    public void AnimationsEnabledChanged(bool animationsEnabled)
+    {
+        WriteEvent(74, animationsEnabled);
+    }
 }

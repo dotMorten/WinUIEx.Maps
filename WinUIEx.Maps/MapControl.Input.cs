@@ -53,7 +53,7 @@ public sealed partial class MapControl
                 FocusState.Unfocused => "Unfocused",
                 _ => _usePointerFocusVisual ? "PointerFocused" : "Focused",
             },
-            true);
+            _animationsEnabled);
     }
 
     /// <inheritdoc />
@@ -409,7 +409,7 @@ public sealed partial class MapControl
         double viewportHeight = _panel?.ActualHeight ?? ActualHeight;
         double horizontalOffset = anchor.X - (viewportWidth / 2);
         double verticalOffset = anchor.Y - (viewportHeight / 2);
-        MapCenter target = !_runtimeResourcesReleased
+        MapCenter target = !_runtimeResourcesReleased && _animationsEnabled
             ? _renderer.SetZoomTarget(
                 targetZoom,
                 horizontalOffset,
@@ -444,6 +444,17 @@ public sealed partial class MapControl
                 Latitude = target.Latitude,
             });
             ZoomLevel = targetZoom;
+            if (!_runtimeResourcesReleased && !_animationsEnabled)
+            {
+                _renderer.SetCameraTargetImmediately(
+                    target.Longitude,
+                    target.Latitude,
+                    targetZoom,
+                    viewportWidth,
+                    viewportHeight,
+                    Heading,
+                    Pitch);
+            }
         }
         finally
         {
@@ -626,6 +637,17 @@ public sealed partial class MapControl
     }
 
     /// <inheritdoc />
+    protected override void OnManipulationStarting(
+        ManipulationStartingRoutedEventArgs e)
+    {
+        base.OnManipulationStarting(e);
+        if (!_animationsEnabled)
+        {
+            e.Mode &= ~ManipulationModes.TranslateInertia;
+        }
+    }
+
+    /// <inheritdoc />
     protected override void OnManipulationStarted(
         ManipulationStartedRoutedEventArgs e)
     {
@@ -644,6 +666,13 @@ public sealed partial class MapControl
 
         if (!CanManipulate(e.PointerDeviceType))
         {
+            return;
+        }
+
+        if (e.IsInertial && !_animationsEnabled)
+        {
+            e.Complete();
+            e.Handled = true;
             return;
         }
 

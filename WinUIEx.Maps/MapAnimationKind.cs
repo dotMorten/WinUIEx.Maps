@@ -3,6 +3,10 @@ namespace WinUIEx.Maps;
 /// <summary>
 /// Specifies the animation to use when you change the view of the map.
 /// </summary>
+/// <remarks>
+/// When the Windows animation preference is disabled, the map applies every requested
+/// view immediately, including requests that specify an animated value.
+/// </remarks>
 public enum MapAnimationKind
 {
     /// <summary>

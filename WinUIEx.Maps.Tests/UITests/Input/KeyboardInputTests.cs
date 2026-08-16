@@ -239,6 +239,26 @@ public sealed class KeyboardInputTests
             });
 
     [TestMethod]
+    public Task ReducedMotionAppliesQuickKeyboardZoomImmediately() =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
+            {
+                map.ApplyAnimationsEnabled(false);
+                UiInputInjector input =
+                    UiInputInjector.ForElement(MapControlTestHost.Window, map);
+                Assert.IsTrue(map.Focus(FocusState.Keyboard));
+
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                input.Keyboard.Press(VirtualKey.Add);
+
+                await MapControlTestUtilities.WaitForDisplayedZoomAsync(map, 6);
+                stopwatch.Stop();
+                Assert.IsLessThan(200, stopwatch.ElapsedMilliseconds);
+            });
+
+    [TestMethod]
     public Task DescriptionDetailShortcutsToggleDetailedMapState()
     {
         TileId tile = new(5, 10, 12);

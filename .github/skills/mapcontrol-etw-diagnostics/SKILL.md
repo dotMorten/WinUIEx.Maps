@@ -139,6 +139,7 @@ payload inspection is best in PerfView's Events view.
 | 71 | `TextScaleFactorChanged` | Info/Icons+VectorTiles | effective vector-label scale and whether control text scaling is enabled |
 | 72 | `AccessibilitySnapshotPublished` | Info/VectorTiles+Accessibility | displayed semantic candidates, deduplication, bounded publication count, and scene version |
 | 73 | `AccessibilityAnnouncementDecision` | Info/Accessibility | feature count and whether a settled semantic update raised or suppressed a live-region announcement |
+| 74 | `AnimationsEnabledChanged` | Info/Camera+Accessibility | effective system animation preference changed, suppressing camera interpolation, touch inertia, focus transitions, and layer fades when disabled |
 
 ## Reproduce and interpret
 

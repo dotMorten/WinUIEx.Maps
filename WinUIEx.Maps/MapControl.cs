@@ -422,7 +422,7 @@ public sealed partial class MapControl : Control
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         MapControlEventSource.Log.ControlLoaded();
-        AttachTextScaleSettings();
+        AttachSystemAccessibilitySettings();
         AttachLifecycleSubscriptions();
         _iconService.SetLoaded(true);
         AttachIconXamlRoot();
@@ -493,7 +493,7 @@ public sealed partial class MapControl : Control
             _rasterTileManager.Suspend();
             _renderer.SuspendBackgroundWork();
             _renderer.Suspend();
-            DetachTextScaleSettings();
+            DetachSystemAccessibilitySettings();
             CancelPendingViewChange();
         });
     }
@@ -898,7 +898,8 @@ public sealed partial class MapControl : Control
     {
         LayerSnapshotPublication publication = CreateLayerSnapshotPublication(
             _azureTileLayer,
-            _layers);
+            _layers,
+            _animationsEnabled);
         _renderer.SetLayerRenderPlan(publication.RenderPlan);
         if (!_runtimeResourcesReleased)
         {
@@ -915,7 +916,8 @@ public sealed partial class MapControl : Control
     /// </remarks>
     internal static LayerSnapshotPublication CreateLayerSnapshotPublication(
         AzureTileLayer? azureLayer,
-        IReadOnlyList<MapLayer> layers)
+        IReadOnlyList<MapLayer> layers,
+        bool animationsEnabled = true)
     {
         LayerRenderPlanBuilder renderPlan = new();
         List<TileLayerSnapshot> tileLayers = [];
@@ -924,7 +926,12 @@ public sealed partial class MapControl : Control
             MapLayer layer = layers[index];
             if (layer is TileLayer tileLayer)
             {
-                AddTileLayerSnapshot(tileLayer, index, renderPlan, tileLayers);
+                AddTileLayerSnapshot(
+                    tileLayer,
+                    index,
+                    animationsEnabled,
+                    renderPlan,
+                    tileLayers);
             }
             else if (layer is MapElementsLayer)
             {
@@ -942,8 +949,14 @@ public sealed partial class MapControl : Control
                     -1));
             }
         }
+        TileLayerSnapshot? azureSnapshot = azureLayer?.CreateSnapshot();
+        if (!animationsEnabled && azureSnapshot is not null)
+        {
+            azureSnapshot = azureSnapshot with { FadeDuration = TimeSpan.Zero };
+        }
+
         return LayerSnapshotPublication.PrependHiddenAzure(
-            azureLayer?.CreateSnapshot(),
+            azureSnapshot,
             renderPlan.Build(),
             tileLayers.ToArray());
     }
@@ -954,10 +967,16 @@ public sealed partial class MapControl : Control
     private static void AddTileLayerSnapshot(
         TileLayer tileLayer,
         int layerIndex,
+        bool animationsEnabled,
         LayerRenderPlanBuilder renderPlan,
         List<TileLayerSnapshot> tileLayers)
     {
         TileLayerSnapshot snapshot = tileLayer.CreateSnapshot();
+        if (!animationsEnabled)
+        {
+            snapshot = snapshot with { FadeDuration = TimeSpan.Zero };
+        }
+
         tileLayers.Add(snapshot);
         renderPlan.Add(new LayerRenderSnapshot(
             snapshot.Acquisition.RenderKind,
@@ -1319,6 +1338,7 @@ public sealed partial class MapControl : Control
         BasicGeoposition position = Center?.Position ?? new BasicGeoposition();
         bool applyImmediately =
             forceImmediate ||
+            !_animationsEnabled ||
             !IsLoaded ||
             !_hasPublishedCameraTarget;
         if (applyImmediately)

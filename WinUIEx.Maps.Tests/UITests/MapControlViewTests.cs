@@ -116,6 +116,103 @@ public sealed class MapControlViewTests
             });
 
     [TestMethod]
+    [DataRow(MapAnimationKind.Default)]
+    [DataRow(MapAnimationKind.Linear)]
+    [DataRow(MapAnimationKind.Bow)]
+    public Task ReducedMotionOverridesRequestedAnimation(MapAnimationKind animation) =>
+        MapControlTestHost.LoadMapControlAsync(
+            InitialCenter,
+            4,
+            async map =>
+            {
+                map.ApplyAnimationsEnabled(false);
+                var center = new Geopoint(new BasicGeoposition
+                {
+                    Latitude = -33.86,
+                    Longitude = 151.21,
+                });
+
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                Task<bool> operation = map.TrySetViewAsync(
+                    center,
+                    8,
+                    270,
+                    45,
+                    animation);
+
+                Assert.IsTrue(await operation);
+                stopwatch.Stop();
+                Assert.IsLessThan(200, stopwatch.ElapsedMilliseconds);
+                AssertDisplayedView(map, center.Position, 8, 270, 45);
+            });
+
+    [TestMethod]
+    public Task DisablingAnimationsCompletesPendingViewImmediately() =>
+        MapControlTestHost.LoadMapControlAsync(
+            InitialCenter,
+            3,
+            async map =>
+            {
+                map.ApplyAnimationsEnabled(true);
+                var center = new Geopoint(new BasicGeoposition
+                {
+                    Latitude = 60,
+                    Longitude = 120,
+                });
+                Task<bool> operation = map.TrySetViewAsync(
+                    center,
+                    10,
+                    180,
+                    30,
+                    MapAnimationKind.Bow);
+
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                map.ApplyAnimationsEnabled(false);
+
+                Assert.IsTrue(await operation);
+                stopwatch.Stop();
+                Assert.IsLessThan(200, stopwatch.ElapsedMilliseconds);
+                AssertDisplayedView(map, center.Position, 10, 180, 30);
+            });
+
+    [TestMethod]
+    public Task ReducedMotionPublishesZeroFadeWithoutChangingLayerSetting() =>
+        MapControlTestHost.LoadMapControlAsync(
+            InitialCenter,
+            3,
+            map =>
+            {
+                TimeSpan configuredFade = TimeSpan.FromMilliseconds(750);
+                var layer = new TileLayer(new TileLayerOptions
+                {
+                    TileUrl = "https://example.com/{z}/{x}/{y}.png",
+                    FadeDuration = configuredFade,
+                });
+
+                LayerSnapshotPublication reducedMotion =
+                    MapControl.CreateLayerSnapshotPublication(
+                        null,
+                        [layer],
+                        animationsEnabled: false);
+                LayerSnapshotPublication animationsEnabled =
+                    MapControl.CreateLayerSnapshotPublication(
+                        null,
+                        [layer],
+                        animationsEnabled: true);
+
+                Assert.AreEqual(TimeSpan.Zero, reducedMotion.RasterLayers[0].FadeDuration);
+                Assert.AreEqual(TimeSpan.Zero, reducedMotion.RenderPlan[0].FadeDuration);
+                Assert.AreEqual(
+                    configuredFade,
+                    animationsEnabled.RasterLayers[0].FadeDuration);
+                Assert.AreEqual(
+                    configuredFade,
+                    animationsEnabled.RenderPlan[0].FadeDuration);
+                Assert.AreEqual(configuredFade, layer.FadeDuration);
+                return Task.CompletedTask;
+            });
+
+    [TestMethod]
     public Task NewViewRequestReturnsFalseForInterruptedAnimation() =>
         MapControlTestHost.LoadMapControlAsync(
             InitialCenter,

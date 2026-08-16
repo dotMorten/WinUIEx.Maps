@@ -106,6 +106,7 @@ public sealed class MapControlEventSourceTests
         MapControlEventSource.Log.AccessibilitySnapshotPublished(
             6, 40, 32, 8, 24);
         MapControlEventSource.Log.AccessibilityAnnouncementDecision(8, 1, true);
+        MapControlEventSource.Log.AnimationsEnabledChanged(false);
 
         CapturedEvent wave = listener.Single(11);
         Assert.AreEqual("TileWaveStart", wave.Name);
@@ -392,6 +393,12 @@ public sealed class MapControlEventSourceTests
             ["featureCount", "reason", "raised"],
             accessibilityAnnouncement.PayloadNames);
         Assert.AreEqual(true, accessibilityAnnouncement.Payload[2]);
+        CapturedEvent animationsEnabled = listener.Single(74);
+        Assert.AreEqual("AnimationsEnabledChanged", animationsEnabled.Name);
+        Assert.AreSequenceEqual(
+            ["animationsEnabled"],
+            animationsEnabled.PayloadNames);
+        Assert.AreEqual(false, animationsEnabled.Payload[0]);
         Assert.AreEqual(4.25d, preparedGeometry.Payload[5]);
         Assert.DoesNotContain(captured => captured.Id == 0, listener.Events);
     }
@@ -406,7 +413,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 73),
+            Enumerable.Range(1, 74),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }

@@ -99,6 +99,49 @@ public sealed class TouchInputTests
         });
 
     [TestMethod]
+    public Task ReducedMotionSuppressesTouchInertia() =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
+            {
+                await MapControlTestUtilities.SetupMapAsync(map);
+                map.ApplyAnimationsEnabled(false);
+                UiInputInjector input =
+                    UiInputInjector.ForElement(MapControlTestHost.Window, map);
+                BasicGeoposition initialCenter = map.Center!.Position;
+                bool sawInertialDelta = false;
+                bool manipulationCompleted = false;
+                map.AddHandler(
+                    UIElement.ManipulationDeltaEvent,
+                    new ManipulationDeltaEventHandler((_, e) =>
+                    {
+                        sawInertialDelta |= e.IsInertial;
+                    }),
+                    handledEventsToo: true);
+                map.AddHandler(
+                    UIElement.ManipulationCompletedEvent,
+                    new ManipulationCompletedEventHandler((_, _) =>
+                    {
+                        manipulationCompleted = true;
+                    }),
+                    handledEventsToo: true);
+
+                await input.Touch.SwipeAsync(
+                    input.PointAt(0.3, 0.5),
+                    input.PointAt(0.7, 0.5),
+                    durationMilliseconds: 80);
+
+                await MapControlTestUtilities.WaitForAsync(() => manipulationCompleted);
+                Assert.AreNotEqual(initialCenter, map.Center!.Position);
+                Assert.IsFalse(sawInertialDelta);
+                await MapControlTestUtilities.WaitForDisplayedCameraAsync(
+                    map,
+                    map.Center.Position,
+                    map.ZoomLevel);
+            });
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public Task PinchOrStretch_OffCenter_PreservesLocationUnderGesture(
