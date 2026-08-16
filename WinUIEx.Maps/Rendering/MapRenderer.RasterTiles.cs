@@ -94,6 +94,7 @@ internal sealed partial class MapRenderer
                 RemoveRasterTilesLocked(sourceId);
                 RemoveVectorTilesLocked(sourceId);
                 state.FallbackTileZooms.Clear();
+                state.VectorStyleAssets = null;
             }
             else if (previousTileZoom >= 0 && previousTileZoom != scene.TileZoom)
             {
@@ -314,6 +315,7 @@ internal sealed partial class MapRenderer
                             vectorTile.Features,
                             vectorTile.StyleAssets,
                             vectorTile.Style));
+                    state.VectorStyleAssets = vectorTile.StyleAssets;
                     OnVectorTilesChanged();
                     MapControlEventSource.Log.VectorTileCommitSummary(
                         vectorTile.Style,
@@ -1396,6 +1398,7 @@ internal sealed partial class MapRenderer
         internal RasterSourceKind SourceKind;
         internal LayerRenderKind RenderKind;
         internal HashSet<int> FallbackTileZooms { get; } = [];
+        internal VectorStyleAssets? VectorStyleAssets;
     }
 
     /// <summary>

@@ -827,40 +827,6 @@ internal sealed class VectorStyleAssets
 
         List<VectorTileStyledPolygon> polygons = [];
         int evaluationFailureCount = 0;
-        foreach (VectorBackgroundStyleLayer layer in
-            _style.BackgroundLayers)
-        {
-            VectorStyleFillResult backgroundResult =
-                layer.Evaluate(zoom, out VectorFillStyle style);
-            if (backgroundResult == VectorStyleFillResult.Resolved)
-            {
-                polygons.Add(new VectorTileStyledPolygon(
-                    layer.Order,
-                    [
-                        new VectorTileRing(
-                        [
-                            new VectorTilePoint(0, 0),
-                            new VectorTilePoint(1, 0),
-                            new VectorTilePoint(1, 1),
-                            new VectorTilePoint(0, 1),
-                        ]),
-                    ],
-                    [
-                        new VectorTilePoint(0, 0),
-                        new VectorTilePoint(1, 0),
-                        new VectorTilePoint(1, 1),
-                        new VectorTilePoint(0, 0),
-                        new VectorTilePoint(1, 1),
-                        new VectorTilePoint(0, 1),
-                    ],
-                    style));
-            }
-            else if (backgroundResult ==
-                VectorStyleFillResult.EvaluationFailure)
-            {
-                evaluationFailureCount++;
-            }
-        }
         foreach (VectorFillStyleLayer layer in _style.FillLayers)
         {
             VectorStyleVisibilityResult visibility = layer.EvaluateVisibility(zoom);
@@ -947,6 +913,36 @@ internal sealed class VectorStyleAssets
         }
         return new VectorPolygonResolution(
             polygons.ToArray(),
+            evaluationFailureCount);
+    }
+
+    internal VectorBackgroundResolution ResolveBackgrounds(double zoom)
+    {
+        if (_mapStyle == MapStyle.BlankAccessible)
+        {
+            return new VectorBackgroundResolution([], 0);
+        }
+
+        List<VectorResolvedBackground> backgrounds = [];
+        int evaluationFailureCount = 0;
+        foreach (VectorBackgroundStyleLayer layer in
+            _style.BackgroundLayers)
+        {
+            VectorStyleFillResult result =
+                layer.Evaluate(zoom, out VectorFillStyle style);
+            if (result == VectorStyleFillResult.Resolved)
+            {
+                backgrounds.Add(new VectorResolvedBackground(
+                    layer.Order,
+                    style));
+            }
+            else if (result == VectorStyleFillResult.EvaluationFailure)
+            {
+                evaluationFailureCount++;
+            }
+        }
+        return new VectorBackgroundResolution(
+            backgrounds.ToArray(),
             evaluationFailureCount);
     }
 

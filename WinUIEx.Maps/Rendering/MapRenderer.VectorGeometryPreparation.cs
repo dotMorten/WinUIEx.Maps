@@ -165,6 +165,8 @@ internal sealed partial class MapRenderer
             _displayHeading,
             _viewportWidth,
             _viewportHeight,
+            state.VectorStyleAssets?.ResolveBackgrounds(_displayZoom) ??
+                new VectorBackgroundResolution([], 0),
             lineTiles.ToArray(),
             polygonTiles.ToArray(),
             includedTiles);
@@ -353,6 +355,17 @@ internal sealed partial class MapRenderer
         try
         {
             prepared = new(input);
+            prepared.PolygonResult.CandidatePolygonCount +=
+                input.Backgrounds.Backgrounds.Length;
+            prepared.PolygonResult.EvaluationFailureCount +=
+                input.Backgrounds.EvaluationFailureCount;
+            AppendVectorBackgrounds(
+                input.Backgrounds,
+                input.Layer.Opacity,
+                input.ViewportWidth,
+                input.ViewportHeight,
+                VectorGeometryCachePadding,
+                prepared);
             foreach (VectorPolygonPreparationTile tile in input.PolygonTiles)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -532,6 +545,45 @@ internal sealed partial class MapRenderer
         }
     }
 
+    private static void AppendVectorBackgrounds(
+        VectorBackgroundResolution resolution,
+        double layerOpacity,
+        double viewportWidth,
+        double viewportHeight,
+        double viewportPadding,
+        PreparedVectorGeometryFrame prepared)
+    {
+        foreach (VectorResolvedBackground background in
+            resolution.Backgrounds)
+        {
+            Vector4 color =
+                background.Style.Color * (float)layerOpacity;
+            if (color.W <= 0)
+            {
+                continue;
+            }
+
+            VectorPolygonBatchKey key = new(
+                background.StyleLayerOrder,
+                VectorPolygonBatchKind.Fill,
+                color);
+            PooledGeometryBuffer buffer =
+                prepared.GetPolygonBuffer(key);
+            double left = -viewportPadding;
+            double top = -viewportPadding;
+            double right = viewportWidth + viewportPadding;
+            double bottom = viewportHeight + viewportPadding;
+            buffer.Add(new MapScreenPoint(left, top));
+            buffer.Add(new MapScreenPoint(right, top));
+            buffer.Add(new MapScreenPoint(right, bottom));
+            buffer.Add(new MapScreenPoint(left, top));
+            buffer.Add(new MapScreenPoint(right, bottom));
+            buffer.Add(new MapScreenPoint(left, bottom));
+            prepared.PolygonResult.DrawablePolygonCount++;
+            prepared.PolygonResult.TriangleCount += 2;
+        }
+    }
+
     private sealed record VectorGeometryPreparationInput(
         VectorGeometryPreparationKey Key,
         LayerRenderSnapshot Layer,
@@ -542,6 +594,7 @@ internal sealed partial class MapRenderer
         double Heading,
         double ViewportWidth,
         double ViewportHeight,
+        VectorBackgroundResolution Backgrounds,
         VectorLinePreparationTile[] LineTiles,
         VectorPolygonPreparationTile[] PolygonTiles,
         HashSet<VectorTileInstanceKey> IncludedTiles);

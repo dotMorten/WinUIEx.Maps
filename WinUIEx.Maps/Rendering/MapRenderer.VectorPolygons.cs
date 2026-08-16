@@ -138,6 +138,16 @@ internal sealed partial class MapRenderer
         try
         {
             VectorPolygonRenderResult result = new();
+            AppendVectorBackgrounds(
+                state.VectorStyleAssets,
+                layer.Opacity,
+                _displayZoom,
+                _viewportWidth,
+                _viewportHeight,
+                _displayPitch == 0 ? VectorGeometryCachePadding : 0,
+                batches,
+                batchOrder,
+                ref result);
             bool canEnumerateActiveScene = CanEnumerateRasterScene(
                 _displayZoom,
                 state.Scene.TileZoom);
@@ -291,6 +301,59 @@ internal sealed partial class MapRenderer
                 key => key.Kind == VectorPolygonBatchKind.Pattern);
         }
         return activeFade;
+    }
+
+    private static void AppendVectorBackgrounds(
+        VectorStyleAssets? styleAssets,
+        double layerOpacity,
+        double zoom,
+        double viewportWidth,
+        double viewportHeight,
+        double viewportPadding,
+        Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        List<VectorPolygonBatchKey> batchOrder,
+        ref VectorPolygonRenderResult result)
+    {
+        if (styleAssets is null)
+        {
+            return;
+        }
+
+        VectorBackgroundResolution resolution =
+            styleAssets.ResolveBackgrounds(zoom);
+        result.CandidatePolygonCount += resolution.Backgrounds.Length;
+        result.EvaluationFailureCount += resolution.EvaluationFailureCount;
+        foreach (VectorResolvedBackground background in
+            resolution.Backgrounds)
+        {
+            Vector4 color =
+                background.Style.Color * (float)layerOpacity;
+            if (color.W <= 0)
+            {
+                continue;
+            }
+
+            VectorPolygonBatchKey key = new(
+                background.StyleLayerOrder,
+                VectorPolygonBatchKind.Fill,
+                color);
+            PooledGeometryBuffer buffer = GetOrCreatePolygonBuffer(
+                key,
+                batches,
+                batchOrder);
+            double left = -viewportPadding;
+            double top = -viewportPadding;
+            double right = viewportWidth + viewportPadding;
+            double bottom = viewportHeight + viewportPadding;
+            buffer.Add(new MapScreenPoint(left, top));
+            buffer.Add(new MapScreenPoint(right, top));
+            buffer.Add(new MapScreenPoint(right, bottom));
+            buffer.Add(new MapScreenPoint(left, top));
+            buffer.Add(new MapScreenPoint(right, bottom));
+            buffer.Add(new MapScreenPoint(left, bottom));
+            result.DrawablePolygonCount++;
+            result.TriangleCount += 2;
+        }
     }
 
     private void DrawReusedVectorPolygons(

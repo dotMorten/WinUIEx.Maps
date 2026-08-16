@@ -1,4 +1,5 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Microsoft.UI.Xaml.Controls;
 using Windows.Devices.Geolocation;
 using WinUIEx.Maps.Rendering;
 using WinUIEx.Maps.Tests.UITestHelpers;
@@ -9,6 +10,142 @@ namespace WinUIEx.Maps.Tests.UITests;
 [DoNotParallelize]
 public sealed class VectorRenderingTests
 {
+    [TestMethod]
+    public Task BackgroundCoversViewportWhileNextZoomTilesArePending() =>
+        MapControlTestHost.LoadUIAsync(
+            () => new SwapChainPanel { Width = 640, Height = 480 },
+            async element =>
+            {
+                using RenderingEventListener listener = new(
+                    "TileSetActivated",
+                    "VectorGeometryFallbackOpacitySummary",
+                    "VectorPolygonRenderBatch");
+                var panel = (SwapChainPanel)element;
+                using MapRenderer renderer = new();
+                const long sourceId = 42;
+                TileId fallbackTileId = new(4, 8, 8);
+                byte[] tile = new MapboxVectorTileBuilder()
+                    .AddPoint("unused", 2048, 2048)
+                    .Build();
+                TestVectorTileSource source = TestVectorTileSource.Create(
+                    fallbackTileId,
+                    tile,
+                    """
+                    {
+                      "version": 8,
+                      "layers": [{
+                        "type": "background",
+                        "paint": { "background-color": "#123456" }
+                      }]
+                    }
+                    """,
+                    "{}",
+                    [0, 0, 0, 0],
+                    1,
+                    1);
+                BasicGeoposition center = source.TileCenter;
+                MapScene fallbackScene = MapCamera.CreateScene(
+                    center.Longitude,
+                    center.Latitude,
+                    4,
+                    4,
+                    640,
+                    480,
+                    0,
+                    0);
+                renderer.Attach(panel);
+                renderer.SetLayerRenderPlan(
+                    [
+                        new LayerRenderSnapshot(
+                            LayerRenderKind.VectorPoints,
+                            0,
+                            sourceId,
+                            true,
+                            1,
+                            TimeSpan.Zero,
+                            0,
+                            24,
+                            0,
+                            256),
+                    ]);
+                renderer.SetCameraTargetImmediately(
+                    center.Longitude,
+                    center.Latitude,
+                    4,
+                    640,
+                    480);
+                renderer.ActivateRasterTileSet(
+                    sourceId,
+                    1,
+                    1,
+                    fallbackScene,
+                    id => id == fallbackTileId,
+                    RasterSourceKind.Custom,
+                    LayerRenderKind.VectorPoints,
+                    clearExistingTiles: false);
+                Assert.IsTrue(await renderer.QueueVectorTileAsync(
+                    new VectorTileData(
+                        new RasterTileKey(sourceId, fallbackTileId),
+                        VectorTileDecoder.Decode(tile),
+                        source.StyleAssets,
+                        [],
+                        null,
+                        1,
+                        -1),
+                    CancellationToken.None));
+
+                using CancellationTokenSource timeout =
+                    new(TimeSpan.FromSeconds(10));
+                _ = await renderer.CaptureFrameAsync(timeout.Token);
+
+                renderer.SetCameraTargetImmediately(
+                    center.Longitude,
+                    center.Latitude,
+                    5,
+                    640,
+                    480);
+                MapScene pendingScene = MapCamera.CreateScene(
+                    center.Longitude,
+                    center.Latitude,
+                    5,
+                    5,
+                    640,
+                    480,
+                    0,
+                    0);
+                renderer.ActivateRasterTileSet(
+                    sourceId,
+                    2,
+                    2,
+                    pendingScene,
+                    _ => true,
+                    RasterSourceKind.Custom,
+                    LayerRenderKind.VectorPoints,
+                    clearExistingTiles: false);
+
+                MapRenderFrame pending =
+                    await renderer.CaptureFrameAsync(timeout.Token);
+                ConnectedComponent background = Assert.ContainsSingle(
+                    FindColor(
+                        pending,
+                        18,
+                        52,
+                        86,
+                        minimumPixelCount: 250_000));
+
+                Assert.IsGreaterThanOrEqualTo(638, background.Bounds.Width);
+                Assert.IsGreaterThanOrEqualTo(478, background.Bounds.Height);
+                Assert.IsTrue(listener.Events("TileSetActivated").Any(captured =>
+                    Convert.ToInt32(captured.Payload[1]) == 5 &&
+                    Convert.ToInt32(captured.Payload[3]) == 1));
+                Assert.IsTrue(listener.Events(
+                    "VectorGeometryFallbackOpacitySummary").Any(captured =>
+                        Convert.ToInt32(captured.Payload[2]) > 0));
+                Assert.IsTrue(listener.Events(
+                    "VectorPolygonRenderBatch").Any(captured =>
+                        Convert.ToInt32(captured.Payload[1]) > 0));
+            });
+
     [TestMethod]
     public Task LegacyStyleTokensStopsBackgroundAndRgbColorsRender() =>
         MapControlTestHost.LoadMapControlAsync(async map =>

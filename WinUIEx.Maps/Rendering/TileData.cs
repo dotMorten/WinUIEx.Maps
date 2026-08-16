@@ -255,6 +255,14 @@ internal sealed record VectorPolygonResolution(
     VectorTileStyledPolygon[] Polygons,
     int EvaluationFailureCount);
 
+internal readonly record struct VectorResolvedBackground(
+    int StyleLayerOrder,
+    VectorFillStyle Style);
+
+internal sealed record VectorBackgroundResolution(
+    VectorResolvedBackground[] Backgrounds,
+    int EvaluationFailureCount);
+
 internal readonly record struct VectorFillStyle(
     Vector4 Color,
     Vector4? OutlineColor = null,

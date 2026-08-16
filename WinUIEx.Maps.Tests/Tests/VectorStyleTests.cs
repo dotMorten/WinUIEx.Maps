@@ -823,7 +823,7 @@ public sealed class VectorStyleTests
     }
 
     [TestMethod]
-    public void BackgroundLayerResolvesRgbColorAsFullTilePolygon()
+    public void BackgroundLayerResolvesIndependentlyOfTileFeatures()
     {
         VectorStyleAssets assets = CreateAssets(
             """
@@ -843,12 +843,9 @@ public sealed class VectorStyleTests
             1,
             1);
 
-        VectorTileStyledPolygon background = Assert.ContainsSingle(
-            assets.ResolvePolygons(
-                new VectorTileFeatureCollection([]),
-                10).Polygons);
+        VectorResolvedBackground background = Assert.ContainsSingle(
+            assets.ResolveBackgrounds(10).Backgrounds);
 
-        Assert.HasCount(6, background.FillTriangles);
         Assert.AreEqual(10 / 255d * 0.5, background.Style.Color.X, 0.001);
         Assert.AreEqual(20 / 255d * 0.5, background.Style.Color.Y, 0.001);
         Assert.AreEqual(30 / 255d * 0.5, background.Style.Color.Z, 0.001);

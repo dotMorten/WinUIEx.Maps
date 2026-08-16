@@ -153,6 +153,7 @@ internal sealed partial class MapRenderer
                     completed.Tile.Features,
                     completed.Tile.StyleAssets,
                     completed.Tile.Style));
+            state.VectorStyleAssets = completed.Tile.StyleAssets;
             OnVectorTilesChanged();
             acceptedCount++;
             acceptedPointCount += completed.Tile.Features.PointCount;
@@ -1678,6 +1679,18 @@ internal sealed partial class MapRenderer
                 scene.RequiredTiles
                     .Where(state.IncludesTile)
                     .Select(id => new RasterTileKey(sourceId, id)));
+            protectedKeys.UnionWith(_vectorTiles.Keys.Where(key =>
+                key.SourceId == sourceId &&
+                state.FallbackTileZooms.Contains(key.Id.Zoom) &&
+                GetVisibleCachedTileInstances(
+                    key.Id,
+                    _displayLongitude,
+                    _displayLatitude,
+                    _displayZoom,
+                    _viewportWidth,
+                    _viewportHeight,
+                    _displayHeading,
+                    _displayPitch).Count != 0));
         }
 
         bool removed = false;
