@@ -724,6 +724,12 @@ internal sealed partial class MapRenderer : DirectXRenderer
                 KeyboardNavigationState.ZoomLevelsPerSecond * elapsedSeconds),
             0,
             MapCamera.MaximumTileZoom);
+        _displayHeading = MapCamera.NormalizeHeading(
+            _displayHeading + (navigation.HeadingDirection *
+                KeyboardNavigationState.HeadingDegreesPerSecond * elapsedSeconds));
+        _displayPitch = MapCamera.NormalizePitch(
+            _displayPitch + (navigation.PitchDirection *
+                KeyboardNavigationState.PitchDegreesPerSecond * elapsedSeconds));
         _activeZoomAnchor = null;
         _panAnimation.Reset(_displayLongitude, _displayLatitude);
         _zoomAnimation.Reset(_displayZoom);

@@ -270,7 +270,9 @@ public sealed class MapControlAutomationPeer :
     {
         string helpText = base.GetHelpTextCore();
         return string.IsNullOrWhiteSpace(helpText)
-            ? "Use arrow keys to pan and plus and minus to zoom."
+            ? "Use arrow keys to pan, plus and minus to zoom, Shift plus arrow keys " +
+                "to rotate or tilt, Escape to return to the map, and Control plus " +
+                "Alt plus D to toggle description detail."
             : helpText;
     }
 

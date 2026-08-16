@@ -9,6 +9,7 @@ using WinUIEx.Maps.Rendering;
 using WinUIEx.Maps.Rendering.Diagnostics;
 using WinUIEx.Maps.Automation.Peers;
 using System.Collections.Specialized;
+using System.Globalization;
 using Windows.Devices.Geolocation;
 using Windows.Foundation;
 
@@ -116,6 +117,7 @@ public sealed partial class MapControl : Control
     private TextBlock? _mapStateText;
     private MapAccessibilitySnapshot? _accessibilitySnapshot;
     private string _accessibilityDescription = string.Empty;
+    private bool _isAccessibilityDescriptionDetailed;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer?
         _accessibilityAnnouncementTimer;
     private InfoBar? _azureAuthenticationInfoBar;
@@ -1362,7 +1364,39 @@ public sealed partial class MapControl : Control
         MapAccessibilitySnapshot? snapshot = _accessibilitySnapshot;
         string description = snapshot is null
             ? string.Empty
-            : CreateAccessibilityDescription(snapshot.Features);
+            : CreateAccessibilityDescription(
+                snapshot,
+                _isAccessibilityDescriptionDetailed);
+        UpdateAccessibilityDescription(
+            description,
+            snapshot?.Features.Length ?? 0,
+            1);
+    }
+
+    private void ToggleAccessibilityDescriptionDetail()
+    {
+        _isAccessibilityDescriptionDetailed =
+            !_isAccessibilityDescriptionDetailed;
+        MapAccessibilitySnapshot? snapshot = _accessibilitySnapshot;
+        if (snapshot is null)
+        {
+            return;
+        }
+
+        _accessibilityAnnouncementTimer?.Stop();
+        UpdateAccessibilityDescription(
+            CreateAccessibilityDescription(
+                snapshot,
+                _isAccessibilityDescriptionDetailed),
+            snapshot.Features.Length,
+            3);
+    }
+
+    private void UpdateAccessibilityDescription(
+        string description,
+        int featureCount,
+        int changeReason)
+    {
         bool changed = !string.Equals(
             description,
             _accessibilityDescription,
@@ -1395,8 +1429,8 @@ public sealed partial class MapControl : Control
             }
         }
         MapControlEventSource.Log.AccessibilityAnnouncementDecision(
-            snapshot?.Features.Length ?? 0,
-            description.Length == 0 ? 0 : changed ? 1 : 2,
+            featureCount,
+            description.Length == 0 ? 0 : changed ? changeReason : 2,
             raised);
     }
 
@@ -1417,6 +1451,26 @@ public sealed partial class MapControl : Control
             2 => $"Map showing {names[0]} and {names[1]}.",
             _ => $"Map showing {string.Join(", ", names[..^1])}, and {names[^1]}.",
         };
+    }
+
+    internal static string CreateAccessibilityDescription(
+        MapAccessibilitySnapshot snapshot,
+        bool detailed)
+    {
+        string simplified = CreateAccessibilityDescription(snapshot.Features);
+        if (!detailed)
+        {
+            return simplified;
+        }
+
+        string mapDescription = simplified.Length == 0 ? "Map." : simplified;
+        string latitudeDirection = snapshot.Latitude < 0 ? "south" : "north";
+        string longitudeDirection = snapshot.Longitude < 0 ? "west" : "east";
+        return string.Create(
+            CultureInfo.CurrentCulture,
+            $"{mapDescription} Zoom level {snapshot.Zoom:0.##}. Center " +
+            $"{Math.Abs(snapshot.Latitude):0.####} degrees {latitudeDirection}, " +
+            $"{Math.Abs(snapshot.Longitude):0.####} degrees {longitudeDirection}.");
     }
 
     private void OnAttributionChanged(

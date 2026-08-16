@@ -33,8 +33,8 @@ or implementation plan is not sufficient evidence for **Supports**.
 
 | Status | Level A | Level AA | Total |
 | --- | ---: | ---: | ---: |
-| Supports | 7 | 2 | 9 |
-| Partially Supports | 9 | 5 | 14 |
+| Supports | 8 | 2 | 10 |
+| Partially Supports | 8 | 5 | 13 |
 | Does Not Support | 0 | 0 | 0 |
 | Not Applicable | 11 | 8 | 19 |
 | Not Evaluated | 3 | 5 | 8 |
@@ -71,10 +71,10 @@ The assessment excludes:
 | **1.2.3 Audio Description or Media Alternative (Prerecorded)** | **Not Applicable** | The control has no built-in prerecorded synchronized media. | Host application responsibility. |
 | **1.3.1 Info and Relationships** | **Partially Supports** | The map root is a focusable WinUI `Control`; attribution is exposed as content with a polite live setting, and attribution links retain hyperlink semantics. | Geographic features, layer relationships, camera state, and lightweight `MapElement` instances have no UIA structure. Add semantic viewport data, descriptions, and virtual automation children, then validate them with assistive technology. |
 | **1.3.2 Meaningful Sequence** | **Not Evaluated** | Visual layer and element ordering are deterministic, and attribution inline order is preserved. | No screen-reader traversal exists for geographic content, so meaningful automation order cannot yet be assessed. Define `MapTabIndex`, stable virtual-peer ordering, and focused traversal tests. |
-| **1.3.3 Sensory Characteristics** | **Partially Supports** | Core pan and zoom operations have keyboard alternatives and do not require instructions based solely on shape, location, sound, or orientation. | Rotate, pitch, map-element selection, and a nonvisual description of geographic state are incomplete. Add equivalent keyboard commands and screen-reader descriptions. |
+| **1.3.3 Sensory Characteristics** | **Partially Supports** | Pan, zoom, rotate, and pitch have keyboard alternatives, and the viewport has a nonvisual geographic description with simplified and detailed modes. | Application-authored map-element selection does not yet have a built-in nonvisual focus and invocation model. |
 | **1.4.1 Use of Color** | **Not Evaluated** | Multiple Azure styles, including high-contrast light and dark, are available. | There is no targeted audit proving that built-in information is never conveyed by color alone across styles and element types. Add automatic high-contrast behavior and perform a targeted visual audit; application-authored layers remain application responsibility. |
 | **1.4.2 Audio Control** | **Not Applicable** | The control does not play audio. | None for built-in behavior. |
-| **2.1.1 Keyboard** | **Partially Supports** | A focused map can pan with arrow keys and zoom with plus/minus; these behaviors have focused live testing. | Keyboard rotate, pitch, description detail, Escape behavior, and map-element traversal/invocation are missing. Add and test those keyboard paths. |
+| **2.1.1 Keyboard** | **Supports** | All built-in map navigation and screen-reader description functionality is keyboard operable. The shortcuts match Azure Maps: arrows pan 100 pixels; plus/equal and minus/hyphen/underscore zoom one level; Shift+Left/Right rotates 15 degrees; Shift+Up/Down changes pitch 10 degrees; Escape restores focus to the map; and Ctrl+Alt+D or Ctrl+Shift+D toggles description detail. Holding pan, zoom, rotate, or pitch keys produces continuous movement, while a quick press uses the documented discrete amount. Tab remains available for normal focus traversal. | Applications that attach additional behavior to their own map elements or surrounding controls remain responsible for providing equivalent keyboard operation for that application-authored functionality. |
 | **2.1.2 No Keyboard Trap** | **Supports** | The map is a single tab stop and does not currently create an internal keyboard-focus cycle. | Re-evaluate when virtual map-element focus and traversal are added. |
 | **2.1.4 Character Key Shortcuts** | **Supports** | Plus and minus shortcuts operate only while the map itself has focus. The control does not install application-wide single-character shortcuts. | Re-evaluate future description shortcuts and keep them modifier-qualified. |
 | **2.2.1 Timing Adjustable** | **Not Applicable** | Built-in tasks do not impose a user-response time limit. | Host application responsibility. |
@@ -84,7 +84,7 @@ The assessment excludes:
 | **2.4.2 Page Titled** | **Not Applicable** | The control does not own a page or window title. | Host application responsibility. |
 | **2.4.3 Focus Order** | **Partially Supports** | The root participates in normal XAML tab order and shows a focus state. | Lightweight map elements expose neither focus nor `MapTabIndex`. Implement and test deterministic logical traversal. |
 | **2.4.4 Link Purpose (In Context)** | **Partially Supports** | Visible attribution link text is also assigned as its automation name. | Link purpose depends on provider-supplied attribution text and has not been manually assessed. Application-provided interactive map content has no accessible context. |
-| **2.5.1 Pointer Gestures** | **Supports** | Multipoint pinch/stretch and touch pan have single-pointer or keyboard alternatives: wheel, double-tap, plus/minus, and arrow keys. | Re-evaluate rotation after adding its keyboard equivalent. |
+| **2.5.1 Pointer Gestures** | **Supports** | Multipoint pinch/stretch, touch pan, rotation, and pitch have single-pointer or keyboard alternatives, including wheel, double-tap, plus/minus, arrows, and Shift+arrow shortcuts. | Application-authored gesture behavior remains application responsibility. |
 | **2.5.2 Pointer Cancellation** | **Not Evaluated** | Tap, right-tap, pointer, and manipulation handlers use WinUI routed input, but no focused test assesses down-event activation, cancellation, or undo semantics for all map interactions. | Add pointer cancellation and drag-threshold tests, including future map-element invocation. |
 | **2.5.3 Label in Name** | **Supports** | Attribution hyperlinks use their visible text as the UIA name. The root has no built-in visible text label. | Require accessible names for interactive map elements and test that any visible title is contained in the accessible name. |
 | **2.5.4 Motion Actuation** | **Not Applicable** | The control does not use device motion or user gesture motion detected by sensors. Touch manipulation is pointer input covered by 2.5.1. | Host application responsibility for sensor-driven camera behavior. |

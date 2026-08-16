@@ -124,6 +124,21 @@ public sealed class MapControlAutomationPeerApiTests
         Assert.AreEqual(
             string.Empty,
             MapControl.CreateAccessibilityDescription([]));
+
+        MapAccessibilitySnapshot snapshot = new(
+            1,
+            -122.3321,
+            47.6062,
+            5,
+            0,
+            0,
+            [CreateFeature("Seattle")]);
+        string detailed = MapControl.CreateAccessibilityDescription(
+            snapshot,
+            detailed: true);
+        Assert.StartsWith("Map showing Seattle. Zoom level 5.", detailed);
+        Assert.Contains("47.6062 degrees north", detailed);
+        Assert.Contains("122.3321 degrees west", detailed);
     }
 
     private static MapAccessibilityFeature CreateFeature(string name) =>

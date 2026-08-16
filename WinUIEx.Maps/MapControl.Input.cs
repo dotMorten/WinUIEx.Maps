@@ -16,12 +16,20 @@ public sealed partial class MapControl
     private const VirtualKey PlusKey = (VirtualKey)187;
     private const VirtualKey MinusKey = (VirtualKey)189;
     private readonly Dictionary<VirtualKey, long> _navigationKeys = [];
+    private readonly Dictionary<VirtualKey, long> _modifiedNavigationKeys = [];
     private readonly Dictionary<uint, MapElementHitTarget> _hoveredMapElements = [];
+    private readonly HashSet<uint> _pointerFocusRequests = [];
+    private bool _isDescriptionDetailShortcutPressed;
+    private bool _usePointerFocusVisual;
 
     /// <inheritdoc />
     protected override void OnGotFocus(RoutedEventArgs e)
     {
         base.OnGotFocus(e);
+        if (FocusState == FocusState.Pointer)
+        {
+            _usePointerFocusVisual = true;
+        }
         UpdateFocusVisualState();
     }
 
@@ -29,6 +37,8 @@ public sealed partial class MapControl
     protected override void OnLostFocus(RoutedEventArgs e)
     {
         base.OnLostFocus(e);
+        _isDescriptionDetailShortcutPressed = false;
+        _usePointerFocusVisual = false;
         CancelKeyboardNavigation();
         UpdateFocusVisualState();
     }
@@ -41,7 +51,7 @@ public sealed partial class MapControl
             {
                 FocusState.Pointer => "PointerFocused",
                 FocusState.Unfocused => "Unfocused",
-                _ => "Focused",
+                _ => _usePointerFocusVisual ? "PointerFocused" : "Focused",
             },
             true);
     }
@@ -51,7 +61,53 @@ public sealed partial class MapControl
     {
         base.OnKeyDown(e);
 
-        if (IsModifierKeyPressed())
+        bool shiftPressed = IsShiftPressed();
+        bool controlPressed = IsControlPressed();
+        bool menuPressed = IsMenuPressed();
+        if (e.Key == VirtualKey.D &&
+            controlPressed &&
+            (menuPressed || shiftPressed))
+        {
+            CancelKeyboardNavigation();
+            if (!_isDescriptionDetailShortcutPressed)
+            {
+                _isDescriptionDetailShortcutPressed = true;
+                ToggleAccessibilityDescriptionDetail();
+            }
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == VirtualKey.Escape)
+        {
+            CancelKeyboardNavigation();
+            Focus(FocusState.Keyboard);
+            e.Handled = true;
+            return;
+        }
+
+        if (shiftPressed && IsArrowKey(e.Key))
+        {
+            if (_navigationKeys.Count != 0)
+            {
+                _navigationKeys.Clear();
+                PublishKeyboardNavigation();
+            }
+            if (_modifiedNavigationKeys.TryAdd(
+                    e.Key,
+                    Stopwatch.GetTimestamp()))
+            {
+                CancelPendingViewChange();
+                PublishKeyboardNavigation();
+            }
+            e.Handled = true;
+            return;
+        }
+
+        if (controlPressed ||
+            menuPressed ||
+            IsWindowsKeyPressed() ||
+            (shiftPressed && e.Key is not PlusKey and not MinusKey))
         {
             CancelKeyboardNavigation();
             return;
@@ -59,6 +115,11 @@ public sealed partial class MapControl
 
         if (!IsNavigationKey(e.Key))
         {
+            return;
+        }
+        if (_modifiedNavigationKeys.ContainsKey(e.Key))
+        {
+            e.Handled = true;
             return;
         }
 
@@ -74,6 +135,28 @@ public sealed partial class MapControl
     protected override void OnKeyUp(KeyRoutedEventArgs e)
     {
         base.OnKeyUp(e);
+        if (e.Key == VirtualKey.D)
+        {
+            _isDescriptionDetailShortcutPressed = false;
+        }
+        if (_modifiedNavigationKeys.Remove(
+                e.Key,
+                out long modifiedPressedTimestamp))
+        {
+            TimeSpan modifiedHeldDuration =
+                Stopwatch.GetElapsedTime(modifiedPressedTimestamp);
+            PublishKeyboardNavigation();
+            if (modifiedHeldDuration < KeyboardNavigationState.HoldThreshold)
+            {
+                ApplyModifiedArrowNavigation(e.Key);
+            }
+            else
+            {
+                CommitKeyboardNavigation();
+            }
+            e.Handled = true;
+            return;
+        }
         if (e.Handled || !_navigationKeys.Remove(e.Key, out long pressedTimestamp))
         {
             return;
@@ -102,16 +185,21 @@ public sealed partial class MapControl
         }
 
         Microsoft.UI.Input.PointerPoint point = e.GetCurrentPoint(this);
-        if (e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse &&
-            point.Properties.IsLeftButtonPressed &&
-            !IsModifierKeyPressed())
+        if (ShouldFocusFromPointer(point, e.Pointer.PointerDeviceType) &&
+            _pointerFocusRequests.Add(e.Pointer.PointerId))
         {
-            Focus(FocusState.Pointer);
+            FocusFromPointer();
         }
     }
 
     private void OnMapElementPointerPressed(object sender, PointerRoutedEventArgs e)
     {
+        Microsoft.UI.Input.PointerPoint point = e.GetCurrentPoint(this);
+        if (ShouldFocusFromPointer(point, e.Pointer.PointerDeviceType) &&
+            _pointerFocusRequests.Add(e.Pointer.PointerId))
+        {
+            FocusFromPointer();
+        }
         RaiseMapElementPointerEvent(
             e,
             MapElementInputEventKind.PointerPressed,
@@ -142,10 +230,44 @@ public sealed partial class MapControl
 
     private void OnMapElementPointerReleased(object sender, PointerRoutedEventArgs e)
     {
+        if (_pointerFocusRequests.Remove(e.Pointer.PointerId))
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (IsLoaded)
+                {
+                    FocusFromPointer();
+                }
+            });
+        }
         RaiseMapElementPointerEvent(
             e,
             MapElementInputEventKind.PointerReleased,
             static (layer, element, args) => layer.RaisePointerReleased(element, args));
+    }
+
+    private static bool ShouldFocusFromPointer(
+        Microsoft.UI.Input.PointerPoint point,
+        Microsoft.UI.Input.PointerDeviceType pointerDeviceType)
+    {
+        if (IsModifierKeyPressed())
+        {
+            return false;
+        }
+        return pointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse
+            ? point.Properties.IsLeftButtonPressed
+            : point.IsInContact;
+    }
+
+    private void FocusFromPointer()
+    {
+        _usePointerFocusVisual = true;
+        if (!Focus(FocusState.Pointer) &&
+            !Focus(FocusState.Programmatic))
+        {
+            _usePointerFocusVisual = false;
+        }
+        UpdateFocusVisualState();
     }
 
     private void OnMapElementTapped(object sender, TappedRoutedEventArgs e)
@@ -340,6 +462,10 @@ public sealed partial class MapControl
             VirtualKey.Add or PlusKey or VirtualKey.Subtract or MinusKey;
     }
 
+    private static bool IsArrowKey(VirtualKey key) =>
+        key is VirtualKey.Left or VirtualKey.Right or
+            VirtualKey.Up or VirtualKey.Down;
+
     private readonly record struct MapElementHitTarget(
         MapElementsLayer Layer,
         MapElement Element);
@@ -355,22 +481,38 @@ public sealed partial class MapControl
         int zoom = GetNavigationDirection(
             VirtualKey.Subtract, MinusKey, VirtualKey.None,
             VirtualKey.Add, PlusKey, VirtualKey.None);
-        long startTimestamp = _navigationKeys.Count == 0 ? 0 : _navigationKeys.Values.Min();
+        int heading = GetModifiedNavigationDirection(
+            VirtualKey.Left,
+            VirtualKey.Right);
+        int pitch = GetModifiedNavigationDirection(
+            VirtualKey.Down,
+            VirtualKey.Up);
+        long startTimestamp = _navigationKeys.Values
+            .Concat(_modifiedNavigationKeys.Values)
+            .DefaultIfEmpty()
+            .Min();
         if (!_runtimeResourcesReleased)
         {
             _renderer.SetKeyboardNavigation(new KeyboardNavigationState(
-                horizontal, vertical, zoom, startTimestamp));
+                horizontal,
+                vertical,
+                zoom,
+                heading,
+                pitch,
+                startTimestamp));
         }
     }
 
     private void CancelKeyboardNavigation()
     {
-        if (_navigationKeys.Count == 0)
+        if (_navigationKeys.Count == 0 &&
+            _modifiedNavigationKeys.Count == 0)
         {
             return;
         }
 
         _navigationKeys.Clear();
+        _modifiedNavigationKeys.Clear();
         PublishKeyboardNavigation();
     }
 
@@ -387,6 +529,12 @@ public sealed partial class MapControl
 
     private bool IsNavigationKeyHeld(VirtualKey key) =>
         key != VirtualKey.None && _navigationKeys.ContainsKey(key);
+
+    private int GetModifiedNavigationDirection(
+        VirtualKey negative,
+        VirtualKey positive) =>
+        (_modifiedNavigationKeys.ContainsKey(positive) ? 1 : 0) -
+        (_modifiedNavigationKeys.ContainsKey(negative) ? 1 : 0);
 
     private void ApplyDiscreteKeyboardNavigation(VirtualKey key)
     {
@@ -405,8 +553,28 @@ public sealed partial class MapControl
             return;
         }
 
-        double distance = Math.Min(ActualWidth, ActualHeight) / 2;
+        const double distance = 100;
         PanByPixels(-horizontal * distance, -vertical * distance);
+    }
+
+    private void ApplyModifiedArrowNavigation(VirtualKey key)
+    {
+        CancelPendingViewChange();
+        switch (key)
+        {
+            case VirtualKey.Left:
+                Heading -= 15;
+                break;
+            case VirtualKey.Right:
+                Heading += 15;
+                break;
+            case VirtualKey.Up:
+                Pitch += 10;
+                break;
+            case VirtualKey.Down:
+                Pitch -= 10;
+                break;
+        }
     }
 
     private static int GetNavigationDirectionForKey(
@@ -527,15 +695,27 @@ public sealed partial class MapControl
 
     private static bool IsModifierKeyPressed()
     {
-        return IsVirtualKeyPressed(VirtualKey.LeftShift) ||
-            IsVirtualKeyPressed(VirtualKey.RightShift) ||
-            IsVirtualKeyPressed(VirtualKey.LeftControl) ||
-            IsVirtualKeyPressed(VirtualKey.RightControl) ||
-            IsVirtualKeyPressed(VirtualKey.LeftMenu) ||
-            IsVirtualKeyPressed(VirtualKey.RightMenu) ||
-            IsVirtualKeyPressed(VirtualKey.LeftWindows) ||
-            IsVirtualKeyPressed(VirtualKey.RightWindows);
+        return IsShiftPressed() ||
+            IsControlPressed() ||
+            IsMenuPressed() ||
+            IsWindowsKeyPressed();
     }
+
+    private static bool IsShiftPressed() =>
+        IsVirtualKeyPressed(VirtualKey.LeftShift) ||
+        IsVirtualKeyPressed(VirtualKey.RightShift);
+
+    private static bool IsControlPressed() =>
+        IsVirtualKeyPressed(VirtualKey.LeftControl) ||
+        IsVirtualKeyPressed(VirtualKey.RightControl);
+
+    private static bool IsMenuPressed() =>
+        IsVirtualKeyPressed(VirtualKey.LeftMenu) ||
+        IsVirtualKeyPressed(VirtualKey.RightMenu);
+
+    private static bool IsWindowsKeyPressed() =>
+        IsVirtualKeyPressed(VirtualKey.LeftWindows) ||
+        IsVirtualKeyPressed(VirtualKey.RightWindows);
 
     private static bool IsVirtualKeyPressed(VirtualKey key)
     {

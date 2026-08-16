@@ -9,7 +9,7 @@ public sealed class KeyboardNavigationStateTests
     [TestMethod]
     public void EmptyStateHasNoInput()
     {
-        KeyboardNavigationState state = new(0, 0, 0, 0);
+        KeyboardNavigationState state = new(0, 0, 0, 0, 0, 0);
 
         Assert.IsFalse(state.HasInput);
     }
@@ -20,7 +20,29 @@ public sealed class KeyboardNavigationStateTests
     [DataRow(0, 0, 1)]
     public void DirectionOrZoomMakesStateActive(int horizontal, int vertical, int zoom)
     {
-        KeyboardNavigationState state = new(horizontal, vertical, zoom, 1);
+        KeyboardNavigationState state = new(
+            horizontal,
+            vertical,
+            zoom,
+            0,
+            0,
+            1);
+
+        Assert.IsTrue(state.HasInput);
+    }
+
+    [TestMethod]
+    [DataRow(1, 0)]
+    [DataRow(0, -1)]
+    public void HeadingOrPitchMakesStateActive(int heading, int pitch)
+    {
+        KeyboardNavigationState state = new(
+            0,
+            0,
+            0,
+            heading,
+            pitch,
+            1);
 
         Assert.IsTrue(state.HasInput);
     }
