@@ -54,12 +54,20 @@ public sealed partial class LifetimeStressPage : Page
 
     private async Task RunLifetimeStressAsync(CancellationTokenSource owner)
     {
+        MapControl? map = null;
         try
         {
             while (!owner.IsCancellationRequested)
             {
-                MapHost.Children.Clear();
-                MapControl map = CreateSelectedMap();
+                if (map is not null)
+                {
+                    MapHost.Children.Remove(map);
+                    map = null;
+                    await Task.Yield();
+                    CollectReleasedMaps();
+                }
+
+                map = CreateSelectedMap();
                 AutomationProperties.SetAutomationId(map, "MapSurface");
                 MapHost.Children.Add(map);
                 _iteration++;
@@ -72,12 +80,26 @@ public sealed partial class LifetimeStressPage : Page
         }
         finally
         {
+            if (map is not null)
+            {
+                MapHost.Children.Remove(map);
+                map = null;
+                await Task.Yield();
+                CollectReleasedMaps();
+            }
             if (ReferenceEquals(_lifetimeCancellation, owner))
             {
                 _lifetimeCancellation = null;
             }
             owner.Dispose();
         }
+    }
+
+    private static void CollectReleasedMaps()
+    {
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, true);
     }
 
     private MapControl CreateSelectedMap()

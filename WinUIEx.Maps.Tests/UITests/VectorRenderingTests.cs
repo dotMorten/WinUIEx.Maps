@@ -147,6 +147,138 @@ public sealed class VectorRenderingTests
             });
 
     [TestMethod]
+    public Task BufferedTranslucentPolygonsDoNotOverlapAcrossTileEdges() =>
+        MapControlTestHost.LoadUIAsync(
+            () => new SwapChainPanel { Width = 512, Height = 256 },
+            async element =>
+            {
+                var panel = (SwapChainPanel)element;
+                using MapRenderer renderer = new();
+                const long sourceId = 43;
+                const int zoom = 4;
+                TileId leftTile = new(zoom, 8, 8);
+                TileId rightTile = new(zoom, 9, 8);
+                byte[] tile = new MapboxVectorTileBuilder()
+                    .AddPolygon(
+                        "land",
+                        [
+                            [
+                                new TestTilePoint(-256, -256),
+                                new TestTilePoint(4352, -256),
+                                new TestTilePoint(4352, 4352),
+                                new TestTilePoint(-256, 4352),
+                            ],
+                        ])
+                    .Build();
+                TestVectorTileSource source = TestVectorTileSource.Create(
+                    leftTile,
+                    tile,
+                    """
+                    {
+                      "version": 8,
+                      "layers": [
+                        {
+                          "type": "background",
+                          "paint": { "background-color": "#ffffff" }
+                        },
+                        {
+                          "type": "fill",
+                          "source-layer": "land",
+                          "paint": {
+                            "fill-color": "rgba(0, 255, 0, 0.5)",
+                            "fill-antialias": false
+                          }
+                        }
+                      ]
+                    }
+                    """,
+                    "{}",
+                    [0, 0, 0, 0],
+                    1,
+                    1);
+                double worldX = 9d / (1 << zoom);
+                double worldY = 8.5 / (1 << zoom);
+                BasicGeoposition center = new()
+                {
+                    Longitude = (worldX * 360) - 180,
+                    Latitude = Math.Atan(Math.Sinh(
+                        Math.PI * (1 - (2 * worldY)))) * 180 / Math.PI,
+                };
+                MapScene scene = MapCamera.CreateScene(
+                    center.Longitude,
+                    center.Latitude,
+                    zoom,
+                    zoom,
+                    512,
+                    256,
+                    0,
+                    0);
+                renderer.Attach(panel);
+                renderer.SetCameraTargetImmediately(
+                    center.Longitude,
+                    center.Latitude,
+                    zoom,
+                    512,
+                    256);
+                renderer.SetLayerRenderPlan(
+                    [
+                        new LayerRenderSnapshot(
+                            LayerRenderKind.VectorPoints,
+                            0,
+                            sourceId,
+                            true,
+                            1,
+                            TimeSpan.Zero,
+                            0,
+                            24,
+                            0,
+                            256),
+                    ]);
+                renderer.ActivateRasterTileSet(
+                    sourceId,
+                    1,
+                    1,
+                    scene,
+                    id => id == leftTile || id == rightTile,
+                    RasterSourceKind.Custom,
+                    LayerRenderKind.VectorPoints,
+                    clearExistingTiles: false);
+                VectorTileFeatureCollection features =
+                    VectorTileDecoder.Decode(tile);
+                foreach (TileId id in new[] { leftTile, rightTile })
+                {
+                    Assert.IsTrue(await renderer.QueueVectorTileAsync(
+                        new VectorTileData(
+                            new RasterTileKey(sourceId, id),
+                            features,
+                            source.StyleAssets,
+                            [],
+                            null,
+                            1,
+                            -1),
+                        CancellationToken.None));
+                }
+
+                using CancellationTokenSource timeout =
+                    new(TimeSpan.FromSeconds(10));
+                MapRenderFrame frame =
+                    await renderer.CaptureFrameAsync(timeout.Token);
+                (byte Red, byte Green, byte Blue) interior =
+                    GetPixel(frame, 128, 128);
+                (byte Red, byte Green, byte Blue) leftEdge =
+                    GetPixel(frame, 252, 128);
+                (byte Red, byte Green, byte Blue) rightEdge =
+                    GetPixel(frame, 260, 128);
+
+                Assert.AreEqual(interior.Red, leftEdge.Red, 2);
+                Assert.AreEqual(interior.Green, leftEdge.Green, 2);
+                Assert.AreEqual(interior.Blue, leftEdge.Blue, 2);
+                Assert.AreEqual(interior.Red, rightEdge.Red, 2);
+                Assert.AreEqual(interior.Green, rightEdge.Green, 2);
+                Assert.AreEqual(interior.Blue, rightEdge.Blue, 2);
+            });
+
+    [TestMethod]
     public Task LegacyStyleTokensStopsBackgroundAndRgbColorsRender() =>
         MapControlTestHost.LoadMapControlAsync(async map =>
         {
@@ -947,6 +1079,19 @@ public sealed class VectorRenderingTests
                 tolerance,
                 minimumAlpha: 240),
             minimumPixelCount);
+
+    private static (byte Red, byte Green, byte Blue) GetPixel(
+        MapRenderFrame frame,
+        int x,
+        int y)
+    {
+        int offset = ((y * frame.Width) + x) * 4;
+        ReadOnlySpan<byte> pixels = frame.Pixels.Span;
+        return (
+            pixels[offset + 2],
+            pixels[offset + 1],
+            pixels[offset]);
+    }
 
     private static PixelBounds Union(
         IReadOnlyCollection<ConnectedComponent> components)

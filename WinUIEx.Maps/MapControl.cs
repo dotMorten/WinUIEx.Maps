@@ -459,7 +459,7 @@ public sealed partial class MapControl : Control
     {
         MapControlEventSource.Log.ControlUnloaded();
         _iconService.SetLoaded(false);
-        _accessibilityAnnouncementTimer?.Stop();
+        StopAccessibilityAnnouncementTimer();
         StopMissingAzureTokenTimer();
         if (_azureAuthenticationInfoBar is not null)
         {
@@ -1406,6 +1406,19 @@ public sealed partial class MapControl : Control
         return timer;
     }
 
+    private void StopAccessibilityAnnouncementTimer()
+    {
+        if (_accessibilityAnnouncementTimer is not
+            Microsoft.UI.Dispatching.DispatcherQueueTimer timer)
+        {
+            return;
+        }
+
+        timer.Stop();
+        timer.Tick -= OnAccessibilityAnnouncementTimerTick;
+        _accessibilityAnnouncementTimer = null;
+    }
+
     private void OnAccessibilityAnnouncementTimerTick(
         Microsoft.UI.Dispatching.DispatcherQueueTimer sender,
         object args)
@@ -1752,7 +1765,15 @@ public sealed partial class MapControl : Control
 
     private void StopMissingAzureTokenTimer()
     {
-        _missingAzureTokenTimer?.Stop();
+        if (_missingAzureTokenTimer is not
+            Microsoft.UI.Dispatching.DispatcherQueueTimer timer)
+        {
+            return;
+        }
+
+        timer.Stop();
+        timer.Tick -= OnMissingAzureTokenTimerTick;
+        _missingAzureTokenTimer = null;
     }
 
     private sealed class WeakXamlRootChangedSubscription(MapControl owner)

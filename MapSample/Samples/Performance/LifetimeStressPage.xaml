@@ -11,7 +11,7 @@
                     AutomationProperties.AutomationId="LifetimeStressPage"
                     Style="{StaticResource TitleTextBlockStyle}"
                     Text="Map lifetime stress" />
-                <TextBlock Text="Creates a new MapControl every second, removes the previous instance, and reports process memory." />
+                <TextBlock Text="Creates a new MapControl every second, collects the removed instance, and reports steady-state process memory." />
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12">
                 <TextBlock

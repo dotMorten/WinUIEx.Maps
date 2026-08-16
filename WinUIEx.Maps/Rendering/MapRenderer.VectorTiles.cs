@@ -1642,6 +1642,10 @@ internal sealed partial class MapRenderer
     {
         bool hadTiles = _vectorTiles.Count != 0;
         _vectorTiles.Clear();
+        foreach (RasterLayerState state in _rasterLayers.Values)
+        {
+            state.VectorStyleAssets = null;
+        }
         if (hadTiles)
         {
             OnVectorTilesChanged();

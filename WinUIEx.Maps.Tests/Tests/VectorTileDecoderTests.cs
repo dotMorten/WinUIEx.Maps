@@ -1012,6 +1012,30 @@ public sealed class VectorTileDecoderTests
     }
 
     [TestMethod]
+    public void VectorPolygonFallbackRetainsCoverageUntilReplacementIsOpaque()
+    {
+        Assert.AreEqual(
+            1,
+            MapRenderer.ComputeVectorPolygonFallbackOpacity(13, 12, 0.5),
+            0.000001);
+        Assert.AreEqual(
+            0.5,
+            MapRenderer.ComputeVectorPolygonFallbackOpacity(11.5, 10, 0.5),
+            0.000001);
+        Assert.AreEqual(
+            1,
+            MapRenderer.ComputeVectorPolygonFallbackOpacity(
+                13,
+                12,
+                0.999),
+            0.000001);
+        Assert.AreEqual(
+            0,
+            MapRenderer.ComputeVectorPolygonFallbackOpacity(13, 12, 1),
+            0.000001);
+    }
+
+    [TestMethod]
     public void VectorPolygonTrianglesProjectAndCullOutsideViewport()
     {
         VisibleTile tile = new(
@@ -1046,6 +1070,46 @@ public sealed class VectorTileDecoderTests
              new MapScreenPoint(228, 242)],
             projected);
         Assert.IsEmpty(culled);
+    }
+
+    [TestMethod]
+    public void BufferedPolygonTrianglesAreClippedToSourceTile()
+    {
+        VisibleTile tile = new(
+            new TileId(2, 1, 1),
+            1,
+            100,
+            50,
+            256);
+
+        MapScreenPoint[] projected = MapRenderer.ProjectVectorPolygonTriangles(
+            [
+                new VectorTilePoint(-2, -2),
+                new VectorTilePoint(3, -2),
+                new VectorTilePoint(0.5, 3),
+            ],
+            tile,
+            640,
+            480,
+            0,
+            0);
+
+        Assert.IsNotEmpty(projected);
+        Assert.IsTrue(projected.All(point =>
+            point.X >= tile.Left &&
+            point.X <= tile.Left + tile.Size &&
+            point.Y >= tile.Top &&
+            point.Y <= tile.Top + tile.Size));
+        Assert.AreEqual(tile.Left, projected.Min(point => point.X), 0.000001);
+        Assert.AreEqual(
+            tile.Left + tile.Size,
+            projected.Max(point => point.X),
+            0.000001);
+        Assert.AreEqual(tile.Top, projected.Min(point => point.Y), 0.000001);
+        Assert.AreEqual(
+            tile.Top + tile.Size,
+            projected.Max(point => point.Y),
+            0.000001);
     }
 
     [TestMethod]

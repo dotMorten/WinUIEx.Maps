@@ -522,7 +522,7 @@ internal sealed partial class MapRenderer
                 continue;
             }
             result.FallbackInstanceCount += instances.Count;
-            double opacityMultiplier = ComputeVectorGeometryFallbackOpacity(
+            double opacityMultiplier = ComputeVectorPolygonFallbackOpacity(
                 _displayZoom,
                 key.Id.Zoom,
                 GetVectorGeometryReplacementOpacity(
@@ -560,6 +560,21 @@ internal sealed partial class MapRenderer
         }
         return activeFade;
     }
+
+    /// <summary>
+    /// Keeps polygon fallback coverage in place until replacement geometry is fully opaque,
+    /// avoiding translucent tile rectangles from source-over crossfading.
+    /// </summary>
+    internal static double ComputeVectorPolygonFallbackOpacity(
+        double displayZoom,
+        int tileZoom,
+        double replacementOpacity) =>
+        replacementOpacity >= 1
+            ? 0
+            : ComputeVectorGeometryFallbackOpacity(
+                displayZoom,
+                tileZoom,
+                0);
 
     private bool CollectVectorPolygonTile(
         LayerRenderSnapshot layer,
@@ -873,54 +888,98 @@ internal sealed partial class MapRenderer
         PooledGeometryBuffer visible)
     {
         int initialCount = visible.Count;
+        Span<VectorTilePoint> clippedA = stackalloc VectorTilePoint[12];
+        Span<VectorTilePoint> clippedB = stackalloc VectorTilePoint[12];
         for (int index = 0; index + 2 < triangles.Count; index += 3)
         {
-            MapScreenPoint first = ProjectVectorPoint(
+            int clippedCount = ClipVectorTileTriangle(
                 triangles[index],
-                tile,
-                viewportWidth,
-                viewportHeight,
-                heading,
-                pitch,
-                translateX,
-                translateY,
-                translateAnchor);
-            MapScreenPoint second = ProjectVectorPoint(
                 triangles[index + 1],
-                tile,
-                viewportWidth,
-                viewportHeight,
-                heading,
-                pitch,
-                translateX,
-                translateY,
-                translateAnchor);
-            MapScreenPoint third = ProjectVectorPoint(
                 triangles[index + 2],
-                tile,
-                viewportWidth,
-                viewportHeight,
-                heading,
-                pitch,
-                translateX,
-                translateY,
-                translateAnchor);
-            double left = Math.Min(first.X, Math.Min(second.X, third.X));
-            double top = Math.Min(first.Y, Math.Min(second.Y, third.Y));
-            double right = Math.Max(first.X, Math.Max(second.X, third.X));
-            double bottom = Math.Max(first.Y, Math.Max(second.Y, third.Y));
-            if (left >= viewportWidth + viewportPadding ||
-                top >= viewportHeight + viewportPadding ||
-                right <= -viewportPadding ||
-                bottom <= -viewportPadding)
+                clippedA,
+                clippedB);
+            for (int clippedIndex = 1;
+                clippedIndex + 1 < clippedCount;
+                clippedIndex++)
             {
-                continue;
+                AppendProjectedVectorPolygonTriangle(
+                    clippedA[0],
+                    clippedA[clippedIndex],
+                    clippedA[clippedIndex + 1],
+                    tile,
+                    viewportWidth,
+                    viewportHeight,
+                    heading,
+                    pitch,
+                    viewportPadding,
+                    translateX,
+                    translateY,
+                    translateAnchor,
+                    visible);
             }
-            visible.Add(first);
-            visible.Add(second);
-            visible.Add(third);
         }
         return (visible.Count - initialCount) / 3;
+    }
+
+    private static void AppendProjectedVectorPolygonTriangle(
+        VectorTilePoint firstSource,
+        VectorTilePoint secondSource,
+        VectorTilePoint thirdSource,
+        VisibleTile tile,
+        double viewportWidth,
+        double viewportHeight,
+        double heading,
+        double pitch,
+        double viewportPadding,
+        double translateX,
+        double translateY,
+        VectorTranslateAnchor translateAnchor,
+        PooledGeometryBuffer visible)
+    {
+        MapScreenPoint first = ProjectVectorPoint(
+            firstSource,
+            tile,
+            viewportWidth,
+            viewportHeight,
+            heading,
+            pitch,
+            translateX,
+            translateY,
+            translateAnchor);
+        MapScreenPoint second = ProjectVectorPoint(
+            secondSource,
+            tile,
+            viewportWidth,
+            viewportHeight,
+            heading,
+            pitch,
+            translateX,
+            translateY,
+            translateAnchor);
+        MapScreenPoint third = ProjectVectorPoint(
+            thirdSource,
+            tile,
+            viewportWidth,
+            viewportHeight,
+            heading,
+            pitch,
+            translateX,
+            translateY,
+            translateAnchor);
+        double left = Math.Min(first.X, Math.Min(second.X, third.X));
+        double top = Math.Min(first.Y, Math.Min(second.Y, third.Y));
+        double right = Math.Max(first.X, Math.Max(second.X, third.X));
+        double bottom = Math.Max(first.Y, Math.Max(second.Y, third.Y));
+        if (left >= viewportWidth + viewportPadding ||
+            top >= viewportHeight + viewportPadding ||
+            right <= -viewportPadding ||
+            bottom <= -viewportPadding)
+        {
+            return;
+        }
+        visible.Add(first);
+        visible.Add(second);
+        visible.Add(third);
     }
 
     private static int AppendProjectedVectorPolygonPattern(
@@ -945,78 +1004,240 @@ internal sealed partial class MapRenderer
         double phaseY = PositiveModulo(
             tile.Id.Y * tile.Size,
             patternHeight);
+        Span<VectorTilePoint> clippedA = stackalloc VectorTilePoint[12];
+        Span<VectorTilePoint> clippedB = stackalloc VectorTilePoint[12];
         for (int index = 0; index + 2 < triangles.Count; index += 3)
         {
-            VectorTilePoint firstSource = triangles[index];
-            VectorTilePoint secondSource = triangles[index + 1];
-            VectorTilePoint thirdSource = triangles[index + 2];
-            MapScreenPoint first = ProjectVectorPoint(
-                firstSource,
-                tile,
-                viewportWidth,
-                viewportHeight,
-                heading,
-                pitch,
-                translateX,
-                translateY,
-                translateAnchor);
-            MapScreenPoint second = ProjectVectorPoint(
-                secondSource,
-                tile,
-                viewportWidth,
-                viewportHeight,
-                heading,
-                pitch,
-                translateX,
-                translateY,
-                translateAnchor);
-            MapScreenPoint third = ProjectVectorPoint(
-                thirdSource,
-                tile,
-                viewportWidth,
-                viewportHeight,
-                heading,
-                pitch,
-                translateX,
-                translateY,
-                translateAnchor);
-            double left = Math.Min(first.X, Math.Min(second.X, third.X));
-            double top = Math.Min(first.Y, Math.Min(second.Y, third.Y));
-            double right = Math.Max(first.X, Math.Max(second.X, third.X));
-            double bottom = Math.Max(first.Y, Math.Max(second.Y, third.Y));
-            if (left >= viewportWidth + viewportPadding ||
-                top >= viewportHeight + viewportPadding ||
-                right <= -viewportPadding ||
-                bottom <= -viewportPadding)
+            int clippedCount = ClipVectorTileTriangle(
+                triangles[index],
+                triangles[index + 1],
+                triangles[index + 2],
+                clippedA,
+                clippedB);
+            for (int clippedIndex = 1;
+                clippedIndex + 1 < clippedCount;
+                clippedIndex++)
             {
-                continue;
+                AppendProjectedVectorPolygonPatternTriangle(
+                    clippedA[0],
+                    clippedA[clippedIndex],
+                    clippedA[clippedIndex + 1],
+                    tile,
+                    viewportWidth,
+                    viewportHeight,
+                    heading,
+                    pitch,
+                    viewportPadding,
+                    patternWidth,
+                    patternHeight,
+                    phaseX,
+                    phaseY,
+                    translateX,
+                    translateY,
+                    translateAnchor,
+                    visible);
             }
-            visible.Add(CreatePatternVertex(
-                first,
-                firstSource,
-                tile.Size,
-                phaseX,
-                phaseY,
-                patternWidth,
-                patternHeight));
-            visible.Add(CreatePatternVertex(
-                second,
-                secondSource,
-                tile.Size,
-                phaseX,
-                phaseY,
-                patternWidth,
-                patternHeight));
-            visible.Add(CreatePatternVertex(
-                third,
-                thirdSource,
-                tile.Size,
-                phaseX,
-                phaseY,
-                patternWidth,
-                patternHeight));
         }
         return (visible.Count - initialCount) / 3;
+    }
+
+    private static void AppendProjectedVectorPolygonPatternTriangle(
+        VectorTilePoint firstSource,
+        VectorTilePoint secondSource,
+        VectorTilePoint thirdSource,
+        VisibleTile tile,
+        double viewportWidth,
+        double viewportHeight,
+        double heading,
+        double pitch,
+        double viewportPadding,
+        double patternWidth,
+        double patternHeight,
+        double phaseX,
+        double phaseY,
+        double translateX,
+        double translateY,
+        VectorTranslateAnchor translateAnchor,
+        List<TileVertex> visible)
+    {
+        MapScreenPoint first = ProjectVectorPoint(
+            firstSource,
+            tile,
+            viewportWidth,
+            viewportHeight,
+            heading,
+            pitch,
+            translateX,
+            translateY,
+            translateAnchor);
+        MapScreenPoint second = ProjectVectorPoint(
+            secondSource,
+            tile,
+            viewportWidth,
+            viewportHeight,
+            heading,
+            pitch,
+            translateX,
+            translateY,
+            translateAnchor);
+        MapScreenPoint third = ProjectVectorPoint(
+            thirdSource,
+            tile,
+            viewportWidth,
+            viewportHeight,
+            heading,
+            pitch,
+            translateX,
+            translateY,
+            translateAnchor);
+        double left = Math.Min(first.X, Math.Min(second.X, third.X));
+        double top = Math.Min(first.Y, Math.Min(second.Y, third.Y));
+        double right = Math.Max(first.X, Math.Max(second.X, third.X));
+        double bottom = Math.Max(first.Y, Math.Max(second.Y, third.Y));
+        if (left >= viewportWidth + viewportPadding ||
+            top >= viewportHeight + viewportPadding ||
+            right <= -viewportPadding ||
+            bottom <= -viewportPadding)
+        {
+            return;
+        }
+        visible.Add(CreatePatternVertex(
+            first,
+            firstSource,
+            tile.Size,
+            phaseX,
+            phaseY,
+            patternWidth,
+            patternHeight));
+        visible.Add(CreatePatternVertex(
+            second,
+            secondSource,
+            tile.Size,
+            phaseX,
+            phaseY,
+            patternWidth,
+            patternHeight));
+        visible.Add(CreatePatternVertex(
+            third,
+            thirdSource,
+            tile.Size,
+            phaseX,
+            phaseY,
+            patternWidth,
+            patternHeight));
+    }
+
+    private static int ClipVectorTileTriangle(
+        VectorTilePoint first,
+        VectorTilePoint second,
+        VectorTilePoint third,
+        Span<VectorTilePoint> clipped,
+        Span<VectorTilePoint> scratch)
+    {
+        clipped[0] = first;
+        clipped[1] = second;
+        clipped[2] = third;
+        if (IsInsideVectorTile(first) &&
+            IsInsideVectorTile(second) &&
+            IsInsideVectorTile(third))
+        {
+            return 3;
+        }
+        if (first.X < 0 && second.X < 0 && third.X < 0 ||
+            first.X > 1 && second.X > 1 && third.X > 1 ||
+            first.Y < 0 && second.Y < 0 && third.Y < 0 ||
+            first.Y > 1 && second.Y > 1 && third.Y > 1)
+        {
+            return 0;
+        }
+        int count = ClipVectorTilePolygon(
+            clipped[..3],
+            scratch,
+            VectorTileClipEdge.Left);
+        count = ClipVectorTilePolygon(
+            scratch[..count],
+            clipped,
+            VectorTileClipEdge.Right);
+        count = ClipVectorTilePolygon(
+            clipped[..count],
+            scratch,
+            VectorTileClipEdge.Top);
+        return ClipVectorTilePolygon(
+            scratch[..count],
+            clipped,
+            VectorTileClipEdge.Bottom);
+    }
+
+    private static bool IsInsideVectorTile(VectorTilePoint point) =>
+        point.X is >= 0 and <= 1 &&
+        point.Y is >= 0 and <= 1;
+
+    private static int ClipVectorTilePolygon(
+        ReadOnlySpan<VectorTilePoint> input,
+        Span<VectorTilePoint> output,
+        VectorTileClipEdge edge)
+    {
+        if (input.IsEmpty)
+        {
+            return 0;
+        }
+
+        int count = 0;
+        VectorTilePoint previous = input[^1];
+        bool previousInside = IsInsideVectorTileEdge(previous, edge);
+        foreach (VectorTilePoint current in input)
+        {
+            bool currentInside = IsInsideVectorTileEdge(current, edge);
+            if (currentInside != previousInside)
+            {
+                output[count++] = IntersectVectorTileEdge(
+                    previous,
+                    current,
+                    edge);
+            }
+            if (currentInside)
+            {
+                output[count++] = current;
+            }
+            previous = current;
+            previousInside = currentInside;
+        }
+        return count;
+    }
+
+    private static bool IsInsideVectorTileEdge(
+        VectorTilePoint point,
+        VectorTileClipEdge edge) =>
+        edge switch
+        {
+            VectorTileClipEdge.Left => point.X >= 0,
+            VectorTileClipEdge.Right => point.X <= 1,
+            VectorTileClipEdge.Top => point.Y >= 0,
+            _ => point.Y <= 1,
+        };
+
+    private static VectorTilePoint IntersectVectorTileEdge(
+        VectorTilePoint start,
+        VectorTilePoint end,
+        VectorTileClipEdge edge)
+    {
+        double boundary = edge is
+            VectorTileClipEdge.Right or VectorTileClipEdge.Bottom
+            ? 1
+            : 0;
+        bool vertical = edge is
+            VectorTileClipEdge.Left or VectorTileClipEdge.Right;
+        double startValue = vertical ? start.X : start.Y;
+        double endValue = vertical ? end.X : end.Y;
+        double amount = (boundary - startValue) /
+            (endValue - startValue);
+        return vertical
+            ? new VectorTilePoint(
+                boundary,
+                start.Y + ((end.Y - start.Y) * amount))
+            : new VectorTilePoint(
+                start.X + ((end.X - start.X) * amount),
+                boundary);
     }
 
     private static TileVertex CreatePatternVertex(
@@ -1115,6 +1336,14 @@ internal sealed partial class MapRenderer
         Fill,
         Pattern,
         Outline,
+    }
+
+    private enum VectorTileClipEdge
+    {
+        Left,
+        Right,
+        Top,
+        Bottom,
     }
 
     private static int CompareVectorPolygonBatches(

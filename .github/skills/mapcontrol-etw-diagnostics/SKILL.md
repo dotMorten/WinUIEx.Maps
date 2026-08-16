@@ -124,7 +124,7 @@ payload inspection is best in PerfView's Events view.
 | 56 | `VectorLineRenderBatch` | Verbose/Tiles+VectorTiles | style-resolved vector line candidates, drawable lines, generated triangle count, evaluation failures, and draw calls |
 | 57 | `VectorLineFallbackSummary` | Verbose/Tiles+VectorTiles | retained line-tile instances drawn from adjacent zooms versus distant fallback instances suppressed to prevent over-generalized cross-screen strokes |
 | 58 | `VectorPolygonRenderBatch` | Verbose/Tiles+VectorTiles | style-resolved polygon candidates, visible tessellated triangles, evaluation failures, distant fallback suppression, and draw calls |
-| 59 | `VectorGeometryFallbackOpacitySummary` | Verbose/Tiles+VectorTiles | retained line or polygon instances smoothly faded by zoom distance and overlapping active-tile readiness instead of abruptly disappearing |
+| 59 | `VectorGeometryFallbackOpacitySummary` | Verbose/Tiles+VectorTiles | retained line or polygon opacity during replacement; polygon fallback coverage remains until replacements are opaque, while line fallback also fades with replacement readiness |
 | 60 | `VectorLineSymbolPlacementSummary` | Verbose/Icons+VectorTiles | line-following icon and glyph components resolved from tile geometry, successfully projected along screen-space paths, and drawn after collision suppression |
 | 61 | `VectorGeometryFrameCacheSummary` | Verbose/Tiles+VectorTiles | GPU line or polygon frame geometry built or reused for translation-only panning, with retained vertex and native-buffer byte counts |
 | 62 | `VectorGeometryDeferredRebuildSummary` | Verbose/Tiles+VectorTiles | whole-scene line or polygon rebuild deferred during active panning while newly available tiles are rendered incrementally, with pending tile count and translated cache offset |
@@ -170,7 +170,8 @@ payload inspection is best in PerfView's Events view.
   point-label batching, verbose ID 55 quantifies collision suppression, and verbose ID 56
   reports direct line geometry generation and drawing, while ID 57 identifies distant
   fallback suppression during zoom transitions, ID 58 summarizes polygon fills, and ID 59
-  quantifies fallback crossfading, ID 60 reports line-following symbol placement, and ID 61
+  quantifies polygon fallback coverage and line crossfading, ID 60 reports line-following
+  symbol placement, and ID 61
   distinguishes geometry rebuilds from translation-only frame reuse, while ID 62 confirms
   that tile arrivals were handled incrementally instead of forcing an in-motion rebuild, and ID 63
   separates background geometry preparation from immutable GPU-buffer creation. ID 64 confirms

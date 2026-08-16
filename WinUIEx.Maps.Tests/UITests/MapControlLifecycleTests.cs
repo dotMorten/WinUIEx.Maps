@@ -1,7 +1,9 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using WinUIEx.Maps.Tests.Input;
 using WinUIEx.Maps.Tests.UITestHelpers;
 using Windows.Devices.Geolocation;
@@ -200,6 +202,113 @@ public sealed class MapControlLifecycleTests
                     currentMap.Center!.Position,
                     currentMap.ZoomLevel);
             });
+    }
+
+    [TestMethod]
+    public async Task RepeatedRoadMapsAreCollectedWithoutSignificantMemoryGrowth()
+    {
+        WeakReference<MapControl>[] warmup =
+            await CreateAndUnloadRoadMapsAsync(2);
+        await CollectMapsAsync(warmup);
+        long baselineBytes = GC.GetTotalMemory(forceFullCollection: true);
+        long baselinePrivateBytes = GetPrivateMemorySize();
+
+        WeakReference<MapControl>[] maps =
+            await CreateAndUnloadRoadMapsAsync(8);
+        await CollectMapsAsync(maps);
+        long retainedBytes =
+            GC.GetTotalMemory(forceFullCollection: true) - baselineBytes;
+        long retainedPrivateBytes =
+            GetPrivateMemorySize() - baselinePrivateBytes;
+
+        Assert.IsTrue(
+            maps.All(map => !map.TryGetTarget(out _)),
+            "Every unloaded MapControl should be eligible for garbage collection.");
+        Assert.IsLessThanOrEqualTo(
+            16L * 1024 * 1024,
+            retainedBytes,
+            $"Repeated map lifetimes retained {retainedBytes:N0} managed bytes.");
+        Assert.IsLessThanOrEqualTo(
+            128L * 1024 * 1024,
+            retainedPrivateBytes,
+            $"Repeated map lifetimes retained {retainedPrivateBytes:N0} private bytes.");
+    }
+
+    private static async Task<WeakReference<MapControl>[]>
+        CreateAndUnloadRoadMapsAsync(int count)
+    {
+        List<WeakReference<MapControl>> maps = [];
+        await MapControlTestHost.LoadUIAsync(
+            () => new Grid(),
+            async root =>
+            {
+                Grid host = (Grid)root;
+                for (int index = 0; index < count; index++)
+                {
+                    maps.Add(await CreateAndUnloadRoadMapAsync(host));
+                }
+            });
+        return maps.ToArray();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task<WeakReference<MapControl>>
+        CreateAndUnloadRoadMapAsync(Grid host)
+    {
+        MapControl map = new()
+        {
+            Width = 640,
+            Height = 480,
+            MapStyle = MapStyle.Road,
+            MapServiceToken = string.Empty,
+        };
+        map.Layers.Add(new MapElementsLayer
+        {
+            MapElements =
+            {
+                CreateLifetimeMapIcon(),
+            },
+        });
+        await AddAsync(host, map);
+        await MapControlTestUtilities.WaitForAsync(
+            () => map.RendererHasDeviceResources &&
+                map.ActiveRasterWorkerCount == 1);
+        await Task.Delay(100);
+        await RemoveAsync(host, map);
+        return new WeakReference<MapControl>(map);
+    }
+
+    private static MapIcon CreateLifetimeMapIcon()
+    {
+        SymbolIcon icon = new(Symbol.Pin);
+        AutomationProperties.SetName(icon, "Lifetime marker");
+        return new MapIcon(
+            icon,
+            new Geopoint(new BasicGeoposition()));
+    }
+
+    private static async Task CollectMapsAsync(
+        WeakReference<MapControl>[] maps)
+    {
+        for (int attempt = 0; attempt < 5; attempt++)
+        {
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, true);
+            GC.WaitForPendingFinalizers();
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, true);
+            if (maps.All(map => !map.TryGetTarget(out _)))
+            {
+                return;
+            }
+            await MapControlTestHost.RunAsync(() => { });
+            await Task.Delay(50);
+        }
+    }
+
+    private static long GetPrivateMemorySize()
+    {
+        using Process process = Process.GetCurrentProcess();
+        process.Refresh();
+        return process.PrivateMemorySize64;
     }
 
     private static async Task RemoveAsync(Grid host, MapControl map)

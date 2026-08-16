@@ -1371,7 +1371,8 @@ internal sealed class MapControlEventSource : EventSource
     }
 
     /// <summary>
-    /// Records retained vector geometry fading during active-tile replacement.
+    /// Records retained vector geometry opacity during active-tile replacement. Polygon
+    /// fallbacks retain coverage until replacements are opaque; lines crossfade.
     /// </summary>
     [Event(
         59,
