@@ -302,8 +302,12 @@ internal sealed class RasterTileManager : IDisposable
                         layer.TileSize,
                         layer.MinSourceZoom,
                         layer.MaxSourceZoom,
-                        layer.Acquisition is CustomRasterTileAcquisitionSession custom &&
-                            custom.IsTms);
+                        layer.Acquisition switch
+                        {
+                            CustomRasterTileAcquisitionSession custom => custom.IsTms,
+                            CustomVectorTileAcquisitionSession custom => custom.IsTms,
+                            _ => false,
+                        });
                 }
             }
         }

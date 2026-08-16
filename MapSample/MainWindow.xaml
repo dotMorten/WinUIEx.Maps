@@ -49,11 +49,19 @@
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem
-                    AutomationProperties.AutomationId="OpenStreetMapNavigationItem"
-                    Content="OpenStreetMap tiles"
+                    AutomationProperties.AutomationId="CustomImageTilesNavigationItem"
+                    Content="Custom Image tiles"
                     Tag="openstreetmap">
                     <NavigationViewItem.Icon>
                         <SymbolIcon Symbol="Globe" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
+                    AutomationProperties.AutomationId="CustomVectorTilesNavigationItem"
+                    Content="Custom vector tiles"
+                    Tag="arcgis-vector">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="World" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItemHeader Content="Interaction" />

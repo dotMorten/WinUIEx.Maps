@@ -285,6 +285,11 @@ internal sealed partial class MapRenderer
                 opacityMultiplier: 1);
         }
         pendingTileCount = pendingTiles.Count;
+        if (ignoredPatternBatches.Count > 0)
+        {
+            batchOrder.RemoveAll(
+                key => key.Kind == VectorPolygonBatchKind.Pattern);
+        }
         return activeFade;
     }
 

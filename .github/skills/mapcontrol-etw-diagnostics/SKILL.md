@@ -30,7 +30,7 @@ Keywords:
 | `0x20` | icon raster, textures, instances, and draw batches |
 | `0x40` | failures |
 | `0x80` | custom-source classification within the unified raster pipeline |
-| `0x100` | Azure vector-tile decoding, styles, sprites, and point symbols |
+| `0x100` | Azure and custom vector-tile decoding, styles, sprites, and symbols |
 | `0x200` | accessibility semantic snapshots and announcement decisions |
 | `0x3FF` | all areas |
 
@@ -140,6 +140,7 @@ payload inspection is best in PerfView's Events view.
 | 72 | `AccessibilitySnapshotPublished` | Info/VectorTiles+Accessibility | displayed semantic candidates, deduplication, bounded publication count, and scene version |
 | 73 | `AccessibilityAnnouncementDecision` | Info/Accessibility | feature count and whether a settled semantic update raised or suppressed a live-region announcement |
 | 74 | `AnimationsEnabledChanged` | Info/Camera+Accessibility | effective system animation preference changed, suppressing camera interpolation, touch inertia, focus transitions, and layer fades when disabled |
+| 75 | `VectorStyleCompatibilityIssue` | Info/Tiles+VectorTiles | aggregate unsupported Style Spec layer type or sanitized layout/paint property and occurrence count; custom styles use `style = -1` |
 
 ## Reproduce and interpret
 
@@ -152,7 +153,7 @@ payload inspection is best in PerfView's Events view.
   and `Decode`. A completed request followed by upload failure localizes the issue to D3D.
   Compare IDs 17, 31, and 44 to distinguish texture creation, render-lock wait, and final
   cache acceptance. ID 45 directly reports first, complete, and opaque coverage.
-- **Custom raster tiles:** select CustomTiles+Cache+Errors (`0xD0`) and inspect IDs 33–40.
+- **Custom tile sources:** select CustomTiles+Cache+Errors (`0xD0`) and inspect IDs 33–40.
   These events classify custom-source behavior inside the same scheduler, bounded upload
   queue, GPU cache, fallback selector, and render path used by Azure; they do not indicate
   a second pipeline. Correlate by generation (never by a user-provided layer ID). IDs 35/36
@@ -160,10 +161,11 @@ payload inspection is best in PerfView's Events view.
   and IDs 38/39 localize upload or stale-generation behavior. `MapStyle.Blank` removes the
   hidden Azure `TileLayer`, so it should produce no Azure tile/attribution work while custom
   IDs continue.
-- **Azure vector tiles:** select Tiles+VectorTiles (`0x108`) and correlate IDs 11–17, 43–46,
+- **Vector tiles:** select Tiles+VectorTiles (`0x108`) and correlate IDs 11–17, 43–46,
   and 49–69. ID 49 confirms that MVT responses reached generation-checked CPU cache commit,
   ID 50 distinguishes asset acquisition from tile decode and reports explicitly unsupported
-  style-layer counts, ID 52 reports glyph-range latency, ID 54 reports definitive unavailable
+  style-layer counts. The `style` payload is `-1` for a custom vector source and a
+  `MapStyle` value for Azure. ID 52 reports glyph-range latency, ID 54 reports definitive unavailable
   ranges without font or label content, verbose IDs 51/53 summarize point-symbol and
   point-label batching, verbose ID 55 quantifies collision suppression, and verbose ID 56
   reports direct line geometry generation and drawing, while ID 57 identifies distant
@@ -177,7 +179,9 @@ payload inspection is best in PerfView's Events view.
   geometry from sprite-patterned line placement without exposing pattern names, and ID 67
   reports patterned polygon and explicit outline geometry, and ID 68 reports advanced line
   styling usage, and ID 69 reports advanced symbol styling and collision-control usage. None exposes source-layer names, properties, sprite names, URLs, or service
-  content.
+  content. ID 75 identifies unsupported Style Spec construct categories and counts without
+  exposing layer IDs, source-layer names, or property values. Its `issueKind` is `1` for
+  layer types, `2` for layout properties, and `3` for paint properties.
 - **Cache/dedup:** inspect ID 18 over time. A high `pendingDedupCount` is expected while a
   wave is active. Repeated misses for the same stable scene or evictions that cannot return
   below the viewport-aware budget reported by ID 19 indicate shared raster-cache behavior

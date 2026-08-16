@@ -125,7 +125,7 @@ internal readonly record struct TestGlyph(
 
 internal sealed class TestVectorTileLayer : TileLayer
 {
-    private readonly TestVectorTileSource _source;
+    private TestVectorTileSource _source;
 
     internal TestVectorTileLayer(
         TestVectorTileSource source,
@@ -139,6 +139,13 @@ internal sealed class TestVectorTileLayer : TileLayer
         })
     {
         _source = source;
+    }
+
+    internal void ReplaceSource(TestVectorTileSource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        _source = source;
+        NotifyChanged(TileUrlProperty);
     }
 
     internal override TileLayerSnapshot CreateSnapshot() =>

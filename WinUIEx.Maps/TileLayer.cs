@@ -1,10 +1,11 @@
 using Microsoft.UI.Xaml;
+using System.Collections.ObjectModel;
 using WinUIEx.Maps.Rendering;
 
 namespace WinUIEx.Maps;
 
 /// <summary>
-/// Displays a bounded raster tile source described by an HTTP or HTTPS URL template.
+/// Displays a bounded raster or Mapbox vector tile source described by HTTP or HTTPS URLs.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -16,10 +17,19 @@ namespace WinUIEx.Maps;
 /// <c>{subdomain}</c>.
 /// </para>
 /// <para>
+/// Set <see cref="StyleUrl"/> to interpret <see cref="TileUrl"/> as a Mapbox Vector Tile
+/// PBF template and load its Mapbox Style Specification, sprites, and glyphs. Leave
+/// <see cref="StyleUrl"/> null for raster image tiles. The supported style subset includes
+/// first-layer solid backgrounds plus the fill, line, circle, and symbol behavior used by
+/// the renderer. Both expression arrays and legacy stop functions are accepted for
+/// supported properties, and token substitution is supported for text and icon fields.
+/// Unsupported style layers and expressions are skipped.
+/// </para>
+/// <para>
 /// <see cref="TileSize"/> must match the native pixel width and height returned by the
-/// source; mismatched images are rejected. Tile size also affects source-zoom selection, so a
-/// 512-pixel source is not interchangeable with a 256-pixel source merely because both are
-/// square. <see cref="MinSourceZoom"/> and <see cref="MaxSourceZoom"/> describe available
+/// raster source; mismatched images are rejected. Tile size also affects source-zoom
+/// selection, so a 512-pixel source is not interchangeable with a 256-pixel source merely
+/// because both are square. <see cref="MinSourceZoom"/> and <see cref="MaxSourceZoom"/> describe available
 /// source levels. <see cref="MinZoom"/> and <see cref="MaxZoom"/> independently control the
 /// inclusive lower and exclusive upper camera zoom at which the layer is displayed and
 /// acquired. <see cref="FadeDuration"/> controls the transition for newly available tiles.
@@ -69,9 +79,14 @@ namespace WinUIEx.Maps;
 /// </example>
 public class TileLayer : MapLayer
 {
+    private static readonly IReadOnlyDictionary<string, string> EmptyRequestHeaders =
+        new ReadOnlyDictionary<string, string>(
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
     private static long _nextRuntimeId;
     private bool _isRestoringValue;
     private string _tileUrl = string.Empty;
+    private string? _styleUrl;
+    private IReadOnlyDictionary<string, string> _requestHeaders = EmptyRequestHeaders;
     private TileLayerBounds _bounds = TileLayerBounds.World;
     private int _maxSourceZoom = 22;
     private int _minSourceZoom;
@@ -82,7 +97,7 @@ public class TileLayer : MapLayer
     private TimeSpan _fadeDuration = TimeSpan.FromMilliseconds(300);
 
     /// <summary>
-    /// Initializes a raster tile layer.
+    /// Initializes a raster or Mapbox vector tile layer.
     /// </summary>
     /// <param name="options">Initial rendering options, or <see langword="null"/> for defaults.</param>
     /// <param name="id">
@@ -110,6 +125,8 @@ public class TileLayer : MapLayer
         TileLayerOptions value = options ?? new TileLayerOptions();
         ValidateOptions(value);
         TileUrl = value.TileUrl;
+        StyleUrl = value.StyleUrl;
+        RequestHeaders = value.RequestHeaders;
         Bounds = value.Bounds;
         IsTMS = value.IsTMS;
         MaxSourceZoom = value.MaxSourceZoom;
@@ -160,6 +177,56 @@ public class TileLayer : MapLayer
     /// <summary>Identifies the <see cref="TileUrl"/> dependency property.</summary>
     public static readonly DependencyProperty TileUrlProperty = Register(
         nameof(TileUrl), typeof(string), string.Empty);
+
+    /// <summary>
+    /// Gets or sets the optional HTTP or HTTPS Mapbox Style Specification URL.
+    /// </summary>
+    /// <value>
+    /// <see langword="null"/> for raster tiles; otherwise, a style URL for the vector PBF
+    /// template in <see cref="TileUrl"/>.
+    /// </value>
+    /// <remarks>
+    /// The style may reference sprite and glyph resources by relative or absolute HTTP(S)
+    /// URLs. Changing the URL creates a new immutable acquisition session and cache
+    /// generation.
+    /// </remarks>
+    public string? StyleUrl
+    {
+        get => (string?)GetValue(StyleUrlProperty);
+        set
+        {
+            ValidateStyleUrl(value);
+            SetValue(StyleUrlProperty, value);
+        }
+    }
+
+    /// <summary>Identifies the <see cref="StyleUrl"/> dependency property.</summary>
+    public static readonly DependencyProperty StyleUrlProperty = Register(
+        nameof(StyleUrl), typeof(string), null!);
+
+    /// <summary>
+    /// Gets or sets request headers for tile and style-resource requests.
+    /// </summary>
+    /// <remarks>
+    /// The assigned dictionary is validated and defensively copied. Headers are sent only
+    /// to the origins explicitly configured by <see cref="TileUrl"/> and
+    /// <see cref="StyleUrl"/> and are never included in diagnostics or exceptions.
+    /// </remarks>
+    public IReadOnlyDictionary<string, string> RequestHeaders
+    {
+        get => (IReadOnlyDictionary<string, string>)GetValue(RequestHeadersProperty);
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            SetValue(RequestHeadersProperty, CopyRequestHeaders(value));
+        }
+    }
+
+    /// <summary>Identifies the <see cref="RequestHeaders"/> dependency property.</summary>
+    public static readonly DependencyProperty RequestHeadersProperty = Register(
+        nameof(RequestHeaders),
+        typeof(IReadOnlyDictionary<string, string>),
+        EmptyRequestHeaders);
 
     /// <summary>Gets or sets the non-wrapping geographic coverage of the tile source.</summary>
     /// <value>The source bounds. The default is <see cref="TileLayerBounds.World"/>.</value>
@@ -410,6 +477,8 @@ public class TileLayer : MapLayer
     internal virtual TileLayerSnapshot CreateSnapshot()
     {
         string tileUrl = TileUrl;
+        string? styleUrl = StyleUrl;
+        IReadOnlyDictionary<string, string> requestHeaders = RequestHeaders;
         TileLayerBounds bounds = Bounds;
         bool isTms = IsTMS;
         int maximumSourceZoom = MaxSourceZoom;
@@ -419,14 +488,26 @@ public class TileLayer : MapLayer
         return new TileLayerSnapshot(
             RuntimeId,
             Revision,
-            new CustomRasterTileAcquisitionSession(
-                tileUrl,
-                bounds,
-                isTms,
-                maximumSourceZoom,
-                minimumSourceZoom,
-                subdomains,
-                tileSize),
+            styleUrl is null
+                ? new CustomRasterTileAcquisitionSession(
+                    tileUrl,
+                    bounds,
+                    isTms,
+                    maximumSourceZoom,
+                    minimumSourceZoom,
+                    subdomains,
+                    tileSize,
+                    requestHeaders)
+                : new CustomVectorTileAcquisitionSession(
+                    tileUrl,
+                    styleUrl,
+                    bounds,
+                    isTms,
+                    maximumSourceZoom,
+                    minimumSourceZoom,
+                    subdomains,
+                    tileSize,
+                    requestHeaders),
             MinZoom,
             MaxZoom,
             IsVisible,
@@ -474,6 +555,30 @@ public class TileLayer : MapLayer
         if (property == TileUrlProperty && value is string tileUrl && IsValidTileUrl(tileUrl))
         {
             _tileUrl = tileUrl;
+        }
+        else if (property == StyleUrlProperty &&
+            (value is null || value is string) &&
+            IsValidStyleUrl((string?)value))
+        {
+            _styleUrl = (string?)value;
+        }
+        else if (property == RequestHeadersProperty &&
+            value is IReadOnlyDictionary<string, string> requestHeaders &&
+            AreValidRequestHeaders(requestHeaders))
+        {
+            _requestHeaders = CopyRequestHeaders(requestHeaders);
+            if (!ReferenceEquals(value, _requestHeaders))
+            {
+                _isRestoringValue = true;
+                try
+                {
+                    SetValue(RequestHeadersProperty, _requestHeaders);
+                }
+                finally
+                {
+                    _isRestoringValue = false;
+                }
+            }
         }
         else if (property == BoundsProperty && value is TileLayerBounds bounds && TileLayerBounds.IsValid(bounds))
         {
@@ -537,6 +642,8 @@ public class TileLayer : MapLayer
 
     private object GetFallback(DependencyProperty property) =>
         property == TileUrlProperty ? _tileUrl :
+        property == StyleUrlProperty ? _styleUrl! :
+        property == RequestHeadersProperty ? _requestHeaders :
         property == BoundsProperty ? _bounds :
         property == IsTMSProperty ? IsTMS :
         property == MaxSourceZoomProperty ? _maxSourceZoom :
@@ -556,6 +663,9 @@ public class TileLayer : MapLayer
     {
         ArgumentNullException.ThrowIfNull(options.TileUrl);
         ValidateTileUrl(options.TileUrl);
+        ValidateStyleUrl(options.StyleUrl);
+        ArgumentNullException.ThrowIfNull(options.RequestHeaders);
+        _ = CopyRequestHeaders(options.RequestHeaders);
         ValidateBounds(options.Bounds);
         ValidateSourceZoom(options.MinSourceZoom, nameof(options.MinSourceZoom));
         ValidateSourceZoom(options.MaxSourceZoom, nameof(options.MaxSourceZoom));
@@ -583,8 +693,48 @@ public class TileLayer : MapLayer
         }
     }
 
-    private static bool IsValidTileUrl(string value) =>
-        value.Length == 0 ||
+    private static bool IsValidTileUrl(string value)
+    {
+        if (value.Length == 0)
+        {
+            return true;
+        }
+
+        string expanded = value
+            .Replace("{z}", "0", StringComparison.OrdinalIgnoreCase)
+            .Replace("{x}", "0", StringComparison.OrdinalIgnoreCase)
+            .Replace("{y}", "0", StringComparison.OrdinalIgnoreCase)
+            .Replace("{quadkey}", "0", StringComparison.OrdinalIgnoreCase)
+            .Replace(
+                "{bbox-epsg-3857}",
+                "0,0,1,1",
+                StringComparison.OrdinalIgnoreCase)
+            .Replace(
+                "{subdomain}",
+                "a",
+                StringComparison.OrdinalIgnoreCase)
+            .Replace("[level]", "0", StringComparison.OrdinalIgnoreCase)
+            .Replace("[column]", "0", StringComparison.OrdinalIgnoreCase)
+            .Replace("[row]", "0", StringComparison.OrdinalIgnoreCase);
+        return !expanded.Contains('{') &&
+            !expanded.Contains('}') &&
+            Uri.TryCreate(expanded, UriKind.Absolute, out Uri? uri) &&
+            (uri.Scheme == Uri.UriSchemeHttp ||
+             uri.Scheme == Uri.UriSchemeHttps);
+    }
+
+    internal static void ValidateStyleUrl(string? value)
+    {
+        if (!IsValidStyleUrl(value))
+        {
+            throw new ArgumentException(
+                "StyleUrl must be null or an absolute HTTP/HTTPS URL.",
+                nameof(value));
+        }
+    }
+
+    private static bool IsValidStyleUrl(string? value) =>
+        value is null ||
         (Uri.TryCreate(value, UriKind.Absolute, out Uri? uri) &&
          (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps));
 
@@ -646,6 +796,39 @@ public class TileLayer : MapLayer
             throw new ArgumentException("Subdomains cannot contain null or blank values.", nameof(values));
         }
         return Array.AsReadOnly(copy);
+    }
+
+    private static IReadOnlyDictionary<string, string> CopyRequestHeaders(
+        IReadOnlyDictionary<string, string> values)
+    {
+        var copy = new Dictionary<string, string>(
+            values.Count,
+            StringComparer.OrdinalIgnoreCase);
+        foreach ((string name, string value) in values)
+        {
+            if (!CustomRequestHeaders.IsValid(name, value) ||
+                !copy.TryAdd(name, value))
+            {
+                throw new ArgumentException(
+                    "RequestHeaders contains an invalid or duplicate header.",
+                    nameof(values));
+            }
+        }
+        return new ReadOnlyDictionary<string, string>(copy);
+    }
+
+    private static bool AreValidRequestHeaders(
+        IReadOnlyDictionary<string, string> values)
+    {
+        try
+        {
+            _ = CopyRequestHeaders(values);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
     }
 
     private static bool AreValidSubdomains(IReadOnlyList<string> values) =>

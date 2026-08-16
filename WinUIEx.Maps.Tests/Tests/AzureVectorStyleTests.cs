@@ -121,6 +121,49 @@ public sealed class AzureVectorStyleTests
                 features,
                 10,
                 CancellationToken.None));
+    }
+
+    [TestMethod]
+    public async Task IconImageTokensResolveFeatureProperties()
+    {
+        AzureVectorStyleAssets assets = CreateAssets(
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "symbol",
+                "source-layer": "poi",
+                "layout": {
+                  "icon-image": "marker-{kind}"
+                }
+              }]
+            }
+            """,
+            """
+            {
+              "marker-park": {
+                "x": 0,
+                "y": 0,
+                "width": 1,
+                "height": 1,
+                "pixelRatio": 1,
+                "visible": true
+              }
+            }
+            """,
+            PixelBytes(9),
+            1,
+            1);
+        VectorTileFeatureCollection features = CreateFeatures(
+            new VectorTileProperty(
+                "kind",
+                VectorTileValue.FromString("park")));
+
+        Assert.ContainsSingle(await assets.PrepareTexturesAsync(
+            features,
+            10,
+            CancellationToken.None));
+        Assert.ContainsSingle(assets.ResolveSymbols(features, 10).Symbols);
         Assert.ContainsSingle(assets.ResolveSymbols(features, 10).Symbols);
     }
 
@@ -739,6 +782,201 @@ public sealed class AzureVectorStyleTests
         Assert.AreEqual(0.100392, polygon.Style.Color.Y, 0.00001);
         Assert.AreEqual(0.150588, polygon.Style.Color.Z, 0.00001);
         Assert.AreEqual(0.25098, polygon.Style.Color.W, 0.00001);
+    }
+
+    [TestMethod]
+    public void LegacyZoomStopsInterpolateRgbaFillColors()
+    {
+        AzureVectorStyleAssets assets = CreateAssets(
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "fill",
+                "source-layer": "land",
+                "paint": {
+                  "fill-color": {
+                    "base": 1,
+                    "stops": [
+                      [8, "rgba(0, 0, 255, 0.5)"],
+                      [12, "rgba(255, 0, 0, 1)"]
+                    ]
+                  }
+                }
+              }]
+            }
+            """,
+            "{}",
+            PixelBytes(0),
+            1,
+            1);
+
+        VectorTileStyledPolygon polygon = Assert.ContainsSingle(
+            assets.ResolvePolygons(CreatePolygonFeatures("park"), 10).Polygons);
+
+        Assert.AreEqual(0.5, polygon.Style.Color.X, 0.01);
+        Assert.AreEqual(0, polygon.Style.Color.Y, 0.01);
+        Assert.AreEqual(0.25, polygon.Style.Color.Z, 0.01);
+        Assert.AreEqual(0.75, polygon.Style.Color.W, 0.01);
+    }
+
+    [TestMethod]
+    public void BackgroundLayerResolvesRgbColorAsFullTilePolygon()
+    {
+        AzureVectorStyleAssets assets = CreateAssets(
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "background",
+                "paint": {
+                  "background-color": "rgb(10, 20, 30)",
+                  "background-opacity": 0.5
+                }
+              }]
+            }
+            """,
+            "{}",
+            PixelBytes(0),
+            1,
+            1);
+
+        VectorTileStyledPolygon background = Assert.ContainsSingle(
+            assets.ResolvePolygons(
+                new VectorTileFeatureCollection([]),
+                10).Polygons);
+
+        Assert.HasCount(6, background.FillTriangles);
+        Assert.AreEqual(10 / 255d * 0.5, background.Style.Color.X, 0.001);
+        Assert.AreEqual(20 / 255d * 0.5, background.Style.Color.Y, 0.001);
+        Assert.AreEqual(30 / 255d * 0.5, background.Style.Color.Z, 0.001);
+        Assert.AreEqual(0.5, background.Style.Color.W, 0.001);
+    }
+
+    [TestMethod]
+    public void TextFieldTokensResolveFeatureProperties()
+    {
+        AzureVectorStyleAssets assets = CreateAssets(
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "symbol",
+                "source-layer": "poi",
+                "layout": {
+                  "text-field": "Place: {_name_global}"
+                }
+              }]
+            }
+            """,
+            "{}",
+            PixelBytes(0),
+            1,
+            1);
+        VectorTileFeatureCollection features = CreateFeatures(
+            new VectorTileProperty(
+                "_name_global",
+                VectorTileValue.FromString("Seattle")));
+
+        VectorTileAccessibilityFeature feature = Assert.ContainsSingle(
+            assets.ResolveAccessibilityFeatures(features, 10));
+
+        Assert.AreEqual("Place: Seattle", feature.Name);
+    }
+
+    [TestMethod]
+    public void LegacyCategoricalStopsResolveFeatureValues()
+    {
+        using JsonDocument document = JsonDocument.Parse(
+            """
+            {
+              "type": "categorical",
+              "property": "direction",
+              "default": 0,
+              "stops": [["forward", 0], ["reverse", 180]]
+            }
+            """);
+        Assert.IsTrue(AzureStyleExpression.TryParseStyleValue(
+            document.RootElement,
+            out AzureStyleExpression expression));
+        VectorTileFeature feature = CreateFeatures(
+            new VectorTileProperty(
+                "direction",
+                VectorTileValue.FromString("reverse"))).Features[0];
+
+        Assert.IsTrue(expression.TryEvaluate(
+            new AzureStyleEvaluationContext(feature, 10),
+            out AzureStyleValue value));
+        Assert.AreEqual(180, value.NumberValue);
+    }
+
+    [TestMethod]
+    public void LegacyPropertyStopsUsePropertyDefaultWhenValueIsMissing()
+    {
+        using JsonDocument document = JsonDocument.Parse(
+            """
+            {
+              "property": "importance",
+              "stops": [[0, 2], [10, 12]]
+            }
+            """);
+        Assert.IsTrue(AzureStyleExpression.TryParseStyleValue(
+            document.RootElement,
+            AzureStyleValue.FromNumber(7),
+            out AzureStyleExpression expression));
+
+        Assert.IsTrue(expression.TryEvaluate(
+            new AzureStyleEvaluationContext(
+                CreateFeatures().Features[0],
+                10),
+            out AzureStyleValue value));
+        Assert.AreEqual(7, value.NumberValue);
+    }
+
+    [TestMethod]
+    public void CompositeLegacyStopsAreRejectedInsteadOfMisapplied()
+    {
+        using JsonDocument document = JsonDocument.Parse(
+            """
+            {
+              "property": "importance",
+              "stops": [[[5, 0], 2], [[10, 1], 12]]
+            }
+            """);
+
+        Assert.IsFalse(AzureStyleExpression.TryParseStyleValue(
+            document.RootElement,
+            out _));
+    }
+
+    [TestMethod]
+    public void BackgroundLayerAfterFeatureLayersIsSkipped()
+    {
+        AzureSymbolStyle style = AzureSymbolStyle.Parse(
+            Encoding.UTF8.GetBytes(
+                """
+                {
+                  "version": 8,
+                  "layers": [
+                    {
+                      "type": "fill",
+                      "source-layer": "land"
+                    },
+                    {
+                      "type": "background",
+                      "paint": {
+                        "background-color": "#102030"
+                      }
+                    }
+                  ]
+                }
+                """));
+
+        Assert.IsEmpty(style.BackgroundLayers);
+        Assert.AreEqual(
+            1,
+            style.GetUnsupportedLayerCount(
+                AzureStyleLayerParseResult.UnsupportedExpression));
     }
 
     [TestMethod]
@@ -1515,6 +1753,140 @@ public sealed class AzureVectorStyleTests
         AssertExpressionFails(
             """["interpolate",["linear"],["zoom"],10,"low",12,"high"]""",
             context);
+    }
+
+    [TestMethod]
+    public void LegacyArcGisFiltersResolveFeatureProperties()
+    {
+        AzureVectorStyleAssets assets = CreateAssets(
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "line",
+                "source-layer": "road",
+                "filter": ["all",
+                  ["==", "_symbol", 3],
+                  ["!in", "Viz", 3]
+                ],
+                "paint": {
+                  "line-color": "#e69973",
+                  "line-width": 4
+                }
+              }]
+            }
+            """,
+            "{}",
+            PixelBytes(0),
+            1,
+            1);
+
+        VectorLineResolution matching = assets.ResolveLines(
+            CreateLineFeatures(
+                new VectorTileProperty(
+                    "_symbol",
+                    VectorTileValue.FromUInt(3)),
+                new VectorTileProperty(
+                    "Viz",
+                    VectorTileValue.FromUInt(2))),
+            10);
+        VectorLineResolution excluded = assets.ResolveLines(
+            CreateLineFeatures(
+                new VectorTileProperty(
+                    "_symbol",
+                    VectorTileValue.FromUInt(3)),
+                new VectorTileProperty(
+                    "Viz",
+                    VectorTileValue.FromUInt(3))),
+            10);
+
+        Assert.ContainsSingle(matching.Lines);
+        Assert.IsEmpty(excluded.Lines);
+        Assert.AreEqual(0, matching.EvaluationFailureCount);
+        Assert.AreEqual(0, excluded.EvaluationFailureCount);
+    }
+
+    [TestMethod]
+    public void CompatibilityReportCountsUnsupportedConstructsWithoutStyleData()
+    {
+        IReadOnlyList<VectorStyleCompatibilityIssue> issues =
+            VectorStyleCompatibility.Analyze(
+                Encoding.UTF8.GetBytes(
+                    """
+                    {
+                      "version": 8,
+                      "layers": [
+                        {
+                          "type": "fill",
+                          "layout": {
+                            "visibility": "visible",
+                            "private-layout-property": true
+                          },
+                          "paint": {
+                            "fill-color": "#ffffff",
+                            "fill-antialias": true,
+                            "fill-translate": [1, 2]
+                          }
+                        },
+                        {
+                          "type": "symbol",
+                          "layout": {
+                            "text-field": "{name}",
+                            "text-max-width": 12,
+                            "symbol-avoid-edges": true
+                          },
+                          "paint": {
+                            "text-color": "#000000",
+                            "text-halo-blur": 1
+                          }
+                        },
+                        {
+                          "type": "circle"
+                        },
+                        {
+                          "type": "private-layer-type"
+                        }
+                      ]
+                    }
+                    """));
+
+        Assert.AreSequenceEqual(
+            new[]
+            {
+                new VectorStyleCompatibilityIssue(
+                    VectorStyleCompatibilityIssueKind.UnsupportedLayerType,
+                    "circle",
+                    1),
+                new VectorStyleCompatibilityIssue(
+                    VectorStyleCompatibilityIssueKind.UnsupportedLayerType,
+                    "other",
+                    1),
+                new VectorStyleCompatibilityIssue(
+                    VectorStyleCompatibilityIssueKind.UnsupportedLayoutProperty,
+                    "other",
+                    1),
+                new VectorStyleCompatibilityIssue(
+                    VectorStyleCompatibilityIssueKind.UnsupportedLayoutProperty,
+                    "symbol-avoid-edges",
+                    1),
+                new VectorStyleCompatibilityIssue(
+                    VectorStyleCompatibilityIssueKind.UnsupportedLayoutProperty,
+                    "text-max-width",
+                    1),
+                new VectorStyleCompatibilityIssue(
+                    VectorStyleCompatibilityIssueKind.UnsupportedPaintProperty,
+                    "fill-antialias",
+                    1),
+                new VectorStyleCompatibilityIssue(
+                    VectorStyleCompatibilityIssueKind.UnsupportedPaintProperty,
+                    "fill-translate",
+                    1),
+                new VectorStyleCompatibilityIssue(
+                    VectorStyleCompatibilityIssueKind.UnsupportedPaintProperty,
+                    "text-halo-blur",
+                    1),
+            },
+            issues);
     }
 
     [TestMethod]

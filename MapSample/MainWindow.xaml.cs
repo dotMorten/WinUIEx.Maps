@@ -56,6 +56,7 @@ public sealed partial class MainWindow : Window
         {
             "basemaps" => typeof(BasemapPage),
             "openstreetmap" => typeof(OpenStreetMapPage),
+            "arcgis-vector" => typeof(CustomVectorTilesPage),
             "elements" => typeof(MapElementsPage),
             "camera" => typeof(CameraBindingPage),
             "location" => typeof(CurrentLocationPage),

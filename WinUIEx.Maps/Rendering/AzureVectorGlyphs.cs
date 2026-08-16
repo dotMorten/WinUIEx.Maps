@@ -9,7 +9,7 @@ namespace WinUIEx.Maps.Rendering;
 /// <summary>
 /// Lazily acquires the bounded Mapbox glyph ranges referenced by one Azure vector style.
 /// </summary>
-internal sealed class AzureGlyphProvider
+internal sealed class AzureGlyphProvider : IVectorGlyphProvider
 {
     private const int MaximumGlyphRangeBytes = 2 * 1024 * 1024;
     private const int MaximumCachedRanges = 512;
@@ -72,6 +72,12 @@ internal sealed class AzureGlyphProvider
             }
         }
     }
+
+    Task<AzureGlyphRange> IVectorGlyphProvider.GetRangeAsync(
+        string fontStack,
+        int rangeStart,
+        CancellationToken cancellationToken) =>
+        GetRangeAsync(fontStack, rangeStart, cancellationToken);
 
     private async Task<AzureGlyphRange> LoadRangeAsync(
         AzureGlyphRangeKey key,
@@ -451,6 +457,14 @@ internal static class AzureGlyphRangeDecoder
     }
 }
 
+internal interface IVectorGlyphProvider
+{
+    Task<AzureGlyphRange> GetRangeAsync(
+        string fontStack,
+        int rangeStart,
+        CancellationToken cancellationToken);
+}
+
 /// <summary>
 /// Retains decoded glyph metrics and lazily generated grayscale GPU texture buffers.
 /// </summary>
@@ -460,12 +474,12 @@ internal sealed class AzureGlyphAtlas
     private const long MaximumGlyphTextureBytes = 64 * 1024 * 1024;
     private readonly object _sync = new();
     private readonly string _styleSlug;
-    private readonly AzureGlyphProvider? _provider;
+    private readonly IVectorGlyphProvider? _provider;
     private readonly Dictionary<AzureGlyphRangeKey, AzureGlyphRange> _ranges = [];
     private readonly Dictionary<AzureGlyphKey, VectorSpriteTextureData> _textures = [];
     private long _textureBytes;
 
-    internal AzureGlyphAtlas(string styleSlug, AzureGlyphProvider? provider)
+    internal AzureGlyphAtlas(string styleSlug, IVectorGlyphProvider? provider)
     {
         _styleSlug = styleSlug;
         _provider = provider;
@@ -499,7 +513,7 @@ internal sealed class AzureGlyphAtlas
         if (missing.Length != 0 && _provider is null)
         {
             throw new InvalidOperationException(
-                "No Azure glyph provider is available for the requested font range.");
+                "No vector glyph provider is available for the requested font range.");
         }
         AzureGlyphRange[] loaded = await Task.WhenAll(
             missing.Select(key => _provider!.GetRangeAsync(

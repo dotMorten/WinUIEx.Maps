@@ -1,8 +1,8 @@
 namespace WinUIEx.Maps;
 
 /// <summary>
-/// Collects initial source, visibility-range, and transition settings for a
-/// <see cref="TileLayer"/>.
+/// Collects initial raster or Mapbox vector source, visibility-range, and transition
+/// settings for a <see cref="TileLayer"/>.
 /// </summary>
 /// <remarks>
 /// This is a mutable, non-dependency-object options container. Property setters do not
@@ -21,6 +21,28 @@ public sealed class TileLayerOptions
     /// string disables tile acquisition.
     /// </remarks>
     public string TileUrl { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the optional HTTP or HTTPS Mapbox Style Specification URL.
+    /// </summary>
+    /// <remarks>
+    /// When non-null, <see cref="TileUrl"/> is interpreted as a Mapbox Vector Tile PBF
+    /// template and this URL supplies its style, sprite, and glyph configuration.
+    /// The default is <see langword="null"/>, which configures a raster tile layer.
+    /// </remarks>
+    public string? StyleUrl { get; set; }
+
+    /// <summary>
+    /// Gets or sets request headers applied to this layer's tile and style-resource requests.
+    /// </summary>
+    /// <remarks>
+    /// Header names and values are copied when the layer is constructed. Headers are sent
+    /// only to the origins explicitly configured by <see cref="TileUrl"/> and
+    /// <see cref="StyleUrl"/>; they are not forwarded to a different origin referenced by a
+    /// downloaded style.
+    /// </remarks>
+    public IReadOnlyDictionary<string, string> RequestHeaders { get; set; } =
+        new Dictionary<string, string>();
 
     /// <summary>
     /// Gets or sets the geographic source bounds. The default is the Web Mercator world.

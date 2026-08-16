@@ -107,6 +107,8 @@ public sealed class MapControlEventSourceTests
             6, 40, 32, 8, 24);
         MapControlEventSource.Log.AccessibilityAnnouncementDecision(8, 1, true);
         MapControlEventSource.Log.AnimationsEnabledChanged(false);
+        MapControlEventSource.Log.VectorStyleCompatibilityIssue(
+            -1, 2, "text-max-width", 767);
 
         CapturedEvent wave = listener.Single(11);
         Assert.AreEqual("TileWaveStart", wave.Name);
@@ -399,6 +401,15 @@ public sealed class MapControlEventSourceTests
             ["animationsEnabled"],
             animationsEnabled.PayloadNames);
         Assert.AreEqual(false, animationsEnabled.Payload[0]);
+        CapturedEvent compatibility = listener.Single(75);
+        Assert.AreEqual("VectorStyleCompatibilityIssue", compatibility.Name);
+        Assert.AreSequenceEqual(
+            ["style", "issueKind", "construct", "count"],
+            compatibility.PayloadNames);
+        Assert.AreEqual(-1, compatibility.Payload[0]);
+        Assert.AreEqual(2, compatibility.Payload[1]);
+        Assert.AreEqual("text-max-width", compatibility.Payload[2]);
+        Assert.AreEqual(767, compatibility.Payload[3]);
         Assert.AreEqual(4.25d, preparedGeometry.Payload[5]);
         Assert.DoesNotContain(captured => captured.Id == 0, listener.Events);
     }
@@ -413,7 +424,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 74),
+            Enumerable.Range(1, 75),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }

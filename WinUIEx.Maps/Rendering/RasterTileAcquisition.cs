@@ -3,10 +3,6 @@ using System.Globalization;
 using System.Runtime.InteropServices.WindowsRuntime;
 using Windows.Graphics.Imaging;
 using Windows.Web.Http.Filters;
-using WinRtHttpClient = Windows.Web.Http.HttpClient;
-using WinRtHttpCompletionOption = Windows.Web.Http.HttpCompletionOption;
-using WinRtHttpMethod = Windows.Web.Http.HttpMethod;
-using WinRtHttpRequestMessage = Windows.Web.Http.HttpRequestMessage;
 
 namespace WinUIEx.Maps.Rendering;
 
@@ -31,11 +27,11 @@ namespace WinUIEx.Maps.Rendering;
 internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisitionSession
 {
     private const int EncodedTileOverheadAllowance = 1024 * 1024;
-    private static readonly WinRtHttpClient HttpClient = CreateHttpClient();
     private readonly string _tileUrl;
     private readonly TileLayerBounds _bounds;
     private readonly bool _isTms;
     private readonly string[] _subdomains;
+    private readonly CustomRequestHeaders _requestHeaders;
     private readonly CustomRasterSourceKey _sourceKey;
 
     /// <summary>
@@ -53,7 +49,8 @@ internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisition
         int maximumSourceZoom,
         int minimumSourceZoom,
         IEnumerable<string> subdomains,
-        int tileSize)
+        int tileSize,
+        IReadOnlyDictionary<string, string>? requestHeaders = null)
     {
         _tileUrl = tileUrl;
         _bounds = bounds;
@@ -61,6 +58,9 @@ internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisition
         MaxSourceZoom = maximumSourceZoom;
         MinSourceZoom = minimumSourceZoom;
         _subdomains = subdomains.ToArray();
+        _requestHeaders = new CustomRequestHeaders(
+            requestHeaders ?? new Dictionary<string, string>(),
+            tileUrl);
         TileSize = tileSize;
         _sourceKey = new CustomRasterSourceKey(
             tileUrl,
@@ -69,7 +69,8 @@ internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisition
             maximumSourceZoom,
             minimumSourceZoom,
             string.Join("\u001f", _subdomains),
-            tileSize);
+            tileSize,
+            _requestHeaders.Fingerprint);
     }
 
     internal override object SourceKey => _sourceKey;
@@ -113,24 +114,11 @@ internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisition
         string requestUrl = ExpandUrl(id);
         int maximumEncodedBytes = checked(
             (TileSize * TileSize * 4) + EncodedTileOverheadAllowance);
-        using WinRtHttpRequestMessage request = new(
-            WinRtHttpMethod.Get,
-            new Uri(requestUrl));
-        request.Headers.Accept.ParseAdd("image/*");
-        using Windows.Web.Http.HttpResponseMessage response = await HttpClient
-            .SendRequestAsync(request, WinRtHttpCompletionOption.ResponseHeadersRead)
-            .AsTask(cancellationToken)
-            .ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException(
-                $"Raster tile request failed with HTTP {(int)response.StatusCode}.",
-                inner: null,
-                (System.Net.HttpStatusCode)(int)response.StatusCode);
-        }
-        byte[] encoded = await WinRtHttpContentReader.ReadBoundedAsync(
-                response.Content,
+        byte[] encoded = await CustomTileHttp.GetBytesAsync(
+                new Uri(requestUrl),
+                "image/*",
                 maximumEncodedBytes,
+                _requestHeaders,
                 cancellationToken)
             .ConfigureAwait(false);
         double downloadMilliseconds =
@@ -304,20 +292,8 @@ internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisition
         }
     }
 
-    private static WinRtHttpClient CreateHttpClient()
-    {
-        WinRtHttpClient client = new(CreateHttpFilter());
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("WinUIEx.Maps/1.0");
-        return client;
-    }
-
     internal static HttpBaseProtocolFilter CreateHttpFilter()
-    {
-        HttpBaseProtocolFilter filter = new();
-        filter.CacheControl.ReadBehavior = HttpCacheReadBehavior.Default;
-        filter.CacheControl.WriteBehavior = HttpCacheWriteBehavior.Default;
-        return filter;
-    }
+        => CustomTileHttp.CreateHttpFilter();
 
     /// <summary>
     /// Captures every custom-source value that can change acquired pixels for in-process
@@ -335,7 +311,8 @@ internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisition
         int MaximumSourceZoom,
         int MinimumSourceZoom,
         string Subdomains,
-        int TileSize)
+        int TileSize,
+        string RequestHeadersFingerprint)
     {
         /// <summary>
         /// Returns a non-sensitive type name instead of exposing the template URL or

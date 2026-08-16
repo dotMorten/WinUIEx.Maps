@@ -1061,7 +1061,7 @@ internal sealed class MapControlEventSource : EventSource
     }
 
     /// <summary>
-    /// Records generation-checked Azure vector tile commits and decoded point counts.
+    /// Records generation-checked vector tile commits and decoded point counts.
     /// </summary>
     [Event(
         49,
@@ -1127,7 +1127,7 @@ internal sealed class MapControlEventSource : EventSource
     }
 
     /// <summary>
-    /// Records aggregate Azure vector-symbol draw batching for a rendered layer.
+    /// Records aggregate vector-symbol draw batching for a rendered layer.
     /// </summary>
     [Event(
         51,
@@ -1776,5 +1776,32 @@ internal sealed class MapControlEventSource : EventSource
     public void AnimationsEnabledChanged(bool animationsEnabled)
     {
         WriteEvent(74, animationsEnabled);
+    }
+
+    /// <summary>
+    /// Records aggregate unsupported Style Spec constructs without layer or source names.
+    /// </summary>
+    [Event(
+        75,
+        Level = EventLevel.Informational,
+        Keywords = Keywords.Tiles | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorStyleCompatibilityIssue(
+        int style,
+        int issueKind,
+        string construct,
+        int count)
+    {
+        if (IsEnabled(
+            EventLevel.Informational,
+            Keywords.Tiles | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                75,
+                style,
+                issueKind,
+                construct ?? string.Empty,
+                count);
+        }
     }
 }

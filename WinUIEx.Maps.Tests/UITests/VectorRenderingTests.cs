@@ -10,6 +10,237 @@ namespace WinUIEx.Maps.Tests.UITests;
 public sealed class VectorRenderingTests
 {
     [TestMethod]
+    public Task LegacyStyleTokensStopsBackgroundAndRgbColorsRender() =>
+        MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            TileId tileId = new(4, 8, 8);
+            byte[] tile = new MapboxVectorTileBuilder()
+                .AddPolygon(
+                    "land",
+                    [
+                        [
+                            new TestTilePoint(1024, 1024),
+                            new TestTilePoint(3072, 1024),
+                            new TestTilePoint(3072, 3072),
+                            new TestTilePoint(1024, 3072),
+                        ],
+                    ])
+                .AddLine(
+                    "road",
+                    [new(512, 2048), new(3584, 2048)],
+                    new Dictionary<string, object>
+                    {
+                        ["_symbol"] = 3,
+                        ["Viz"] = 2,
+                    })
+                .AddPoint(
+                    "labels",
+                    2048,
+                    2048,
+                    new Dictionary<string, object>
+                    {
+                        ["_name_global"] = "A",
+                    })
+                .Build();
+            TestVectorTileSource source = TestVectorTileSource.Create(
+                tileId,
+                tile,
+                """
+                {
+                  "version": 8,
+                  "layers": [
+                    {
+                      "type": "background",
+                      "paint": {
+                        "background-color": "rgb(10, 20, 30)"
+                      }
+                    },
+                    {
+                      "type": "fill",
+                      "source-layer": "land",
+                      "paint": {
+                        "fill-color": {
+                          "stops": [
+                            [3, "rgba(0, 255, 0, 1)"],
+                            [5, "rgba(0, 255, 0, 1)"]
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "type": "line",
+                      "source-layer": "road",
+                      "filter": ["all",
+                        ["==", "_symbol", 3],
+                        ["!in", "Viz", 3]
+                      ],
+                      "layout": {
+                        "line-cap": "round",
+                        "line-join": "round"
+                      },
+                      "paint": {
+                        "line-color": "#e69973",
+                        "line-width": {
+                          "base": 1.2,
+                          "stops": [[4, 8], [5, 12]]
+                        }
+                      }
+                    },
+                    {
+                      "type": "symbol",
+                      "source-layer": "labels",
+                      "layout": {
+                        "text-field": "{_name_global}",
+                        "text-font": ["TestFont"],
+                        "text-size": 32,
+                        "text-allow-overlap": true
+                      },
+                      "paint": {
+                        "text-color": "rgba(255, 255, 255, 1)"
+                      }
+                    }
+                  ]
+                }
+                """,
+                "{}",
+                [0, 0, 0, 0],
+                1,
+                1);
+            source.AddGlyphs("TestFont", TestGlyph.Solid('A'));
+
+            MapRenderFrame frame = await RenderAsync(map, source);
+
+            Assert.IsNotEmpty(ConnectedComponentAnalyzer.Find(
+                frame,
+                ConnectedComponentAnalyzer.Near(
+                    10,
+                    20,
+                    30,
+                    tolerance: 4,
+                    minimumAlpha: 240),
+                minimumPixelCount: 1000));
+            Assert.IsNotEmpty(ConnectedComponentAnalyzer.Find(
+                frame,
+                ConnectedComponentAnalyzer.Near(
+                    0,
+                    255,
+                    0,
+                    tolerance: 8,
+                    minimumAlpha: 240),
+                minimumPixelCount: 1000));
+            Assert.IsNotEmpty(ConnectedComponentAnalyzer.Find(
+                frame,
+                ConnectedComponentAnalyzer.Near(
+                    230,
+                    153,
+                    115,
+                    tolerance: 8,
+                    minimumAlpha: 240),
+                minimumPixelCount: 20));
+            Assert.IsNotEmpty(ConnectedComponentAnalyzer.Find(
+                frame,
+                ConnectedComponentAnalyzer.Near(
+                    255,
+                    255,
+                    255,
+                    tolerance: 8,
+                    minimumAlpha: 240),
+                minimumPixelCount: 20));
+        });
+
+    [TestMethod]
+    public Task ReplacingVectorStyleWithPatternedFillDoesNotReuseMissingGeometryBatch() =>
+        MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            TileId tileId = new(4, 8, 8);
+            byte[] tile = new MapboxVectorTileBuilder()
+                .AddPolygon(
+                    "land",
+                    [
+                        [
+                            new TestTilePoint(512, 512),
+                            new TestTilePoint(3584, 512),
+                            new TestTilePoint(3584, 3584),
+                            new TestTilePoint(512, 3584),
+                        ],
+                    ])
+                .Build();
+            TestVectorTileSource solidSource = TestVectorTileSource.Create(
+                tileId,
+                tile,
+                """
+                {
+                  "version": 8,
+                  "layers": [{
+                    "type": "fill",
+                    "source-layer": "land",
+                    "paint": { "fill-color": "#0000ff" }
+                  }]
+                }
+                """,
+                "{}",
+                [0, 0, 0, 0],
+                1,
+                1);
+            TestVectorTileSource patternSource = TestVectorTileSource.Create(
+                tileId,
+                tile,
+                """
+                {
+                  "version": 8,
+                  "layers": [{
+                    "type": "fill",
+                    "source-layer": "land",
+                    "paint": { "fill-pattern": "land-pattern" }
+                  }]
+                }
+                """,
+                """
+                {
+                  "land-pattern": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 2,
+                    "height": 2,
+                    "pixelRatio": 1,
+                    "visible": true
+                  }
+                }
+                """,
+                [
+                    0, 0, 255, 255,
+                    0, 0, 255, 255,
+                    0, 0, 255, 255,
+                    0, 0, 255, 255,
+                ],
+                2,
+                2);
+            TestVectorTileLayer layer = new(solidSource);
+            map.MapStyle = MapStyle.Blank;
+            map.Center = new Geopoint(solidSource.TileCenter);
+            map.ZoomLevel = tileId.Zoom;
+            map.Layers.Add(layer);
+            using CancellationTokenSource timeout =
+                new(TimeSpan.FromSeconds(10));
+
+            _ = await map.CaptureRenderedFrameAsync(timeout.Token);
+            layer.ReplaceSource(patternSource);
+            MapRenderFrame patterned =
+                await map.CaptureRenderedFrameAsync(timeout.Token);
+
+            Assert.IsNotEmpty(
+                ConnectedComponentAnalyzer.Find(
+                    patterned,
+                    ConnectedComponentAnalyzer.Near(
+                        255,
+                        0,
+                        0,
+                        tolerance: 8,
+                        minimumAlpha: 240),
+                    minimumPixelCount: 100));
+        });
+
+    [TestMethod]
     public Task PointShieldRendersCenteredTextComponents() =>
         MapControlTestHost.LoadMapControlAsync(async map =>
         {
@@ -159,6 +390,92 @@ public sealed class VectorRenderingTests
             Assert.IsTrue(shields.All(shield =>
                 shield.Bounds.Width >= 20 &&
                 shield.Bounds.Height >= 12));
+        });
+
+    [TestMethod]
+    public Task ArcGisLineShieldTextIsCenteredWithoutTextFit() =>
+        MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            TileId tileId = new(4, 8, 8);
+            byte[] tile = new MapboxVectorTileBuilder()
+                .AddLine(
+                    "roads",
+                    [new(1400, 2048), new(2696, 2048)],
+                    new Dictionary<string, object>
+                    {
+                        ["_label_class"] = 7,
+                        ["Viz"] = 2,
+                        ["_name"] = "405",
+                        ["_len"] = 3,
+                    })
+                .Build();
+            TestVectorTileSource source = TestVectorTileSource.Create(
+                tileId,
+                tile,
+                """
+                {
+                  "version": 8,
+                  "layers": [{
+                    "type": "symbol",
+                    "source-layer": "roads",
+                    "filter": ["all",
+                      ["==", "_label_class", 7],
+                      ["!in", "Viz", 3]
+                    ],
+                    "layout": {
+                      "symbol-placement": "line",
+                      "symbol-spacing": 250,
+                      "icon-image": "shield/{_len}",
+                      "icon-rotation-alignment": "viewport",
+                      "text-field": "{_name}",
+                      "text-font": ["TestFont"],
+                      "text-size": 10,
+                      "text-rotation-alignment": "viewport"
+                    },
+                    "paint": {
+                      "text-color": "#ffffff"
+                    }
+                  }]
+                }
+                """,
+                """
+                {
+                  "shield/3": {
+                    "x": 0, "y": 0, "width": 26, "height": 28,
+                    "pixelRatio": 1, "visible": true
+                  }
+                }
+                """,
+                Enumerable.Range(0, 26 * 28)
+                    .SelectMany(_ => new byte[] { 255, 0, 0, 255 })
+                    .ToArray(),
+                26,
+                28);
+            source.AddGlyphs(
+                "TestFont",
+                TestGlyph.Solid('4'),
+                TestGlyph.Solid('0'),
+                TestGlyph.Solid('5'));
+
+            MapRenderFrame frame = await RenderAsync(map, source);
+            ConnectedComponent shield = Assert.ContainsSingle(
+                FindColor(
+                    frame,
+                    0,
+                    0,
+                    255,
+                    minimumPixelCount: 300));
+            PixelBounds text = Union(
+                FindColor(
+                    frame,
+                    255,
+                    255,
+                    255,
+                    minimumPixelCount: 5,
+                    tolerance: 8));
+
+            Assert.IsTrue(shield.Bounds.Contains(text));
+            Assert.AreEqual(shield.Bounds.CenterY, text.CenterY, 2);
         });
 
     [TestMethod]

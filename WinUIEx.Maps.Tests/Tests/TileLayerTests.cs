@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.InteropServices.WindowsRuntime;
+using System.Text;
 using Microsoft.UI.Xaml;
 using WinUIEx.Maps.Rendering;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -24,8 +25,9 @@ public sealed class TileLayerTests
             Assert.IsTrue(parameter.IsOptional);
         }
         Assert.AreSequenceEqual(
-            ["TileUrl", "Bounds", "IsTMS", "MaxSourceZoom", "MinSourceZoom",
-             "Subdomains", "TileSize", "MinZoom", "MaxZoom", "FadeDuration"],
+            ["TileUrl", "StyleUrl", "RequestHeaders", "Bounds", "IsTMS",
+             "MaxSourceZoom", "MinSourceZoom", "Subdomains", "TileSize",
+             "MinZoom", "MaxZoom", "FadeDuration"],
             typeof(TileLayer)
                 .GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
                 .Where(property => property.CanWrite)
@@ -42,6 +44,8 @@ public sealed class TileLayerTests
         foreach (string name in new[]
         {
             nameof(TileLayer.TileUrl),
+            nameof(TileLayer.StyleUrl),
+            nameof(TileLayer.RequestHeaders),
             nameof(TileLayer.Bounds),
             nameof(TileLayer.IsTMS),
             nameof(TileLayer.MaxSourceZoom),
@@ -80,6 +84,8 @@ public sealed class TileLayerTests
         TileLayerOptions options = new();
 
         Assert.AreEqual(string.Empty, options.TileUrl);
+        Assert.IsNull(options.StyleUrl);
+        Assert.IsEmpty(options.RequestHeaders);
         Assert.AreEqual(TileLayerBounds.World, options.Bounds);
         Assert.IsFalse(options.IsTMS);
         Assert.AreEqual(22, options.MaxSourceZoom);
@@ -154,6 +160,17 @@ public sealed class TileLayerTests
         string expanded = CustomAcquisition(braces).ExpandUrl(new TileId(3, 2, 5));
         Assert.StartsWith("https://a.example/3/2/2/212?bbox=", expanded);
         Assert.DoesNotContain("{", expanded);
+    }
+
+    [TestMethod]
+    public void TileUrlValidationAcceptsSubdomainTemplates()
+    {
+        TileLayer.ValidateTileUrl(
+            "https://{subdomain}.example/{z}/{x}/{y}.pbf");
+
+        Assert.ThrowsExactly<ArgumentException>(
+            () => TileLayer.ValidateTileUrl(
+                "https://{unknown}.example/{z}/{x}/{y}.pbf"));
     }
 
     [TestMethod]
@@ -387,6 +404,174 @@ public sealed class TileLayerTests
     }
 
     [TestMethod]
+    public void CustomHeadersApplyOnlyToConfiguredOrigins()
+    {
+        CustomRequestHeaders headers = new(
+            new Dictionary<string, string>
+            {
+                ["X-Custom-Header"] = "Bearer test",
+            },
+            "https://tiles.example.com/{z}/{x}/{y}.pbf",
+            "https://styles.example.com/root.json");
+        using Windows.Web.Http.HttpRequestMessage tileRequest =
+            new(Windows.Web.Http.HttpMethod.Get, new Uri("https://tiles.example.com/1/0/0.pbf"));
+        using Windows.Web.Http.HttpRequestMessage styleRequest =
+            new(Windows.Web.Http.HttpMethod.Get, new Uri("https://styles.example.com/sprite.json"));
+        using Windows.Web.Http.HttpRequestMessage externalRequest =
+            new(Windows.Web.Http.HttpMethod.Get, new Uri("https://external.example/sprite.json"));
+
+        headers.Apply(tileRequest);
+        headers.Apply(styleRequest);
+        headers.Apply(externalRequest);
+
+        Assert.IsTrue(tileRequest.Headers.TryGetValue(
+            "X-Custom-Header",
+            out string tileValue));
+        Assert.AreEqual("Bearer test", tileValue);
+        Assert.IsTrue(styleRequest.Headers.TryGetValue(
+            "X-Custom-Header",
+            out string styleValue));
+        Assert.AreEqual("Bearer test", styleValue);
+        Assert.IsFalse(externalRequest.Headers.ContainsKey(
+            "X-Custom-Header"));
+        Assert.DoesNotContain("Bearer test", headers.Fingerprint);
+    }
+
+    [TestMethod]
+    public void CustomHeadersAllowOnlyOneConfiguredSubdomainLabel()
+    {
+        CustomRequestHeaders headers = new(
+            new Dictionary<string, string> { ["X-Test"] = "value" },
+            "https://{subdomain}.tiles.example.com/{z}/{x}/{y}.pbf");
+        using Windows.Web.Http.HttpRequestMessage allowed =
+            new(Windows.Web.Http.HttpMethod.Get, new Uri(
+                "https://a.tiles.example.com/1/0/0.pbf"));
+        using Windows.Web.Http.HttpRequestMessage nested =
+            new(Windows.Web.Http.HttpMethod.Get, new Uri(
+                "https://a.b.tiles.example.com/1/0/0.pbf"));
+        using Windows.Web.Http.HttpRequestMessage suffixOnly =
+            new(Windows.Web.Http.HttpMethod.Get, new Uri(
+                "https://tiles.example.com/1/0/0.pbf"));
+
+        headers.Apply(allowed);
+        headers.Apply(nested);
+        headers.Apply(suffixOnly);
+
+        Assert.IsTrue(allowed.Headers.ContainsKey("X-Test"));
+        Assert.IsFalse(nested.Headers.ContainsKey("X-Test"));
+        Assert.IsFalse(suffixOnly.Headers.ContainsKey("X-Test"));
+    }
+
+    [TestMethod]
+    public void CustomVectorStyleResolvesRelativeSpriteAndGlyphUrls()
+    {
+        byte[] styleJson = Encoding.UTF8.GetBytes(
+            """
+            {
+              "version": 8,
+              "sprite": "../sprites/sprite",
+              "glyphs": "../fonts/{fontstack}/{range}.pbf",
+              "sources": {},
+              "layers": []
+            }
+            """);
+
+        CustomVectorStyleResourceUrls resources =
+            CustomVectorStyleProvider.GetResourceUrls(
+                styleJson,
+                new Uri("https://example.com/resources/styles"));
+
+        Assert.AreEqual(
+            "https://example.com/resources/sprites/sprite",
+            resources.SpriteBaseUri!.AbsoluteUri);
+        Assert.AreEqual(
+            "https://example.com/resources/fonts/{fontstack}/{range}.pbf",
+            resources.GlyphTemplate);
+    }
+
+    [TestMethod]
+    public void CustomVectorSpriteSuffixPreservesQueryAndFragment()
+    {
+        Uri result = CustomVectorStyleProvider.AppendPathSuffix(
+            new Uri("https://example.com/sprite?version=2#metadata"),
+            ".json");
+
+        Assert.AreEqual(
+            "https://example.com/sprite.json?version=2#metadata",
+            result.AbsoluteUri);
+    }
+
+    [TestMethod]
+    public void CustomVectorStyleAcceptsOneNonAzureVectorSource()
+    {
+        AzureSymbolStyle style = AzureSymbolStyle.ParseCustom(
+            Encoding.UTF8.GetBytes(
+                """
+                {
+                  "version": 8,
+                  "sources": {
+                    "esri": {
+                      "type": "vector",
+                      "url": "https://example.com/VectorTileServer"
+                    }
+                  },
+                  "layers": [{
+                    "id": "land",
+                    "type": "fill",
+                    "source": "esri",
+                    "source-layer": "land",
+                    "paint": {
+                      "fill-color": "#ffffff"
+                    }
+                  }]
+                }
+                """));
+
+        Assert.AreEqual(1, style.LayerCount);
+    }
+
+    [TestMethod]
+    public void CustomVectorStyleRejectsMultipleVectorSources()
+    {
+        byte[] style = Encoding.UTF8.GetBytes(
+            """
+            {
+              "version": 8,
+              "sources": {
+                "first": { "type": "vector" },
+                "second": { "type": "vector" }
+              },
+              "layers": []
+            }
+            """);
+
+        Assert.ThrowsExactly<InvalidDataException>(
+            () => AzureSymbolStyle.ParseCustom(style));
+    }
+
+    [TestMethod]
+    public void CustomVectorSourceIdentityIncludesStyleAndHeaders()
+    {
+        CustomVectorTileAcquisitionSession first = CreateVectorAcquisition(
+            "https://styles.example/default.json",
+            new Dictionary<string, string>());
+        CustomVectorTileAcquisitionSession changedStyle = CreateVectorAcquisition(
+            "https://styles.example/night.json",
+            new Dictionary<string, string>());
+        CustomVectorTileAcquisitionSession changedHeader = CreateVectorAcquisition(
+            "https://styles.example/default.json",
+            new Dictionary<string, string> { ["X-Test"] = "value" });
+
+        Assert.AreEqual(LayerRenderKind.VectorPoints, first.RenderKind);
+        Assert.AreNotEqual(first.SourceKey, changedStyle.SourceKey);
+        Assert.AreNotEqual(first.SourceKey, changedHeader.SourceKey);
+        Assert.DoesNotContain(
+            "https://",
+            first.SourceKey.ToString()!,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [TestMethod]
     public async Task EncodedTileReadRejectsDeclaredOversizeContent()
     {
         using HttpBufferContent content = new(new byte[17].AsBuffer());
@@ -437,6 +622,20 @@ public sealed class TileLayerTests
     private static CustomRasterTileAcquisitionSession CustomAcquisition(
         TileLayerSnapshot snapshot) =>
         Assert.IsInstanceOfType<CustomRasterTileAcquisitionSession>(snapshot.Acquisition);
+
+    private static CustomVectorTileAcquisitionSession CreateVectorAcquisition(
+        string styleUrl,
+        IReadOnlyDictionary<string, string> requestHeaders) =>
+        new(
+            "https://tiles.example/{z}/{x}/{y}.pbf",
+            styleUrl,
+            TileLayerBounds.World,
+            false,
+            22,
+            0,
+            [],
+            512,
+            requestHeaders);
 
     private static void AssertDependencyProperty(Type type, string name)
     {
