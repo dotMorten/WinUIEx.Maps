@@ -8,7 +8,7 @@
 | Standard | WCAG 2.2 |
 | Included levels | Level A: Yes; Level AA: Yes; Level AAA: No |
 | Assessment type | Living engineering assessment |
-| Last reviewed | 2026-08-29 |
+| Last reviewed | 2026-08-15 |
 | Formal conformance claim | No |
 
 This document records the current accessibility evidence, known gaps, and
