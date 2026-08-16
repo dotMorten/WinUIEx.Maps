@@ -39,6 +39,17 @@
                                 VerticalAlignment="Top"
                                 IsHitTestVisible="False"/>
                             <SwapChainPanel x:Name="PART_SwapChain"/>
+                            <TextBlock
+                                x:Name="PART_MapState"
+                                Width="1"
+                                Height="1"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Top"
+                                IsHitTestVisible="False"
+                                Opacity="0"
+                                AutomationProperties.AccessibilityView="Content"
+                                AutomationProperties.AutomationId="MapState"
+                                AutomationProperties.LiveSetting="Polite"/>
                             <InfoBar
                                 x:Name="PART_AzureAuthenticationInfoBar"
                                 Margin="12"

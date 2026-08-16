@@ -360,6 +360,121 @@ internal sealed class AzureVectorStyleAssets
             counts.UnavailableGlyphCount);
     }
 
+    internal VectorTileAccessibilityFeature[] ResolveAccessibilityFeatures(
+        VectorTileFeatureCollection features,
+        double zoom,
+        CancellationToken cancellationToken = default)
+    {
+        const int maximumFeatureCount = 256;
+        List<VectorTileAccessibilityFeature> resolved = [];
+        foreach (AzureTextStyleLayer layer in _symbolStyle.TextLayers)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (layer.EvaluateVisibility(zoom) != AzureStyleVisibilityResult.Visible)
+            {
+                continue;
+            }
+
+            foreach (VectorTileFeature feature in
+                features.GetSourceLayer(layer.SourceLayer))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                AzureStyleEvaluationContext context = new(feature, zoom);
+                if (layer.EvaluateFilter(context) != AzureStyleFilterResult.Match ||
+                    layer.EvaluateAccessibilityText(
+                        context,
+                        out string name,
+                        out double prominence) != AzureStyleTextResult.Resolved ||
+                    !TryGetAccessibilityPosition(
+                        feature,
+                        layer.Placement,
+                        out VectorTilePoint position))
+                {
+                    continue;
+                }
+
+                resolved.Add(new VectorTileAccessibilityFeature(
+                    name,
+                    ClassifyAccessibilityFeature(layer.SourceLayer),
+                    position.X,
+                    position.Y,
+                    layer.Order,
+                    prominence));
+                if (resolved.Count == maximumFeatureCount)
+                {
+                    return resolved.ToArray();
+                }
+            }
+        }
+        return resolved.ToArray();
+    }
+
+    private static bool TryGetAccessibilityPosition(
+        VectorTileFeature feature,
+        AzureSymbolPlacement placement,
+        out VectorTilePoint position)
+    {
+        if (placement == AzureSymbolPlacement.Line)
+        {
+            foreach (VectorTileLine line in feature.Lines)
+            {
+                if (line.Points.Length != 0)
+                {
+                    position = line.Points[line.Points.Length / 2];
+                    return true;
+                }
+            }
+        }
+        else if (feature.Points.Length != 0)
+        {
+            position = feature.Points[0];
+            return true;
+        }
+
+        position = default;
+        return false;
+    }
+
+    private static MapAccessibilityFeatureKind ClassifyAccessibilityFeature(
+        string sourceLayer)
+    {
+        if (sourceLayer.Contains("road", StringComparison.OrdinalIgnoreCase) ||
+            sourceLayer.Contains("transportation", StringComparison.OrdinalIgnoreCase))
+        {
+            return MapAccessibilityFeatureKind.Road;
+        }
+        if (sourceLayer.Contains("transit", StringComparison.OrdinalIgnoreCase))
+        {
+            return MapAccessibilityFeatureKind.Transit;
+        }
+        if (sourceLayer.Contains("water", StringComparison.OrdinalIgnoreCase) ||
+            sourceLayer.Contains("marine", StringComparison.OrdinalIgnoreCase))
+        {
+            return MapAccessibilityFeatureKind.Water;
+        }
+        if (sourceLayer.Contains("natural", StringComparison.OrdinalIgnoreCase) ||
+            sourceLayer.Contains("landcover", StringComparison.OrdinalIgnoreCase))
+        {
+            return MapAccessibilityFeatureKind.NaturalFeature;
+        }
+        if (sourceLayer.Contains("poi", StringComparison.OrdinalIgnoreCase) ||
+            sourceLayer.Contains("building", StringComparison.OrdinalIgnoreCase))
+        {
+            return MapAccessibilityFeatureKind.Landmark;
+        }
+        if (sourceLayer.Contains("boundary", StringComparison.OrdinalIgnoreCase) ||
+            sourceLayer.Contains("admin", StringComparison.OrdinalIgnoreCase))
+        {
+            return MapAccessibilityFeatureKind.AdministrativeArea;
+        }
+        if (sourceLayer.Contains("place", StringComparison.OrdinalIgnoreCase) ||
+            sourceLayer.Contains("label", StringComparison.OrdinalIgnoreCase))
+        {
+            return MapAccessibilityFeatureKind.Place;
+        }
+        return MapAccessibilityFeatureKind.Other;
+    }
+
     private static void ApplyTextFit(List<VectorTileSymbol> symbols)
     {
         Dictionary<long, (double Left, double Top, double Right, double Bottom)>
@@ -3197,6 +3312,55 @@ internal sealed class AzureTextStyleLayer(
             ignorePlacement,
             optional,
             viewportAligned);
+        return AzureStyleTextResult.Resolved;
+    }
+
+    internal AzureStyleTextResult EvaluateAccessibilityText(
+        AzureStyleEvaluationContext context,
+        out string text,
+        out double prominence)
+    {
+        text = string.Empty;
+        prominence = 0;
+        if (!textField.TryEvaluate(context, out AzureStyleValue field) ||
+            field.Kind != AzureStyleValueKind.String ||
+            !textSize.TryEvaluate(context, out AzureStyleValue sizeValue) ||
+            !sizeValue.TryGetNumber(out double size) ||
+            !double.IsFinite(size) ||
+            !textTransform.TryEvaluate(context, out AzureStyleValue transformValue) ||
+            transformValue.Kind != AzureStyleValueKind.String ||
+            !symbolSortKey.TryEvaluate(context, out AzureStyleValue sortValue) ||
+            !sortValue.TryGetNumber(out double sortKey) ||
+            !double.IsFinite(sortKey))
+        {
+            return AzureStyleTextResult.EvaluationFailure;
+        }
+
+        text = field.StringValue ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(text) || size <= 0 || size > 256)
+        {
+            text = string.Empty;
+            return AzureStyleTextResult.NoText;
+        }
+
+        text = transformValue.StringValue switch
+        {
+            "uppercase" => text.ToUpperInvariant(),
+            "lowercase" => text.ToLowerInvariant(),
+            "none" => text,
+            _ => string.Empty,
+        };
+        text = text.Trim();
+        if (text.Length == 0)
+        {
+            return AzureStyleTextResult.EvaluationFailure;
+        }
+        if (text.Length > 256)
+        {
+            text = text[..256];
+        }
+
+        prominence = size - sortKey;
         return AzureStyleTextResult.Resolved;
     }
 

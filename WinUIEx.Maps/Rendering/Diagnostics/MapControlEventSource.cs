@@ -45,6 +45,7 @@ internal sealed class MapControlEventSource : EventSource
         public const EventKeywords Errors = (EventKeywords)0x40;
         public const EventKeywords CustomTiles = (EventKeywords)0x80;
         public const EventKeywords VectorTiles = (EventKeywords)0x100;
+        public const EventKeywords Accessibility = (EventKeywords)0x200;
     }
 
     /// <summary>
@@ -63,6 +64,7 @@ internal sealed class MapControlEventSource : EventSource
         public const EventTask Icons = (EventTask)8;
         public const EventTask CustomTiles = (EventTask)9;
         public const EventTask VectorTiles = (EventTask)10;
+        public const EventTask Accessibility = (EventTask)11;
     }
 
     /// <summary>
@@ -1721,5 +1723,45 @@ internal sealed class MapControlEventSource : EventSource
         bool isEnabled)
     {
         WriteEvent(71, textScaleFactor, isEnabled);
+    }
+
+    /// <summary>
+    /// Records bounded semantic extraction from the currently displayed vector scene.
+    /// </summary>
+    [Event(
+        72,
+        Level = EventLevel.Informational,
+        Keywords = Keywords.VectorTiles | Keywords.Accessibility,
+        Task = Tasks.Accessibility)]
+    public void AccessibilitySnapshotPublished(
+        int style,
+        int candidateCount,
+        int deduplicatedCount,
+        int publishedCount,
+        long sceneVersion)
+    {
+        WriteEvent(
+            72,
+            style,
+            candidateCount,
+            deduplicatedCount,
+            publishedCount,
+            sceneVersion);
+    }
+
+    /// <summary>
+    /// Records whether a semantic map-state update produced a live-region announcement.
+    /// </summary>
+    [Event(
+        73,
+        Level = EventLevel.Informational,
+        Keywords = Keywords.Accessibility,
+        Task = Tasks.Accessibility)]
+    public void AccessibilityAnnouncementDecision(
+        int featureCount,
+        int reason,
+        bool raised)
+    {
+        WriteEvent(73, featureCount, reason, raised);
     }
 }

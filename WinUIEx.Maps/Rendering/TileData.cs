@@ -46,6 +46,43 @@ internal readonly record struct VectorTileData(
     long Generation,
     int Style);
 
+internal enum MapAccessibilityFeatureKind
+{
+    Other,
+    Place,
+    AdministrativeArea,
+    Road,
+    Transit,
+    Water,
+    NaturalFeature,
+    Landmark,
+}
+
+internal sealed record VectorTileAccessibilityFeature(
+    string Name,
+    MapAccessibilityFeatureKind Kind,
+    double X,
+    double Y,
+    int StyleLayerOrder,
+    double Prominence);
+
+internal sealed record MapAccessibilityFeature(
+    string Name,
+    MapAccessibilityFeatureKind Kind,
+    double Longitude,
+    double Latitude,
+    int StyleLayerOrder,
+    double Prominence);
+
+internal sealed record MapAccessibilitySnapshot(
+    long SceneVersion,
+    double Longitude,
+    double Latitude,
+    double Zoom,
+    double Heading,
+    double Pitch,
+    MapAccessibilityFeature[] Features);
+
 /// <summary>
 /// Carries one lazily cropped premultiplied sprite buffer through the existing icon upload
 /// and device-epoch pipeline.

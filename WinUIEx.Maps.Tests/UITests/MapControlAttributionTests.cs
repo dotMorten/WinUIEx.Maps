@@ -36,6 +36,9 @@ public sealed class MapControlAttributionTests
             TextBlock text = FindDescendant<TextBlock>(
                 map,
                 "PART_Attribution");
+            TextBlock mapState = FindDescendant<TextBlock>(
+                map,
+                "PART_MapState");
 
             Assert.AreEqual(Visibility.Visible, container.Visibility);
             Assert.HasCount(3, text.Inlines);
@@ -66,6 +69,13 @@ public sealed class MapControlAttributionTests
             Assert.AreEqual(
                 "Map attribution: Plain attribution, Linked attribution",
                 peer.GetName());
+            Assert.AreEqual(
+                AutomationLiveSetting.Polite,
+                AutomationProperties.GetLiveSetting(mapState));
+            Assert.AreEqual(
+                AccessibilityView.Content,
+                AutomationProperties.GetAccessibilityView(mapState));
+            Assert.AreNotSame(text, mapState);
 
             linkLayer.AttributionLink = null;
 

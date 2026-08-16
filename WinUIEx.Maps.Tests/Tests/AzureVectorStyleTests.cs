@@ -1517,6 +1517,97 @@ public sealed class AzureVectorStyleTests
             context);
     }
 
+    [TestMethod]
+    public void AccessibilityFeaturesReuseLocalizedTextWithoutGlyphResolution()
+    {
+        AzureVectorStyleAssets assets = CreateAssets(
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "symbol",
+                "source-layer": "poi",
+                "filter": ["==", ["get", "class"], "museum"],
+                "layout": {
+                  "text-field": ["coalesce", ["get", "name_de"], ["get", "name"]],
+                  "text-size": 18,
+                  "text-transform": "uppercase"
+                }
+              }]
+            }
+            """,
+            "{}",
+            PixelBytes(0),
+            1,
+            1);
+        VectorTileFeatureCollection features = CreateFeatures(
+            new VectorTileProperty(
+                "class",
+                VectorTileValue.FromString("museum")),
+            new VectorTileProperty(
+                "name",
+                VectorTileValue.FromString("Museum")),
+            new VectorTileProperty(
+                "name_de",
+                VectorTileValue.FromString("Kunsthalle")));
+
+        VectorTileAccessibilityFeature feature = Assert.ContainsSingle(
+            assets.ResolveAccessibilityFeatures(features, 12));
+
+        Assert.AreEqual("KUNSTHALLE", feature.Name);
+        Assert.AreEqual(MapAccessibilityFeatureKind.Landmark, feature.Kind);
+        Assert.AreEqual(0.25, feature.X);
+        Assert.AreEqual(0.5, feature.Y);
+        Assert.AreEqual(18, feature.Prominence);
+    }
+
+    [TestMethod]
+    public async Task BlankAccessibleResolvesSemanticsWithoutPreparingTextures()
+    {
+        AzureVectorStyleAssets assets = AzureVectorStyleAssets.CreateForTest(
+            MapStyle.BlankAccessible,
+            Encoding.UTF8.GetBytes(
+                """
+                {
+                  "version": 8,
+                  "layers": [{
+                    "type": "symbol",
+                    "source-layer": "poi",
+                    "layout": {
+                      "icon-image": "museum",
+                      "text-field": ["get", "name"]
+                    }
+                  }]
+                }
+                """),
+            Encoding.UTF8.GetBytes(
+                """
+                {
+                  "museum": {
+                    "x": 0, "y": 0, "width": 1, "height": 1,
+                    "pixelRatio": 1, "visible": true
+                  }
+                }
+                """),
+            PixelBytes(1),
+            1,
+            1);
+        VectorTileFeatureCollection features = CreateFeatures(
+            new VectorTileProperty(
+                "name",
+                VectorTileValue.FromString("Museum")));
+
+        Assert.IsEmpty(await assets.PrepareTexturesAsync(
+            features,
+            12,
+            CancellationToken.None));
+        Assert.IsEmpty(assets.ResolveSymbols(features, 12).Symbols);
+        Assert.AreEqual(
+            "Museum",
+            Assert.ContainsSingle(
+                assets.ResolveAccessibilityFeatures(features, 12)).Name);
+    }
+
     private static AzureVectorStyleAssets CreateAssets(
         string style,
         string sprites,

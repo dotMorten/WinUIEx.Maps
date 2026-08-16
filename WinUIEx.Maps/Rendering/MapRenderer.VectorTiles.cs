@@ -1367,6 +1367,133 @@ internal sealed partial class MapRenderer
         return scene.RequiredTiles.Count != 0;
     }
 
+    private void CollectVectorAccessibilityFeatures(
+        LayerRenderSnapshot layer,
+        List<MapAccessibilityFeature> features,
+        ref long sceneVersion)
+    {
+        if (!_rasterLayers.TryGetValue(
+                layer.RuntimeId,
+                out RasterLayerState? state) ||
+            state.Scene is not MapScene scene)
+        {
+            return;
+        }
+
+        sceneVersion = Math.Max(sceneVersion, state.SceneVersion);
+        HashSet<int> tileZooms = [scene.TileZoom];
+        tileZooms.UnionWith(state.FallbackTileZooms);
+        foreach ((RasterTileKey key, VectorTileCacheEntry tile) in _vectorTiles)
+        {
+            if (key.SourceId != layer.RuntimeId ||
+                !tileZooms.Contains(key.Id.Zoom))
+            {
+                continue;
+            }
+
+            VectorTileAccessibilityFeature[] tileFeatures =
+                tile.GetAccessibilityFeatures(_displayZoom);
+            foreach (VisibleTile instance in GetVisibleCachedTileInstances(
+                key.Id,
+                _displayLongitude,
+                _displayLatitude,
+                _displayZoom,
+                _viewportWidth,
+                _viewportHeight,
+                _displayHeading,
+                _displayPitch))
+            {
+                double tileCount = Math.Pow(2, key.Id.Zoom);
+                foreach (VectorTileAccessibilityFeature feature in tileFeatures)
+                {
+                    double x =
+                        instance.Left + (feature.X * instance.Size) -
+                        (_viewportWidth / 2);
+                    double y =
+                        instance.Top + (feature.Y * instance.Size) -
+                        (_viewportHeight / 2);
+                    MapCamera.TransformViewportOffset(
+                        x,
+                        y,
+                        _displayHeading,
+                        _displayPitch,
+                        _viewportHeight,
+                        out x,
+                        out y);
+                    x += _viewportWidth / 2;
+                    y += _viewportHeight / 2;
+                    if (x < 0 ||
+                        y < 0 ||
+                        x > _viewportWidth ||
+                        y > _viewportHeight)
+                    {
+                        continue;
+                    }
+
+                    features.Add(new MapAccessibilityFeature(
+                        feature.Name,
+                        feature.Kind,
+                        MapCamera.WorldXToLongitude(
+                            (instance.WorldX + feature.X) / tileCount),
+                        MapCamera.WorldYToLatitude(
+                            (key.Id.Y + feature.Y) / tileCount),
+                        feature.StyleLayerOrder,
+                        feature.Prominence));
+                }
+            }
+        }
+    }
+
+    private void PublishAccessibilitySnapshot(
+        MapScene scene,
+        List<MapAccessibilityFeature> candidates,
+        int style,
+        long sceneVersion)
+    {
+        const int maximumPublishedFeatureCount = 8;
+        MapAccessibilityFeature[] uniqueFeatures = candidates
+            .GroupBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(candidate => candidate.StyleLayerOrder)
+                .ThenByDescending(candidate => candidate.Prominence)
+                .First())
+            .OrderByDescending(candidate => candidate.StyleLayerOrder)
+            .ThenByDescending(candidate => candidate.Prominence)
+            .ThenBy(candidate =>
+                Math.Abs(candidate.Longitude - scene.Longitude) +
+                Math.Abs(candidate.Latitude - scene.Latitude))
+            .ToArray();
+        MapAccessibilityFeature[] features = uniqueFeatures
+            .Take(maximumPublishedFeatureCount)
+            .ToArray();
+        string signature = string.Join(
+            '\u001F',
+            features.Select(feature => feature.Name));
+        if (string.Equals(
+                signature,
+                _lastAccessibilitySignature,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _lastAccessibilitySignature = signature;
+        MapControlEventSource.Log.AccessibilitySnapshotPublished(
+            style,
+            candidates.Count,
+            candidates.Count - uniqueFeatures.Length,
+            features.Length,
+            sceneVersion);
+        AccessibilitySnapshotChanged?.Invoke(new MapAccessibilitySnapshot(
+            sceneVersion,
+            scene.Longitude,
+            scene.Latitude,
+            scene.Zoom,
+            scene.Heading,
+            scene.Pitch,
+            features));
+    }
+
     private bool ContainsTile(LayerRenderKind renderKind, RasterTileKey key) =>
         renderKind switch
         {
@@ -1476,6 +1603,8 @@ internal sealed partial class MapRenderer
         private VectorLineResolution _resolvedLines = new([], 0);
         private double _resolvedPolygonZoom = double.NaN;
         private VectorPolygonResolution _resolvedPolygons = new([], 0);
+        private double _resolvedAccessibilityZoom = double.NaN;
+        private VectorTileAccessibilityFeature[] _resolvedAccessibility = [];
 
         internal int Style { get; } = style;
 
@@ -1521,6 +1650,18 @@ internal sealed partial class MapRenderer
                 _resolvedPolygonZoom = zoom;
             }
             return _resolvedPolygons;
+        }
+
+        internal VectorTileAccessibilityFeature[] GetAccessibilityFeatures(
+            double zoom)
+        {
+            if (_resolvedAccessibilityZoom != zoom)
+            {
+                _resolvedAccessibility =
+                    styleAssets.ResolveAccessibilityFeatures(features, zoom);
+                _resolvedAccessibilityZoom = zoom;
+            }
+            return _resolvedAccessibility;
         }
 
         internal void MarkUsed() => LastUsedTimestamp = Stopwatch.GetTimestamp();

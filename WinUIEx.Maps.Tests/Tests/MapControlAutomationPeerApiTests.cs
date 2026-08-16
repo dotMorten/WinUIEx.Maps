@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml.Automation.Provider;
 using WinUIEx.Maps.Automation.Peers;
+using WinUIEx.Maps.Rendering;
 
 namespace WinUIEx.Maps.Tests.Tests;
 
@@ -103,4 +104,34 @@ public sealed class MapControlAutomationPeerApiTests
 
         Assert.IsGreaterThan(vertical, pitchedVertical);
     }
+
+    [TestMethod]
+    public void AccessibilityDescriptionIsConciseAndBounded()
+    {
+        MapAccessibilityFeature[] features =
+        [
+            CreateFeature("Seattle"),
+            CreateFeature("Washington"),
+            CreateFeature("Puget Sound"),
+            CreateFeature("Lake Washington"),
+            CreateFeature("Bellevue"),
+            CreateFeature("Ignored"),
+        ];
+
+        Assert.AreEqual(
+            "Map showing Seattle, Washington, Puget Sound, Lake Washington, and Bellevue.",
+            MapControl.CreateAccessibilityDescription(features));
+        Assert.AreEqual(
+            string.Empty,
+            MapControl.CreateAccessibilityDescription([]));
+    }
+
+    private static MapAccessibilityFeature CreateFeature(string name) =>
+        new(
+            name,
+            MapAccessibilityFeatureKind.Other,
+            0,
+            0,
+            0,
+            0);
 }

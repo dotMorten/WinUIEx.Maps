@@ -31,7 +31,8 @@ Keywords:
 | `0x40` | failures |
 | `0x80` | custom-source classification within the unified raster pipeline |
 | `0x100` | Azure vector-tile decoding, styles, sprites, and point symbols |
-| `0x1FF` | all areas |
+| `0x200` | accessibility semantic snapshots and announcement decisions |
+| `0x3FF` | all areas |
 
 Levels are Error (`2`), Warning (`3`), Informational (`4`), and Verbose (`5`).
 Informational is the normal diagnostic level. Verbose adds `SceneChanged` and the
@@ -56,7 +57,7 @@ Informational events:
 
 ```powershell
 dotnet-trace collect --process-id <PID> `
-  --providers WinUIEx-Maps-Rendering:0x1FF:4 `
+  --providers WinUIEx-Maps-Rendering:0x3FF:4 `
   --output .\mapcontrol.nettrace
 ```
 
@@ -136,6 +137,8 @@ payload inspection is best in PerfView's Events view.
 | 69 | `VectorAdvancedSymbolStyleSummary` | Verbose/Icons+VectorTiles | counts of rotated, tinted, text-fitted, sorted, and collision-overridden symbols |
 | 70 | `CameraViewChangeRequested` | Info/Camera | programmatic view animation kind and nullable camera-field presence without application data |
 | 71 | `TextScaleFactorChanged` | Info/Icons+VectorTiles | effective vector-label scale and whether control text scaling is enabled |
+| 72 | `AccessibilitySnapshotPublished` | Info/VectorTiles+Accessibility | displayed semantic candidates, deduplication, bounded publication count, and scene version |
+| 73 | `AccessibilityAnnouncementDecision` | Info/Accessibility | feature count and whether a settled semantic update raised or suppressed a live-region announcement |
 
 ## Reproduce and interpret
 

@@ -1,6 +1,9 @@
+using System.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using WinUIEx.Maps.Automation.Peers;
 using WinUIEx.Maps.Rendering;
 using WinUIEx.Maps.Tests.UITestHelpers;
@@ -31,6 +34,9 @@ public sealed class MapControlAutomationPeerTests
                 Assert.AreSame(peer, peer.GetPattern(PatternInterface.Transform));
                 Assert.AreSame(peer, peer.GetPattern(PatternInterface.Transform2));
                 Assert.AreEqual(nameof(MapControl), peer.GetClassName());
+                Assert.AreEqual("Map", peer.GetName());
+                Assert.AreEqual("Interactive map.", peer.GetFullDescription());
+                Assert.Contains("arrow keys", peer.GetHelpText());
                 Assert.IsTrue(peer.CanMove);
                 Assert.IsTrue(peer.CanResize);
                 Assert.IsTrue(peer.CanRotate);
@@ -46,6 +52,85 @@ public sealed class MapControlAutomationPeerTests
                 Assert.IsInRange(0, 100, peer.VerticalViewSize);
                 return Task.CompletedTask;
             });
+
+    [TestMethod]
+    public Task ApplicationAutomationPropertiesOverridePeerDefaults() =>
+        MapControlTestHost.LoadMapControlAsync(
+            InitialCenter,
+            5,
+            map =>
+            {
+                AutomationProperties.SetName(map, "Store locator");
+                AutomationProperties.SetHelpText(map, "Choose a nearby store.");
+                AutomationProperties.SetFullDescription(
+                    map,
+                    "A map of stores near the selected address.");
+                MapControlAutomationPeer peer = CreatePeer(map);
+
+                Assert.AreEqual("Store locator", peer.GetName());
+                Assert.AreEqual("Choose a nearby store.", peer.GetHelpText());
+                Assert.AreEqual(
+                    "A map of stores near the selected address.",
+                    peer.GetFullDescription());
+                return Task.CompletedTask;
+            });
+
+    [TestMethod]
+    public Task VisibleVectorLabelsUpdateMapStateAfterTheSceneSettles()
+    {
+        TileId tile = new(5, 10, 12);
+        AzureVectorStyleAssets assets = AzureVectorStyleAssets.CreateForTest(
+            MapStyle.BlankAccessible,
+            Encoding.UTF8.GetBytes(
+                """
+                {
+                  "version": 8,
+                  "layers": [{
+                    "type": "symbol",
+                    "source-layer": "place",
+                    "layout": { "text-field": ["get", "name"] }
+                  }]
+                }
+                """),
+            Encoding.UTF8.GetBytes("{}"),
+            [0, 0, 0, 0],
+            1,
+            1);
+        TestVectorTileSource source = new(
+            tile,
+            new MapboxVectorTileBuilder()
+                .AddPoint(
+                    "place",
+                    2048,
+                    2048,
+                    new Dictionary<string, object>
+                    {
+                        ["name"] = "Accessible City",
+                    })
+                .Build(),
+            assets);
+
+        return MapControlTestHost.LoadMapControlAsync(
+            source.TileCenter,
+            tile.Zoom,
+            async map =>
+            {
+                map.Layers.Add(new TestVectorTileLayer(source));
+                using CancellationTokenSource timeout =
+                    new(TimeSpan.FromSeconds(10));
+                _ = await map.CaptureRenderedFrameAsync(timeout.Token);
+                TextBlock mapState = FindDescendant<TextBlock>(
+                    map,
+                    "PART_MapState");
+                await MapControlTestUtilities.WaitForAsync(() =>
+                    mapState.Text == "Map showing Accessible City.");
+
+                MapControlAutomationPeer peer = CreatePeer(map);
+                Assert.AreEqual(
+                    "Map showing Accessible City.",
+                    peer.GetFullDescription());
+            });
+    }
 
     [TestMethod]
     public Task ScrollMovesByLogicalViewportAmountsWithoutAnimation() =>
@@ -226,6 +311,35 @@ public sealed class MapControlAutomationPeerTests
         (MapControlAutomationPeer)(
             FrameworkElementAutomationPeer.FromElement(map) ??
             FrameworkElementAutomationPeer.CreatePeerForElement(map)!);
+
+    private static T FindDescendant<T>(
+        DependencyObject root,
+        string name)
+        where T : FrameworkElement
+    {
+        if (root is T match &&
+            string.Equals(match.Name, name, StringComparison.Ordinal))
+        {
+            return match;
+        }
+
+        int childCount = VisualTreeHelper.GetChildrenCount(root);
+        for (int index = 0; index < childCount; index++)
+        {
+            try
+            {
+                return FindDescendant<T>(
+                    VisualTreeHelper.GetChild(root, index),
+                    name);
+            }
+            catch (AssertFailedException)
+            {
+            }
+        }
+
+        throw new AssertFailedException(
+            $"Could not find {typeof(T).Name} named {name}.");
+    }
 
     private static void AssertCenter(MapControl map, MapCenter expected)
     {

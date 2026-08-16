@@ -113,6 +113,11 @@ public sealed partial class MapControl : Control
     private Border? _attributionContainer;
     private TextBlock? _attributionText;
     private string _attributionAutomationName = string.Empty;
+    private TextBlock? _mapStateText;
+    private MapAccessibilitySnapshot? _accessibilitySnapshot;
+    private string _accessibilityDescription = string.Empty;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer?
+        _accessibilityAnnouncementTimer;
     private InfoBar? _azureAuthenticationInfoBar;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer?
         _missingAzureTokenTimer;
@@ -250,6 +255,8 @@ public sealed partial class MapControl : Control
         _renderer = new MapRenderer();
         _renderer.SceneChanged += OnRendererSceneChanged;
         _renderer.DisplayedCameraChanged += OnRendererDisplayedCameraChanged;
+        _renderer.AccessibilitySnapshotChanged +=
+            OnRendererAccessibilitySnapshotChanged;
         _iconService = new MapIconService(_renderer, DispatcherQueue);
         _rasterTileManager = new RasterTileManager(_renderer);
         _rasterTileManager.AttributionChanged += OnAttributionChanged;
@@ -346,6 +353,11 @@ public sealed partial class MapControl : Control
         _attributionContainer =
             GetTemplateChild("PART_AttributionContainer") as Border;
         _attributionText = GetTemplateChild("PART_Attribution") as TextBlock;
+        _mapStateText = GetTemplateChild("PART_MapState") as TextBlock;
+        if (_mapStateText is not null)
+        {
+            _mapStateText.Text = _accessibilityDescription;
+        }
         _azureAuthenticationInfoBar =
             GetTemplateChild("PART_AzureAuthenticationInfoBar") as InfoBar;
         _iconService.SetRasterizationHost(
@@ -424,12 +436,20 @@ public sealed partial class MapControl : Control
         UpdateAzureAuthenticationInfoBar();
         UpdateCameraTarget(forceImmediate: true);
         _iconService.QueueAllRasterizations(force: runtimeRecreated);
+        if (_accessibilitySnapshot is not null)
+        {
+            Microsoft.UI.Dispatching.DispatcherQueueTimer timer =
+                GetAccessibilityAnnouncementTimer();
+            timer.Stop();
+            timer.Start();
+        }
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         MapControlEventSource.Log.ControlUnloaded();
         _iconService.SetLoaded(false);
+        _accessibilityAnnouncementTimer?.Stop();
         StopMissingAzureTokenTimer();
         if (_azureAuthenticationInfoBar is not null)
         {
@@ -1298,6 +1318,105 @@ public sealed partial class MapControl : Control
     private void OnRendererSceneChanged(MapScene scene)
     {
         _rasterTileManager.UpdateScene(scene);
+    }
+
+    private void OnRendererAccessibilitySnapshotChanged(
+        MapAccessibilitySnapshot snapshot)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            _accessibilitySnapshot = snapshot;
+            if (!IsLoaded)
+            {
+                return;
+            }
+            Microsoft.UI.Dispatching.DispatcherQueueTimer timer =
+                GetAccessibilityAnnouncementTimer();
+            timer.Stop();
+            timer.Start();
+        });
+    }
+
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer
+        GetAccessibilityAnnouncementTimer()
+    {
+        if (_accessibilityAnnouncementTimer is not null)
+        {
+            return _accessibilityAnnouncementTimer;
+        }
+
+        Microsoft.UI.Dispatching.DispatcherQueueTimer timer =
+            DispatcherQueue.CreateTimer();
+        timer.Interval = TimeSpan.FromMilliseconds(500);
+        timer.IsRepeating = false;
+        timer.Tick += OnAccessibilityAnnouncementTimerTick;
+        _accessibilityAnnouncementTimer = timer;
+        return timer;
+    }
+
+    private void OnAccessibilityAnnouncementTimerTick(
+        Microsoft.UI.Dispatching.DispatcherQueueTimer sender,
+        object args)
+    {
+        sender.Stop();
+        MapAccessibilitySnapshot? snapshot = _accessibilitySnapshot;
+        string description = snapshot is null
+            ? string.Empty
+            : CreateAccessibilityDescription(snapshot.Features);
+        bool changed = !string.Equals(
+            description,
+            _accessibilityDescription,
+            StringComparison.Ordinal);
+        if (changed)
+        {
+            string previousDescription = _accessibilityDescription;
+            _accessibilityDescription = description;
+            _automationPeer?.NotifyAccessibilityDescriptionChanged(
+                previousDescription,
+                description);
+            if (_mapStateText is not null)
+            {
+                _mapStateText.Text = description;
+            }
+        }
+        TextBlock? mapStateText = _mapStateText;
+        bool raised = false;
+        if (changed &&
+            description.Length != 0 &&
+            mapStateText is not null)
+        {
+            AutomationPeer? peer =
+                FrameworkElementAutomationPeer.FromElement(mapStateText) ??
+                FrameworkElementAutomationPeer.CreatePeerForElement(mapStateText);
+            if (peer is not null)
+            {
+                peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+                raised = true;
+            }
+        }
+        MapControlEventSource.Log.AccessibilityAnnouncementDecision(
+            snapshot?.Features.Length ?? 0,
+            description.Length == 0 ? 0 : changed ? 1 : 2,
+            raised);
+    }
+
+    internal string GetAccessibilityDescription() => _accessibilityDescription;
+
+    internal static string CreateAccessibilityDescription(
+        IReadOnlyList<MapAccessibilityFeature> features)
+    {
+        string[] names = features
+            .Select(feature => feature.Name.Trim())
+            .Where(name => name.Length != 0)
+            .Take(5)
+            .ToArray();
+        return names.Length switch
+        {
+            0 => string.Empty,
+            1 => $"Map showing {names[0]}.",
+            2 => $"Map showing {names[0]} and {names[1]}.",
+            _ => $"Map showing {string.Join(", ", names[..^1])}, and {names[^1]}.",
+        };
     }
 
     private void OnAttributionChanged(

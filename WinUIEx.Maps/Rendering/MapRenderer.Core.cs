@@ -97,10 +97,13 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private HashSet<TileId> _lastRequiredTiles = [];
     private LayerRenderSnapshot[] _layerRenderPlan = [];
     private bool[] _visibleMapElementLayers = [];
+    private string? _lastAccessibilitySignature;
 
     public event Action<MapScene>? SceneChanged;
 
     internal event Action<MapScene>? DisplayedCameraChanged;
+
+    internal event Action<MapAccessibilitySnapshot>? AccessibilitySnapshotChanged;
 
     /// <summary>
     /// Publishes the ordered layer-snapshot plan consumed by the render thread.
@@ -494,6 +497,9 @@ internal sealed partial class MapRenderer : DirectXRenderer
 
         LayerRenderSnapshot[] plan = _layerRenderPlan;
         bool hasRasterFade = false;
+        List<MapAccessibilityFeature> accessibilityFeatures = [];
+        int accessibilityStyle = 0;
+        long accessibilitySceneVersion = 0;
         foreach (LayerRenderSnapshot layer in plan)
         {
             if (!layer.IsVisible || layer.Opacity <= 0)
@@ -522,12 +528,22 @@ internal sealed partial class MapRenderer : DirectXRenderer
                 hasRasterFade |= DrawVectorPolygonLayer(context, layer);
                 hasRasterFade |= DrawVectorLineLayer(context, layer);
                 hasRasterFade |= DrawVectorPointLayer(context, layer);
+                CollectVectorAccessibilityFeatures(
+                    layer,
+                    accessibilityFeatures,
+                    ref accessibilitySceneVersion);
+                accessibilityStyle = layer.Style;
             }
             else if (layer.Kind == LayerRenderKind.MapElements)
             {
                 DrawMapElements(context, layer.LayerIndex, layer.Opacity);
             }
         }
+        PublishAccessibilitySnapshot(
+            activeScene,
+            accessibilityFeatures,
+            accessibilityStyle,
+            accessibilitySceneVersion);
         TrimRasterTileCache();
         TrimVectorTileCache();
         _hasActiveFrameFade = hasRasterFade;

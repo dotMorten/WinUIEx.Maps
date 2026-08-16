@@ -258,6 +258,37 @@ public sealed class MapControlAutomationPeer :
     /// <inheritdoc />
     protected override string GetClassNameCore() => nameof(MapControl);
 
+    /// <inheritdoc />
+    protected override string GetNameCore()
+    {
+        string name = base.GetNameCore();
+        return string.IsNullOrWhiteSpace(name) ? "Map" : name;
+    }
+
+    /// <inheritdoc />
+    protected override string GetHelpTextCore()
+    {
+        string helpText = base.GetHelpTextCore();
+        return string.IsNullOrWhiteSpace(helpText)
+            ? "Use arrow keys to pan and plus and minus to zoom."
+            : helpText;
+    }
+
+    /// <inheritdoc />
+    protected override string GetFullDescriptionCore()
+    {
+        string description = base.GetFullDescriptionCore();
+        if (!string.IsNullOrWhiteSpace(description))
+        {
+            return description;
+        }
+
+        description = MapOwner.GetAccessibilityDescription();
+        return string.IsNullOrWhiteSpace(description)
+            ? "Interactive map."
+            : description;
+    }
+
     internal void NotifyDisplayedCameraChanged()
     {
         AutomationState current = GetAutomationState();
@@ -296,6 +327,36 @@ public sealed class MapControlAutomationPeer :
             TransformPattern2Identifiers.ZoomLevelProperty,
             previous.ZoomLevel,
             current.ZoomLevel);
+    }
+
+    internal void NotifyAccessibilityDescriptionChanged(
+        string previousDescription,
+        string currentDescription)
+    {
+        if (!string.IsNullOrWhiteSpace(base.GetFullDescriptionCore()) ||
+            !ListenerExists(AutomationEvents.PropertyChanged) &&
+            !ListenerExists(AutomationEvents.LiveRegionChanged))
+        {
+            return;
+        }
+
+        string previousValue = string.IsNullOrWhiteSpace(previousDescription)
+            ? "Interactive map."
+            : previousDescription;
+        string currentValue = string.IsNullOrWhiteSpace(currentDescription)
+            ? "Interactive map."
+            : currentDescription;
+        if (!string.Equals(
+                previousValue,
+                currentValue,
+                StringComparison.Ordinal))
+        {
+            RaisePropertyChangedEvent(
+                AutomationElementIdentifiers.FullDescriptionProperty,
+                previousValue,
+                currentValue);
+            RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+        }
     }
 
     private AutomationState GetAutomationState()

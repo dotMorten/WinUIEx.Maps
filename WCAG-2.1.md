@@ -34,8 +34,8 @@ or implementation plan is not sufficient evidence for **Supports**.
 | Status | Level A | Level AA | Total |
 | --- | ---: | ---: | ---: |
 | Supports | 7 | 2 | 9 |
-| Partially Supports | 8 | 5 | 13 |
-| Does Not Support | 1 | 0 | 1 |
+| Partially Supports | 9 | 5 | 14 |
+| Does Not Support | 0 | 0 | 0 |
 | Not Applicable | 11 | 8 | 19 |
 | Not Evaluated | 3 | 5 | 8 |
 | **Total** | **30** | **20** | **50** |
@@ -65,7 +65,7 @@ The assessment excludes:
 
 | Criterion | Status | Current evidence and scope | Gap or planned action |
 | --- | --- | --- | --- |
-| **1.1.1 Non-text Content** | **Does Not Support** | The map surface, Azure vector features, raster tiles, polygons, polylines, and icons are rendered into a swap chain. Attribution alone has an automation name and live-region peer. | No equivalent text alternative describes the displayed map or application-authored pixel layers. Add vector-derived viewport summaries, map-element alternatives, and author-supplied descriptions for nonsemantic layers. |
+| **1.1.1 Non-text Content** | **Partially Supports** | Visible Azure vector labels produce a bounded text description of the displayed viewport. The description is exposed by the map automation peer and through a separate polite live region after map movement settles. The accessible-only vector style provides the same semantic output without drawing labels. | Raster imagery, polygons, polylines, icons, and application-authored layers still require map-element alternatives or author-supplied descriptions. Validate the generated descriptions with screen readers and representative Azure data. |
 | **1.2.1 Audio-only and Video-only (Prerecorded)** | **Not Applicable** | The control has no built-in prerecorded audio or video. | Host applications remain responsible for media they place around or over the map. |
 | **1.2.2 Captions (Prerecorded)** | **Not Applicable** | The control has no built-in prerecorded synchronized media. | Host application responsibility. |
 | **1.2.3 Audio Description or Media Alternative (Prerecorded)** | **Not Applicable** | The control has no built-in prerecorded synchronized media. | Host application responsibility. |
@@ -92,9 +92,9 @@ The assessment excludes:
 | **3.2.1 On Focus** | **Supports** | Receiving focus changes only the focus visual and does not initiate a context change. | Re-evaluate when virtual map-element focus is added. |
 | **3.2.2 On Input** | **Supports** | Keyboard, pointer, and touch input perform the requested map operation without unrelated navigation or a change of application context. | Re-evaluate when accessible map-element invocation is added. |
 | **3.3.1 Error Identification** | **Partially Supports** | Missing or invalid Azure authentication is surfaced through a visible WinUI `InfoBar`. | The authentication message's screen-reader announcement and clarity have not been tested; other acquisition failures are diagnostics-only by design. Add focused UIA and screen-reader testing. |
-| **3.3.2 Labels or Instructions** | **Partially Supports** | The authentication `InfoBar` can present built-in explanatory text, and attribution links have names. | The map root has no default accessible help text describing keyboard operation, and application-authored interactive elements have no naming contract. Add localized root help text and map-element naming guidance. |
+| **3.3.2 Labels or Instructions** | **Partially Supports** | The map root provides default help text for keyboard panning and zooming, the authentication `InfoBar` can present built-in explanatory text, and attribution links have names. | Built-in accessibility text is not yet localized, and application-authored interactive elements have no naming contract. Add localized resources and map-element naming guidance. |
 | **4.1.1 Parsing** | **Not Applicable** | This is a compiled native WinUI control, not markup delivered to a user agent. XAML template validity is enforced by the build. | Host application markup remains application responsibility. |
-| **4.1.2 Name, Role, Value** | **Partially Supports** | A public sealed `MapControlAutomationPeer` reports class name `MapControl`, preserves standard attached automation properties, and exposes Scroll, Transform, and Transform2 patterns with live camera values and operations. Attribution and hyperlinks expose native automation peers. | The map peer still has no semantic geographic children, viewport description, or built-in accessible name/help behavior. Add those automation semantics and test their values and lifecycle. |
+| **4.1.2 Name, Role, Value** | **Partially Supports** | A public sealed `MapControlAutomationPeer` reports class name `MapControl`, supplies default name, help, and viewport-description text while preserving application-provided automation properties, and exposes Scroll, Transform, and Transform2 patterns with live camera values and operations. Attribution and hyperlinks expose native automation peers. | Geographic features and application-authored map elements are not yet exposed as semantic automation children. Add bounded virtual children and validate their values and lifecycle with assistive technology. |
 
 ## Level AA
 

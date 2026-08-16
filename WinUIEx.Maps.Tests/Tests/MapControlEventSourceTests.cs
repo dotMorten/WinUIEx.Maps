@@ -103,6 +103,9 @@ public sealed class MapControlEventSourceTests
             6, 8, 9, 10, 11, 12);
         MapControlEventSource.Log.CameraViewChangeRequested(1, true, false, true);
         MapControlEventSource.Log.TextScaleFactorChanged(1.5, true);
+        MapControlEventSource.Log.AccessibilitySnapshotPublished(
+            6, 40, 32, 8, 24);
+        MapControlEventSource.Log.AccessibilityAnnouncementDecision(8, 1, true);
 
         CapturedEvent wave = listener.Single(11);
         Assert.AreEqual("TileWaveStart", wave.Name);
@@ -377,6 +380,18 @@ public sealed class MapControlEventSourceTests
             textScale.PayloadNames);
         Assert.AreEqual(1.5d, textScale.Payload[0]);
         Assert.AreEqual(true, textScale.Payload[1]);
+        CapturedEvent accessibilitySnapshot = listener.Single(72);
+        Assert.AreSequenceEqual(
+            ["style", "candidateCount", "deduplicatedCount", "publishedCount",
+             "sceneVersion"],
+            accessibilitySnapshot.PayloadNames);
+        Assert.AreEqual(8, accessibilitySnapshot.Payload[3]);
+        Assert.AreEqual(24L, accessibilitySnapshot.Payload[4]);
+        CapturedEvent accessibilityAnnouncement = listener.Single(73);
+        Assert.AreSequenceEqual(
+            ["featureCount", "reason", "raised"],
+            accessibilityAnnouncement.PayloadNames);
+        Assert.AreEqual(true, accessibilityAnnouncement.Payload[2]);
         Assert.AreEqual(4.25d, preparedGeometry.Payload[5]);
         Assert.DoesNotContain(captured => captured.Id == 0, listener.Events);
     }
@@ -391,7 +406,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 71),
+            Enumerable.Range(1, 73),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }
