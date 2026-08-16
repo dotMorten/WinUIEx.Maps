@@ -7,12 +7,12 @@ using WinUIEx.Maps.Rendering;
 namespace WinUIEx.Maps.Tests;
 
 [TestClass]
-public sealed class AzureVectorStyleTests
+public sealed class VectorStyleTests
 {
     [TestMethod]
     public async Task RealisticExpressionsResolveExactCroppedSpriteAndPlacement()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -69,7 +69,7 @@ public sealed class AzureVectorStyleTests
             assets.ResolveSymbols(features, 10.5).Symbols);
 
         Assert.AreEqual(
-            AzureSpriteAtlas.CreateTextureId("road", "bkt-631"),
+            VectorSpriteAtlas.CreateTextureId("road", "bkt-631"),
             texture.TextureId);
         Assert.AreEqual(2u, texture.Width);
         Assert.AreEqual(2u, texture.Height);
@@ -88,7 +88,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public async Task StepAndCoalesceSuppressThenResolveSprite()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -126,7 +126,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public async Task IconImageTokensResolveFeatureProperties()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -170,7 +170,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public async Task PreparationIncludesBothSidesOfFractionalZoomStops()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -212,7 +212,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public void AdvancedPointStylesAndLinePlacementAreParsed()
     {
-        AzureSymbolStyle style = AzureSymbolStyle.Parse(Encoding.UTF8.GetBytes(
+        VectorStyle style = VectorStyle.Parse(Encoding.UTF8.GetBytes(
             """
             {
               "version": 8,
@@ -275,33 +275,33 @@ public sealed class AzureVectorStyleTests
         Assert.AreEqual(
             1,
             style.GetUnsupportedLayerCount(
-                AzureStyleLayerParseResult.UnsupportedVectorSource));
+                VectorStyleLayerParseResult.UnsupportedVectorSource));
         Assert.AreEqual(
             0,
             style.GetUnsupportedLayerCount(
-                AzureStyleLayerParseResult.UnsupportedSymbolPlacement));
+                VectorStyleLayerParseResult.UnsupportedSymbolPlacement));
         Assert.AreEqual(
             0,
             style.GetUnsupportedLayerCount(
-                AzureStyleLayerParseResult.UnsupportedTextFit));
+                VectorStyleLayerParseResult.UnsupportedTextFit));
         Assert.AreEqual(
             0,
             style.GetUnsupportedLayerCount(
-                AzureStyleLayerParseResult.UnsupportedIconRotation));
+                VectorStyleLayerParseResult.UnsupportedIconRotation));
         Assert.AreEqual(
             1,
             style.GetUnsupportedLayerCount(
-                AzureStyleLayerParseResult.UnsupportedExpression));
+                VectorStyleLayerParseResult.UnsupportedExpression));
         Assert.AreEqual(
             1,
             style.GetUnsupportedLayerCount(
-                AzureStyleLayerParseResult.UnsupportedSourceLayer));
+                VectorStyleLayerParseResult.UnsupportedSourceLayer));
     }
 
     [TestMethod]
     public void EvaluationFailuresAreExplicitlyTyped()
     {
-        AzureSymbolStyle style = AzureSymbolStyle.Parse(Encoding.UTF8.GetBytes(
+        VectorStyle style = VectorStyle.Parse(Encoding.UTF8.GetBytes(
             """
             {
               "version": 8,
@@ -322,14 +322,14 @@ public sealed class AzureVectorStyleTests
             }
             """));
         VectorTileFeature feature = CreateFeatures().Features[0];
-        AzureStyleEvaluationContext context = new(feature, 10);
+        VectorStyleEvaluationContext context = new(feature, 10);
 
         Assert.AreEqual(
-            AzureStyleFilterResult.EvaluationFailure,
-            style.Layers[0].EvaluateFilter(context));
+            VectorStyleFilterResult.EvaluationFailure,
+            style.IconLayers[0].EvaluateFilter(context));
         Assert.AreEqual(
-            AzureStyleIconResult.EvaluationFailure,
-            style.Layers[1].EvaluateIcon(
+            VectorStyleIconResult.EvaluationFailure,
+            style.IconLayers[1].EvaluateIcon(
                 context,
                 out _,
                 out _,
@@ -352,7 +352,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public async Task LinePlacementResolvesIconsAndTextAgainstLineGeometry()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -391,10 +391,10 @@ public sealed class AzureVectorStyleTests
             PixelBytes(9),
             1,
             1);
-        assets.GlyphAtlas.AddRangeForTest(new AzureGlyphRange(
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
             "Roboto-Regular",
             0,
-            new Dictionary<int, AzureGlyph>
+            new Dictionary<int, VectorGlyph>
             {
                 ['R'] = new('R', GlyphBitmap(8, 128), 2, 2, 0, 2, 3),
             }));
@@ -428,7 +428,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public async Task AdvancedSymbolStylesResolveAsOneFittedGroup()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -475,10 +475,10 @@ public sealed class AzureVectorStyleTests
             PixelBytes(Enumerable.Repeat((byte)9, 100).ToArray()),
             10,
             10);
-        assets.GlyphAtlas.AddRangeForTest(new AzureGlyphRange(
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
             "Roboto-Regular",
             0,
-            new Dictionary<int, AzureGlyph>
+            new Dictionary<int, VectorGlyph>
             {
                 ['5'] = new('5', GlyphBitmap(8, 128), 2, 2, 0, 2, 3),
             }));
@@ -532,7 +532,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public async Task TextFitIconIsSuppressedWhenItsTextDoesNotResolve()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -571,7 +571,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public void LineLayersResolvePaintWidthCapsAndJoins()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -629,7 +629,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public async Task PatternedAndDashedLineLayersResolve()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -684,7 +684,7 @@ public sealed class AzureVectorStyleTests
             lines.Lines.Where(line => line.StyleLayerOrder == 1));
 
         Assert.AreEqual(
-            AzureSpriteAtlas.CreateTextureId("road", "road-pattern"),
+            VectorSpriteAtlas.CreateTextureId("road", "road-pattern"),
             texture.TextureId);
         Assert.AreEqual(texture.TextureId, pattern.TextureId);
         Assert.AreEqual(2, pattern.Width, 0.000001);
@@ -698,7 +698,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public void AdvancedLineStylesResolve()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -746,7 +746,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public void FillLayersResolveColorOpacityFiltersAndZoom()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -787,7 +787,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public void LegacyZoomStopsInterpolateRgbaFillColors()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -823,7 +823,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public void BackgroundLayerResolvesRgbColorAsFullTilePolygon()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -856,7 +856,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public void TextFieldTokensResolveFeatureProperties()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -896,17 +896,17 @@ public sealed class AzureVectorStyleTests
               "stops": [["forward", 0], ["reverse", 180]]
             }
             """);
-        Assert.IsTrue(AzureStyleExpression.TryParseStyleValue(
+        Assert.IsTrue(VectorStyleExpression.TryParseStyleValue(
             document.RootElement,
-            out AzureStyleExpression expression));
+            out VectorStyleExpression expression));
         VectorTileFeature feature = CreateFeatures(
             new VectorTileProperty(
                 "direction",
                 VectorTileValue.FromString("reverse"))).Features[0];
 
         Assert.IsTrue(expression.TryEvaluate(
-            new AzureStyleEvaluationContext(feature, 10),
-            out AzureStyleValue value));
+            new VectorStyleEvaluationContext(feature, 10),
+            out VectorStyleValue value));
         Assert.AreEqual(180, value.NumberValue);
     }
 
@@ -920,16 +920,16 @@ public sealed class AzureVectorStyleTests
               "stops": [[0, 2], [10, 12]]
             }
             """);
-        Assert.IsTrue(AzureStyleExpression.TryParseStyleValue(
+        Assert.IsTrue(VectorStyleExpression.TryParseStyleValue(
             document.RootElement,
-            AzureStyleValue.FromNumber(7),
-            out AzureStyleExpression expression));
+            VectorStyleValue.FromNumber(7),
+            out VectorStyleExpression expression));
 
         Assert.IsTrue(expression.TryEvaluate(
-            new AzureStyleEvaluationContext(
+            new VectorStyleEvaluationContext(
                 CreateFeatures().Features[0],
                 10),
-            out AzureStyleValue value));
+            out VectorStyleValue value));
         Assert.AreEqual(7, value.NumberValue);
     }
 
@@ -944,7 +944,7 @@ public sealed class AzureVectorStyleTests
             }
             """);
 
-        Assert.IsFalse(AzureStyleExpression.TryParseStyleValue(
+        Assert.IsFalse(VectorStyleExpression.TryParseStyleValue(
             document.RootElement,
             out _));
     }
@@ -952,7 +952,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public void BackgroundLayerAfterFeatureLayersIsSkipped()
     {
-        AzureSymbolStyle style = AzureSymbolStyle.Parse(
+        VectorStyle style = VectorStyle.Parse(
             Encoding.UTF8.GetBytes(
                 """
                 {
@@ -976,13 +976,13 @@ public sealed class AzureVectorStyleTests
         Assert.AreEqual(
             1,
             style.GetUnsupportedLayerCount(
-                AzureStyleLayerParseResult.UnsupportedExpression));
+                VectorStyleLayerParseResult.UnsupportedExpression));
     }
 
     [TestMethod]
     public async Task PatternedFillsAndExplicitOutlinesResolve()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -1036,7 +1036,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public void ResolutionCountsEvaluationAndUnavailableSpriteFailures()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -1077,7 +1077,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public async Task BlankAccessibleNeverPreparesOrResolvesVisibleSprites()
     {
-        AzureVectorStyleAssets assets = AzureVectorStyleAssets.CreateForTest(
+        VectorStyleAssets assets = VectorStyleAssets.CreateForTest(
             MapStyle.BlankAccessible,
             Encoding.UTF8.GetBytes(
                 """
@@ -1128,7 +1128,7 @@ public sealed class AzureVectorStyleTests
     public void SpriteIndexRejectsMalformedEntriesInsteadOfSilentlyDroppingThem()
     {
         Assert.ThrowsExactly<InvalidDataException>(() =>
-            AzureSpriteAtlas.ParseIndex(Encoding.UTF8.GetBytes(
+            VectorSpriteAtlas.ParseIndex(Encoding.UTF8.GetBytes(
                 """
                 {
                   "invalid": {
@@ -1142,7 +1142,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public async Task PointTextResolvesSharedGlyphTexturesAndStylePlacement()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -1171,10 +1171,10 @@ public sealed class AzureVectorStyleTests
             PixelBytes(0),
             1,
             1);
-        assets.GlyphAtlas.AddRangeForTest(new AzureGlyphRange(
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
             "Roboto-Regular",
             0,
-            new Dictionary<int, AzureGlyph>
+            new Dictionary<int, VectorGlyph>
             {
                 ['A'] = new('A', GlyphBitmap(8, 32), 2, 2, 0, 2, 3),
                 ['1'] = new('1', GlyphBitmap(8, 224), 2, 2, 0, 2, 3),
@@ -1210,7 +1210,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public async Task SupplementaryCharactersDoNotFailTheTile()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -1229,10 +1229,10 @@ public sealed class AzureVectorStyleTests
             PixelBytes(0),
             1,
             1);
-        assets.GlyphAtlas.AddRangeForTest(new AzureGlyphRange(
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
             "Roboto-Regular",
             0,
-            new Dictionary<int, AzureGlyph>
+            new Dictionary<int, VectorGlyph>
             {
                 ['A'] = new('A', GlyphBitmap(8, 128), 2, 2, 0, -2, 3),
             }));
@@ -1251,7 +1251,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public async Task GlyphTopBearingsUseMapboxQuadPlacement()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -1270,10 +1270,10 @@ public sealed class AzureVectorStyleTests
             PixelBytes(0),
             1,
             1);
-        assets.GlyphAtlas.AddRangeForTest(new AzureGlyphRange(
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
             "Roboto-Regular",
             0,
-            new Dictionary<int, AzureGlyph>
+            new Dictionary<int, VectorGlyph>
             {
                 ['A'] = new(
                     'A',
@@ -1311,7 +1311,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public async Task TextScaleFactorScalesGlyphGeometryAndSpacing()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -1330,10 +1330,10 @@ public sealed class AzureVectorStyleTests
             PixelBytes(0),
             1,
             1);
-        assets.GlyphAtlas.AddRangeForTest(new AzureGlyphRange(
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
             "Roboto-Regular",
             0,
-            new Dictionary<int, AzureGlyph>
+            new Dictionary<int, VectorGlyph>
             {
                 ['A'] = new(
                     'A',
@@ -1444,7 +1444,7 @@ public sealed class AzureVectorStyleTests
         foreach (string style in invalidStyles)
         {
             Assert.ThrowsExactly<InvalidDataException>(() =>
-                AzureSymbolStyle.Parse(Encoding.UTF8.GetBytes(style)));
+                VectorStyle.Parse(Encoding.UTF8.GetBytes(style)));
         }
     }
 
@@ -1466,7 +1466,7 @@ public sealed class AzureVectorStyleTests
 
         foreach ((string anchor, (double expectedX, double expectedY)) in anchors)
         {
-            AzureVectorStyleAssets assets = CreateAssets(
+            VectorStyleAssets assets = CreateAssets(
                 $$"""
                 {
                   "version": 8,
@@ -1535,16 +1535,16 @@ public sealed class AzureVectorStyleTests
                   }
                 }
                 """));
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             $$"""{"version":8,"layers":[{{layers}}]}""",
             "{}",
             PixelBytes(0),
             1,
             1);
-        assets.GlyphAtlas.AddRangeForTest(new AzureGlyphRange(
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
             "Roboto-Regular",
             0,
-            new Dictionary<int, AzureGlyph>
+            new Dictionary<int, VectorGlyph>
             {
                 ['A'] = new(
                     'A',
@@ -1602,7 +1602,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public void LineAndPolygonFailuresAreCountedWithoutPartialOutput()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -1689,10 +1689,10 @@ public sealed class AzureVectorStyleTests
             new VectorTileProperty("name", VectorTileValue.FromString("road")),
             new VectorTileProperty("enabled", VectorTileValue.FromBool(true)))
             .Features[0];
-        AzureStyleEvaluationContext context = new(feature, 10.5);
+        VectorStyleEvaluationContext context = new(feature, 10.5);
 
         AssertExpressionNumber("""["get","number"]""", context, 2);
-        AssertExpressionKind("""["get","missing"]""", context, AzureStyleValueKind.Null);
+        AssertExpressionKind("""["get","missing"]""", context, VectorStyleValueKind.Null);
         AssertExpressionBoolean("""["has","enabled"]""", context, true);
         AssertExpressionBoolean("""["has","missing"]""", context, false);
         AssertExpressionString("""["geometry-type"]""", context, "Point");
@@ -1729,10 +1729,10 @@ public sealed class AzureVectorStyleTests
             """["interpolate",["linear"],["zoom"],10,0,12,20]""",
             context,
             5);
-        AzureStyleValue array = EvaluateExpression(
+        VectorStyleValue array = EvaluateExpression(
             """["interpolate",["linear"],["zoom"],10,["literal",[0,10]],12,["literal",[20,30]]]""",
             context);
-        Assert.AreEqual(AzureStyleValueKind.Array, array.Kind);
+        Assert.AreEqual(VectorStyleValueKind.Array, array.Kind);
         Assert.AreEqual(5, array.ArrayValue![0].NumberValue, 0.000001);
         Assert.AreEqual(15, array.ArrayValue[1].NumberValue, 0.000001);
         AssertExpressionNumber(
@@ -1758,7 +1758,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public void LegacyArcGisFiltersResolveFeatureProperties()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -1892,7 +1892,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public void AccessibilityFeaturesReuseLocalizedTextWithoutGlyphResolution()
     {
-        AzureVectorStyleAssets assets = CreateAssets(
+        VectorStyleAssets assets = CreateAssets(
             """
             {
               "version": 8,
@@ -1936,7 +1936,7 @@ public sealed class AzureVectorStyleTests
     [TestMethod]
     public async Task BlankAccessibleResolvesSemanticsWithoutPreparingTextures()
     {
-        AzureVectorStyleAssets assets = AzureVectorStyleAssets.CreateForTest(
+        VectorStyleAssets assets = VectorStyleAssets.CreateForTest(
             MapStyle.BlankAccessible,
             Encoding.UTF8.GetBytes(
                 """
@@ -1980,13 +1980,13 @@ public sealed class AzureVectorStyleTests
                 assets.ResolveAccessibilityFeatures(features, 12)).Name);
     }
 
-    private static AzureVectorStyleAssets CreateAssets(
+    private static VectorStyleAssets CreateAssets(
         string style,
         string sprites,
         byte[] pixels,
         uint width,
         uint height) =>
-        AzureVectorStyleAssets.CreateForTest(
+        VectorStyleAssets.CreateForTest(
             MapStyle.Road,
             Encoding.UTF8.GetBytes(style),
             Encoding.UTF8.GetBytes(sprites),
@@ -2070,44 +2070,44 @@ public sealed class AzureVectorStyleTests
     private static byte[] GlyphBitmap(int size, byte value) =>
         Enumerable.Repeat(value, size * size).ToArray();
 
-    private static AzureStyleValue EvaluateExpression(
+    private static VectorStyleValue EvaluateExpression(
         string json,
-        AzureStyleEvaluationContext context)
+        VectorStyleEvaluationContext context)
     {
         using JsonDocument document = JsonDocument.Parse(json);
-        Assert.IsTrue(AzureStyleExpression.TryParse(
+        Assert.IsTrue(VectorStyleExpression.TryParse(
             document.RootElement,
-            out AzureStyleExpression expression));
-        Assert.IsTrue(expression.TryEvaluate(context, out AzureStyleValue value));
+            out VectorStyleExpression expression));
+        Assert.IsTrue(expression.TryEvaluate(context, out VectorStyleValue value));
         return value;
     }
 
     private static void AssertExpressionFails(
         string json,
-        AzureStyleEvaluationContext context)
+        VectorStyleEvaluationContext context)
     {
         using JsonDocument document = JsonDocument.Parse(json);
-        Assert.IsTrue(AzureStyleExpression.TryParse(
+        Assert.IsTrue(VectorStyleExpression.TryParse(
             document.RootElement,
-            out AzureStyleExpression expression));
+            out VectorStyleExpression expression));
         Assert.IsFalse(expression.TryEvaluate(context, out _));
     }
 
     private static void AssertExpressionKind(
         string json,
-        AzureStyleEvaluationContext context,
-        AzureStyleValueKind expected) =>
+        VectorStyleEvaluationContext context,
+        VectorStyleValueKind expected) =>
         Assert.AreEqual(expected, EvaluateExpression(json, context).Kind);
 
     private static void AssertExpressionBoolean(
         string json,
-        AzureStyleEvaluationContext context,
+        VectorStyleEvaluationContext context,
         bool expected) =>
         Assert.AreEqual(expected, EvaluateExpression(json, context).BooleanValue);
 
     private static void AssertExpressionNumber(
         string json,
-        AzureStyleEvaluationContext context,
+        VectorStyleEvaluationContext context,
         double expected) =>
         Assert.AreEqual(
             expected,
@@ -2116,7 +2116,7 @@ public sealed class AzureVectorStyleTests
 
     private static void AssertExpressionString(
         string json,
-        AzureStyleEvaluationContext context,
+        VectorStyleEvaluationContext context,
         string expected) =>
         Assert.AreEqual(expected, EvaluateExpression(json, context).StringValue);
 }

@@ -79,7 +79,7 @@ public sealed class MapControlAutomationPeerTests
     public Task VisibleVectorLabelsUpdateMapStateAfterTheSceneSettles()
     {
         TileId tile = new(5, 10, 12);
-        AzureVectorStyleAssets assets = AzureVectorStyleAssets.CreateForTest(
+        VectorStyleAssets assets = VectorStyleAssets.CreateForTest(
             MapStyle.BlankAccessible,
             Encoding.UTF8.GetBytes(
                 """

@@ -322,7 +322,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         }
 
         long downloadStarted = Stopwatch.GetTimestamp();
-        Task<AzureVectorStyleAssets> styleAssetsTask = (_vectorStyleProvider ??
+        Task<VectorStyleAssets> styleAssetsTask = (_vectorStyleProvider ??
             throw new InvalidOperationException(
                 "The vector Azure style has no asset provider."))
             .GetAssetsAsync(cancellationToken);
@@ -343,7 +343,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                 "AzureMapsHybridVectorRequestException";
             throw;
         }
-        AzureVectorStyleAssets styleAssets =
+        VectorStyleAssets styleAssets =
             await styleAssetsTask.ConfigureAwait(false);
         double downloadMilliseconds =
             Stopwatch.GetElapsedTime(downloadStarted).TotalMilliseconds -

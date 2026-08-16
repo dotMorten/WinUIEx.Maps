@@ -87,7 +87,7 @@ internal sealed class CustomVectorTileAcquisitionSession :
         CancellationToken cancellationToken)
     {
         long downloadStarted = Stopwatch.GetTimestamp();
-        Task<AzureVectorStyleAssets> styleAssetsTask =
+        Task<VectorStyleAssets> styleAssetsTask =
             _styleProvider.GetAssetsAsync(cancellationToken);
         string requestUrl = _tileTemplate.ExpandUrl(id);
         byte[] encoded = await CustomTileHttp.GetBytesAsync(
@@ -97,7 +97,7 @@ internal sealed class CustomVectorTileAcquisitionSession :
                 _requestHeaders,
                 cancellationToken)
             .ConfigureAwait(false);
-        AzureVectorStyleAssets styleAssets =
+        VectorStyleAssets styleAssets =
             await styleAssetsTask.ConfigureAwait(false);
         double downloadMilliseconds =
             Stopwatch.GetElapsedTime(downloadStarted).TotalMilliseconds;
@@ -145,7 +145,7 @@ internal sealed class CustomVectorStyleProvider
     private readonly Uri _styleUri;
     private readonly string _styleIdentity;
     private readonly CustomRequestHeaders _requestHeaders;
-    private Task<AzureVectorStyleAssets>? _assetsTask;
+    private Task<VectorStyleAssets>? _assetsTask;
 
     internal CustomVectorStyleProvider(
         string styleUrl,
@@ -158,10 +158,10 @@ internal sealed class CustomVectorStyleProvider
                 $"{styleUrl}\u001f{requestHeaders.Fingerprint}")));
     }
 
-    internal async Task<AzureVectorStyleAssets> GetAssetsAsync(
+    internal async Task<VectorStyleAssets> GetAssetsAsync(
         CancellationToken cancellationToken)
     {
-        Task<AzureVectorStyleAssets> task;
+        Task<VectorStyleAssets> task;
         lock (_sync)
         {
             if (_assetsTask is { IsCompleted: true, IsCompletedSuccessfully: false })
@@ -224,7 +224,7 @@ internal sealed class CustomVectorStyleProvider
         return builder.Uri;
     }
 
-    private async Task<AzureVectorStyleAssets> LoadAsync(
+    private async Task<VectorStyleAssets> LoadAsync(
         CancellationToken cancellationToken)
     {
         long started = Stopwatch.GetTimestamp();
@@ -237,15 +237,15 @@ internal sealed class CustomVectorStyleProvider
             .ConfigureAwait(false);
         CustomVectorStyleResourceUrls resources =
             GetResourceUrls(styleJson, _styleUri);
-        AzureSymbolStyle symbolStyle = AzureSymbolStyle.ParseCustom(styleJson);
-        AzureSpriteAtlas spriteAtlas;
+        VectorStyle style = VectorStyle.ParseCustom(styleJson);
+        VectorSpriteAtlas spriteAtlas;
         int spriteWidth;
         int spriteHeight;
         if (resources.SpriteBaseUri is null)
         {
-            spriteAtlas = new AzureSpriteAtlas(
+            spriteAtlas = new VectorSpriteAtlas(
                 _styleIdentity,
-                new Dictionary<string, AzureSpriteEntry>(),
+                new Dictionary<string, VectorSpriteEntry>(),
                 [0, 0, 0, 0],
                 1,
                 1);
@@ -274,14 +274,14 @@ internal sealed class CustomVectorStyleProvider
                 cancellationToken);
             await Task.WhenAll(spriteIndexTask, spriteImageTask)
                 .ConfigureAwait(false);
-            Dictionary<string, AzureSpriteEntry> entries =
-                AzureSpriteAtlas.ParseIndex(await spriteIndexTask.ConfigureAwait(false));
+            Dictionary<string, VectorSpriteEntry> entries =
+                VectorSpriteAtlas.ParseIndex(await spriteIndexTask.ConfigureAwait(false));
             AzureVectorStyleProvider.DecodedSpriteImage decoded =
                 await AzureVectorStyleProvider.DecodeSpriteAsync(
                         await spriteImageTask.ConfigureAwait(false),
                         cancellationToken)
                     .ConfigureAwait(false);
-            spriteAtlas = new AzureSpriteAtlas(
+            spriteAtlas = new VectorSpriteAtlas(
                 _styleIdentity,
                 entries,
                 decoded.Pixels,
@@ -297,15 +297,15 @@ internal sealed class CustomVectorStyleProvider
                 : new CustomVectorGlyphProvider(
                     resources.GlyphTemplate,
                     _requestHeaders);
-        AzureVectorStyleAssets assets = new(
+        VectorStyleAssets assets = new(
             _styleIdentity,
-            symbolStyle,
+            style,
             spriteAtlas,
-            new AzureGlyphAtlas(_styleIdentity, glyphProvider));
+            new VectorGlyphAtlas(_styleIdentity, glyphProvider));
         MapControlEventSource.Log.VectorStyleAssetsLoaded(
             -1,
-            symbolStyle.LayerCount,
-            symbolStyle.UnsupportedLayerCount,
+            style.LayerCount,
+            style.UnsupportedLayerCount,
             spriteAtlas.EntryCount,
             spriteWidth,
             spriteHeight,
@@ -361,7 +361,7 @@ internal sealed class CustomVectorGlyphProvider : IVectorGlyphProvider
     private readonly object _sync = new();
     private readonly string _glyphTemplate;
     private readonly CustomRequestHeaders _requestHeaders;
-    private readonly Dictionary<AzureGlyphRangeKey, Task<AzureGlyphRange>> _ranges = [];
+    private readonly Dictionary<VectorGlyphRangeKey, Task<VectorGlyphRange>> _ranges = [];
 
     internal CustomVectorGlyphProvider(
         string glyphTemplate,
@@ -371,13 +371,13 @@ internal sealed class CustomVectorGlyphProvider : IVectorGlyphProvider
         _requestHeaders = requestHeaders;
     }
 
-    public async Task<AzureGlyphRange> GetRangeAsync(
+    public async Task<VectorGlyphRange> GetRangeAsync(
         string fontStack,
         int rangeStart,
         CancellationToken cancellationToken)
     {
-        AzureGlyphRangeKey key = new(fontStack, rangeStart);
-        Task<AzureGlyphRange> task;
+        VectorGlyphRangeKey key = new(fontStack, rangeStart);
+        Task<VectorGlyphRange> task;
         lock (_sync)
         {
             if (!_ranges.TryGetValue(key, out task!))
@@ -404,7 +404,7 @@ internal sealed class CustomVectorGlyphProvider : IVectorGlyphProvider
                 {
                     if (_ranges.TryGetValue(
                             key,
-                            out Task<AzureGlyphRange>? current) &&
+                            out Task<VectorGlyphRange>? current) &&
                         ReferenceEquals(current, task))
                     {
                         _ranges.Remove(key);
@@ -414,8 +414,8 @@ internal sealed class CustomVectorGlyphProvider : IVectorGlyphProvider
         }
     }
 
-    private async Task<AzureGlyphRange> LoadRangeAsync(
-        AzureGlyphRangeKey key,
+    private async Task<VectorGlyphRange> LoadRangeAsync(
+        VectorGlyphRangeKey key,
         CancellationToken cancellationToken)
     {
         long started = Stopwatch.GetTimestamp();
@@ -450,13 +450,13 @@ internal sealed class CustomVectorGlyphProvider : IVectorGlyphProvider
                 (int)exception.StatusCode,
                 exception.GetType().Name,
                 Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-            return new AzureGlyphRange(
+            return new VectorGlyphRange(
                 key.FontStack,
                 key.RangeStart,
-                new Dictionary<int, AzureGlyph>());
+                new Dictionary<int, VectorGlyph>());
         }
 
-        AzureGlyphRange range = AzureGlyphRangeDecoder.Decode(
+        VectorGlyphRange range = VectorGlyphRangeDecoder.Decode(
             encoded,
             key.FontStack,
             key.RangeStart,

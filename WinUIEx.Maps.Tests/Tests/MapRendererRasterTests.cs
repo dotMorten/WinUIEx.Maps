@@ -79,7 +79,7 @@ public sealed class MapRendererRasterTests
         return new VectorTileData(
             key,
             new VectorTileFeatureCollection([]),
-            AzureVectorStyleAssets.CreateForTest(
+            VectorStyleAssets.CreateForTest(
                 MapStyle.Road,
                 """{"version":8,"layers":[]}"""u8.ToArray(),
                 "{}"u8.ToArray(),

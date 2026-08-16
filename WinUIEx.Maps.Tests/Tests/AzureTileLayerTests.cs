@@ -200,7 +200,7 @@ public sealed class AzureTileLayerTests
     [TestMethod]
     public void SatelliteRoadStyleAssetsUseServiceSlug()
     {
-        AzureStyleAssetPaths paths = AzureVectorStyleProvider.GetAssetPaths(
+        AzureVectorStyleAssetPaths paths = AzureVectorStyleProvider.GetAssetPaths(
             MapStyle.SatelliteWithRoads);
 
         Assert.Contains("satellite_road_labels", paths.Style);

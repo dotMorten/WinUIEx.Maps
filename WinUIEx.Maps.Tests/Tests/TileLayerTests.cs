@@ -504,7 +504,7 @@ public sealed class TileLayerTests
     [TestMethod]
     public void CustomVectorStyleAcceptsOneNonAzureVectorSource()
     {
-        AzureSymbolStyle style = AzureSymbolStyle.ParseCustom(
+        VectorStyle style = VectorStyle.ParseCustom(
             Encoding.UTF8.GetBytes(
                 """
                 {
@@ -546,7 +546,7 @@ public sealed class TileLayerTests
             """);
 
         Assert.ThrowsExactly<InvalidDataException>(
-            () => AzureSymbolStyle.ParseCustom(style));
+            () => VectorStyle.ParseCustom(style));
     }
 
     [TestMethod]

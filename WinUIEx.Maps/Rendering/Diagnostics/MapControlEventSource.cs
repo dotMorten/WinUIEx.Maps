@@ -1160,7 +1160,7 @@ internal sealed class MapControlEventSource : EventSource
     }
 
     /// <summary>
-    /// Records one successful bounded Azure glyph-range acquisition and decode.
+    /// Records one successful bounded vector glyph-range acquisition and decode.
     /// </summary>
     [Event(
         52,
@@ -1220,7 +1220,7 @@ internal sealed class MapControlEventSource : EventSource
     }
 
     /// <summary>
-    /// Records a definitive unavailable Azure glyph range without font or label content.
+    /// Records a definitive unavailable vector glyph range without font or label content.
     /// </summary>
     [Event(
         54,

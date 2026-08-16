@@ -29,7 +29,7 @@ internal sealed class AzureVectorStyleProvider
     private readonly string _styleSlug;
     private readonly string _token;
     private readonly AzureGlyphProvider _glyphProvider;
-    private Task<AzureVectorStyleAssets>? _assetsTask;
+    private Task<VectorStyleAssets>? _assetsTask;
 
     internal AzureVectorStyleProvider(MapStyle style, string token)
     {
@@ -39,10 +39,10 @@ internal sealed class AzureVectorStyleProvider
         _glyphProvider = new AzureGlyphProvider(style, token);
     }
 
-    internal async Task<AzureVectorStyleAssets> GetAssetsAsync(
+    internal async Task<VectorStyleAssets> GetAssetsAsync(
         CancellationToken cancellationToken)
     {
-        Task<AzureVectorStyleAssets> task;
+        Task<VectorStyleAssets> task;
         lock (_sync)
         {
             if (_assetsTask is { IsCompleted: true, IsCompletedSuccessfully: false })
@@ -71,21 +71,21 @@ internal sealed class AzureVectorStyleProvider
         }
     }
 
-    internal static AzureStyleAssetPaths GetAssetPaths(MapStyle style)
+    internal static AzureVectorStyleAssetPaths GetAssetPaths(MapStyle style)
     {
         string slug = AzureTileAcquisitionSession.GetAzureStyleName(style);
         const string query = "styleVersion=2023-01-01&api-version=2.0";
-        return new AzureStyleAssetPaths(
+        return new AzureVectorStyleAssetPaths(
             $"styling/styles/{slug}?{query}",
             $"styling/sprites/{slug}/sprite.json?{query}",
             $"styling/sprites/{slug}/sprite.png?{query}");
     }
 
-    private async Task<AzureVectorStyleAssets> LoadAsync(
+    private async Task<VectorStyleAssets> LoadAsync(
         CancellationToken cancellationToken)
     {
         long started = Stopwatch.GetTimestamp();
-        AzureStyleAssetPaths paths = GetAssetPaths(_style);
+        AzureVectorStyleAssetPaths paths = GetAssetPaths(_style);
         byte[] styleJson = await AzureTileAcquisitionSession
             .GetStyleAssetAsync(
                 paths.Style,
@@ -111,27 +111,27 @@ internal sealed class AzureVectorStyleProvider
                 cancellationToken)
             .ConfigureAwait(false);
 
-        AzureSymbolStyle symbolStyle = AzureSymbolStyle.Parse(styleJson);
-        Dictionary<string, AzureSpriteEntry> spriteEntries =
-            AzureSpriteAtlas.ParseIndex(spriteJson);
+        VectorStyle style = VectorStyle.Parse(styleJson);
+        Dictionary<string, VectorSpriteEntry> spriteEntries =
+            VectorSpriteAtlas.ParseIndex(spriteJson);
         DecodedSpriteImage decoded = await DecodeSpriteAsync(
             spritePng,
             cancellationToken).ConfigureAwait(false);
-        AzureSpriteAtlas spriteAtlas = new(
+        VectorSpriteAtlas spriteAtlas = new(
             _styleSlug,
             spriteEntries,
             decoded.Pixels,
             decoded.Width,
             decoded.Height);
-        AzureVectorStyleAssets assets = new(
+        VectorStyleAssets assets = new(
             _style,
-            symbolStyle,
+            style,
             spriteAtlas,
-            new AzureGlyphAtlas(_styleSlug, _glyphProvider));
+            new VectorGlyphAtlas(_styleSlug, _glyphProvider));
         MapControlEventSource.Log.VectorStyleAssetsLoaded(
             (int)_style,
-            symbolStyle.LayerCount,
-            symbolStyle.UnsupportedLayerCount,
+            style.LayerCount,
+            style.UnsupportedLayerCount,
             spriteAtlas.EntryCount,
             checked((int)decoded.Width),
             checked((int)decoded.Height),
@@ -211,7 +211,7 @@ internal sealed class AzureVectorStyleProvider
         uint Height);
 }
 
-internal readonly record struct AzureStyleAssetPaths(
+internal readonly record struct AzureVectorStyleAssetPaths(
     string Style,
     string SpriteIndex,
     string SpriteImage);
@@ -219,41 +219,41 @@ internal readonly record struct AzureStyleAssetPaths(
 /// <summary>
 /// Combines parsed symbol layers with one premultiplied sprite atlas.
 /// </summary>
-internal sealed class AzureVectorStyleAssets
+internal sealed class VectorStyleAssets
 {
     private readonly MapStyle _mapStyle;
     private readonly string _styleIdentity;
-    private readonly AzureSymbolStyle _symbolStyle;
-    private readonly AzureSpriteAtlas _spriteAtlas;
-    private readonly AzureGlyphAtlas _glyphAtlas;
+    private readonly VectorStyle _style;
+    private readonly VectorSpriteAtlas _spriteAtlas;
+    private readonly VectorGlyphAtlas _glyphAtlas;
 
-    internal AzureVectorStyleAssets(
+    internal VectorStyleAssets(
         MapStyle mapStyle,
-        AzureSymbolStyle symbolStyle,
-        AzureSpriteAtlas spriteAtlas,
-        AzureGlyphAtlas glyphAtlas)
+        VectorStyle style,
+        VectorSpriteAtlas spriteAtlas,
+        VectorGlyphAtlas glyphAtlas)
     {
         _mapStyle = mapStyle;
         _styleIdentity = AzureTileAcquisitionSession.GetAzureStyleName(mapStyle);
-        _symbolStyle = symbolStyle;
+        _style = style;
         _spriteAtlas = spriteAtlas;
         _glyphAtlas = glyphAtlas;
     }
 
-    internal AzureVectorStyleAssets(
+    internal VectorStyleAssets(
         string styleIdentity,
-        AzureSymbolStyle symbolStyle,
-        AzureSpriteAtlas spriteAtlas,
-        AzureGlyphAtlas glyphAtlas)
+        VectorStyle style,
+        VectorSpriteAtlas spriteAtlas,
+        VectorGlyphAtlas glyphAtlas)
     {
         _mapStyle = MapStyle.Road;
         _styleIdentity = styleIdentity;
-        _symbolStyle = symbolStyle;
+        _style = style;
         _spriteAtlas = spriteAtlas;
         _glyphAtlas = glyphAtlas;
     }
 
-    internal static AzureVectorStyleAssets CreateForTest(
+    internal static VectorStyleAssets CreateForTest(
         MapStyle mapStyle,
         ReadOnlyMemory<byte> styleJson,
         ReadOnlyMemory<byte> spriteJson,
@@ -262,18 +262,18 @@ internal sealed class AzureVectorStyleAssets
         uint spriteHeight) =>
         new(
             mapStyle,
-            AzureSymbolStyle.Parse(styleJson),
-            new AzureSpriteAtlas(
+            VectorStyle.Parse(styleJson),
+            new VectorSpriteAtlas(
                 AzureTileAcquisitionSession.GetAzureStyleName(mapStyle),
-                AzureSpriteAtlas.ParseIndex(spriteJson),
+                VectorSpriteAtlas.ParseIndex(spriteJson),
                 spritePixels,
                 spriteWidth,
                 spriteHeight),
-            new AzureGlyphAtlas(
+            new VectorGlyphAtlas(
                 AzureTileAcquisitionSession.GetAzureStyleName(mapStyle),
                 provider: null));
 
-    internal AzureGlyphAtlas GlyphAtlas => _glyphAtlas;
+    internal VectorGlyphAtlas GlyphAtlas => _glyphAtlas;
 
     internal async Task<VectorSpriteTextureData[]> PrepareTexturesAsync(
         VectorTileFeatureCollection features,
@@ -286,7 +286,7 @@ internal sealed class AzureVectorStyleAssets
         }
 
         Dictionary<long, VectorSpriteTextureData> textures = [];
-        foreach (double zoom in _symbolStyle.GetPreparationZooms(tileZoom))
+        foreach (double zoom in _style.GetPreparationZooms(tileZoom))
         {
             Resolve(
                 features,
@@ -308,8 +308,8 @@ internal sealed class AzureVectorStyleAssets
                 textures,
                 cancellationToken);
         }
-        HashSet<AzureGlyphKey> glyphKeys = [];
-        foreach (double zoom in _symbolStyle.GetPreparationZooms(tileZoom))
+        HashSet<VectorGlyphKey> glyphKeys = [];
+        foreach (double zoom in _style.GetPreparationZooms(tileZoom))
         {
             CollectTextGlyphKeys(
                 features,
@@ -319,7 +319,7 @@ internal sealed class AzureVectorStyleAssets
         }
         await _glyphAtlas.PrepareAsync(glyphKeys, cancellationToken)
             .ConfigureAwait(false);
-        foreach (AzureGlyphKey key in glyphKeys)
+        foreach (VectorGlyphKey key in glyphKeys)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (_glyphAtlas.TryGetOrCreateTexture(
@@ -383,10 +383,10 @@ internal sealed class AzureVectorStyleAssets
     {
         const int maximumFeatureCount = 256;
         List<VectorTileAccessibilityFeature> resolved = [];
-        foreach (AzureTextStyleLayer layer in _symbolStyle.TextLayers)
+        foreach (VectorTextStyleLayer layer in _style.TextLayers)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (layer.EvaluateVisibility(zoom) != AzureStyleVisibilityResult.Visible)
+            if (layer.EvaluateVisibility(zoom) != VectorStyleVisibilityResult.Visible)
             {
                 continue;
             }
@@ -395,12 +395,12 @@ internal sealed class AzureVectorStyleAssets
                 features.GetSourceLayer(layer.SourceLayer))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                AzureStyleEvaluationContext context = new(feature, zoom);
-                if (layer.EvaluateFilter(context) != AzureStyleFilterResult.Match ||
+                VectorStyleEvaluationContext context = new(feature, zoom);
+                if (layer.EvaluateFilter(context) != VectorStyleFilterResult.Match ||
                     layer.EvaluateAccessibilityText(
                         context,
                         out string name,
-                        out double prominence) != AzureStyleTextResult.Resolved ||
+                        out double prominence) != VectorStyleTextResult.Resolved ||
                     !TryGetAccessibilityPosition(
                         feature,
                         layer.Placement,
@@ -427,10 +427,10 @@ internal sealed class AzureVectorStyleAssets
 
     private static bool TryGetAccessibilityPosition(
         VectorTileFeature feature,
-        AzureSymbolPlacement placement,
+        VectorSymbolPlacementKind placement,
         out VectorTilePoint position)
     {
-        if (placement == AzureSymbolPlacement.Line)
+        if (placement == VectorSymbolPlacementKind.Line)
         {
             foreach (VectorTileLine line in feature.Lines)
             {
@@ -573,12 +573,12 @@ internal sealed class AzureVectorStyleAssets
 
         List<VectorTileStyledLine> lines = [];
         int evaluationFailureCount = 0;
-        foreach (AzureLineStyleLayer layer in _symbolStyle.LineLayers)
+        foreach (VectorLineStyleLayer layer in _style.LineLayers)
         {
-            AzureStyleVisibilityResult visibility = layer.EvaluateVisibility(zoom);
-            if (visibility != AzureStyleVisibilityResult.Visible)
+            VectorStyleVisibilityResult visibility = layer.EvaluateVisibility(zoom);
+            if (visibility != VectorStyleVisibilityResult.Visible)
             {
-                if (visibility == AzureStyleVisibilityResult.EvaluationFailure)
+                if (visibility == VectorStyleVisibilityResult.EvaluationFailure)
                 {
                     evaluationFailureCount++;
                 }
@@ -590,11 +590,11 @@ internal sealed class AzureVectorStyleAssets
                 {
                     continue;
                 }
-                AzureStyleEvaluationContext context = new(feature, zoom);
-                AzureStyleFilterResult filter = layer.EvaluateFilter(context);
-                if (filter != AzureStyleFilterResult.Match)
+                VectorStyleEvaluationContext context = new(feature, zoom);
+                VectorStyleFilterResult filter = layer.EvaluateFilter(context);
+                if (filter != VectorStyleFilterResult.Match)
                 {
-                    if (filter == AzureStyleFilterResult.EvaluationFailure)
+                    if (filter == VectorStyleFilterResult.EvaluationFailure)
                     {
                         evaluationFailureCount++;
                     }
@@ -612,11 +612,11 @@ internal sealed class AzureVectorStyleAssets
                     }
                     continue;
                 }
-                AzureStyleLineResult lineResult =
+                VectorStyleLineResult lineResult =
                     layer.EvaluateLine(context, out VectorLineStyle style);
-                if (lineResult != AzureStyleLineResult.Resolved)
+                if (lineResult != VectorStyleLineResult.Resolved)
                 {
-                    if (lineResult == AzureStyleLineResult.EvaluationFailure)
+                    if (lineResult == VectorStyleLineResult.EvaluationFailure)
                     {
                         evaluationFailureCount++;
                     }
@@ -640,11 +640,11 @@ internal sealed class AzureVectorStyleAssets
         Dictionary<long, VectorSpriteTextureData> textures,
         CancellationToken cancellationToken)
     {
-        foreach (AzureFillStyleLayer layer in _symbolStyle.FillLayers)
+        foreach (VectorFillStyleLayer layer in _style.FillLayers)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (layer.EvaluateVisibility(zoom) !=
-                AzureStyleVisibilityResult.Visible)
+                VectorStyleVisibilityResult.Visible)
             {
                 continue;
             }
@@ -656,14 +656,14 @@ internal sealed class AzureVectorStyleAssets
                 {
                     continue;
                 }
-                AzureStyleEvaluationContext context = new(feature, zoom);
+                VectorStyleEvaluationContext context = new(feature, zoom);
                 if (layer.EvaluateFilter(context) !=
-                        AzureStyleFilterResult.Match ||
+                        VectorStyleFilterResult.Match ||
                     layer.EvaluateFill(
                         context,
                         out _,
                         out string? patternName) !=
-                        AzureStyleFillResult.Resolved ||
+                        VectorStyleFillResult.Resolved ||
                     patternName is null)
                 {
                     continue;
@@ -672,7 +672,7 @@ internal sealed class AzureVectorStyleAssets
                         patternName,
                         cancellationToken,
                         out VectorSpriteTextureData? texture,
-                        out _) == AzureSpriteLookupResult.Found &&
+                        out _) == VectorSpriteLookupResult.Found &&
                     texture is not null)
                 {
                     textures.TryAdd(texture.TextureId, texture);
@@ -711,14 +711,14 @@ internal sealed class AzureVectorStyleAssets
         ref VectorStyleResolutionCounts counts,
         bool collectCounts = true)
     {
-        foreach (AzureLineStyleLayer layer in _symbolStyle.LineLayers)
+        foreach (VectorLineStyleLayer layer in _style.LineLayers)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            AzureStyleVisibilityResult visibility = layer.EvaluateVisibility(zoom);
-            if (visibility != AzureStyleVisibilityResult.Visible)
+            VectorStyleVisibilityResult visibility = layer.EvaluateVisibility(zoom);
+            if (visibility != VectorStyleVisibilityResult.Visible)
             {
                 if (collectCounts &&
-                    visibility == AzureStyleVisibilityResult.EvaluationFailure)
+                    visibility == VectorStyleVisibilityResult.EvaluationFailure)
                 {
                     counts.EvaluationFailureCount++;
                 }
@@ -731,12 +731,12 @@ internal sealed class AzureVectorStyleAssets
                 {
                     continue;
                 }
-                AzureStyleEvaluationContext context = new(feature, zoom);
-                AzureStyleFilterResult filter = layer.EvaluateFilter(context);
-                if (filter != AzureStyleFilterResult.Match)
+                VectorStyleEvaluationContext context = new(feature, zoom);
+                VectorStyleFilterResult filter = layer.EvaluateFilter(context);
+                if (filter != VectorStyleFilterResult.Match)
                 {
                     if (collectCounts &&
-                        filter == AzureStyleFilterResult.EvaluationFailure)
+                        filter == VectorStyleFilterResult.EvaluationFailure)
                     {
                         counts.EvaluationFailureCount++;
                     }
@@ -757,17 +757,17 @@ internal sealed class AzureVectorStyleAssets
                 {
                     continue;
                 }
-                AzureSpriteLookupResult spriteResult = createTextures
+                VectorSpriteLookupResult spriteResult = createTextures
                     ? _spriteAtlas.TryGetOrCreateTexture(
                         patternName,
                         cancellationToken,
                         out VectorSpriteTextureData? texture,
-                        out AzureSpriteEntry entry)
+                        out VectorSpriteEntry entry)
                     : _spriteAtlas.TryGetTexture(
                         patternName,
                         out texture,
                         out entry);
-                if (spriteResult != AzureSpriteLookupResult.Found ||
+                if (spriteResult != VectorSpriteLookupResult.Found ||
                     texture is null)
                 {
                     if (collectCounts)
@@ -827,12 +827,12 @@ internal sealed class AzureVectorStyleAssets
 
         List<VectorTileStyledPolygon> polygons = [];
         int evaluationFailureCount = 0;
-        foreach (AzureBackgroundStyleLayer layer in
-            _symbolStyle.BackgroundLayers)
+        foreach (VectorBackgroundStyleLayer layer in
+            _style.BackgroundLayers)
         {
-            AzureStyleFillResult backgroundResult =
+            VectorStyleFillResult backgroundResult =
                 layer.Evaluate(zoom, out VectorFillStyle style);
-            if (backgroundResult == AzureStyleFillResult.Resolved)
+            if (backgroundResult == VectorStyleFillResult.Resolved)
             {
                 polygons.Add(new VectorTileStyledPolygon(
                     layer.Order,
@@ -856,17 +856,17 @@ internal sealed class AzureVectorStyleAssets
                     style));
             }
             else if (backgroundResult ==
-                AzureStyleFillResult.EvaluationFailure)
+                VectorStyleFillResult.EvaluationFailure)
             {
                 evaluationFailureCount++;
             }
         }
-        foreach (AzureFillStyleLayer layer in _symbolStyle.FillLayers)
+        foreach (VectorFillStyleLayer layer in _style.FillLayers)
         {
-            AzureStyleVisibilityResult visibility = layer.EvaluateVisibility(zoom);
-            if (visibility != AzureStyleVisibilityResult.Visible)
+            VectorStyleVisibilityResult visibility = layer.EvaluateVisibility(zoom);
+            if (visibility != VectorStyleVisibilityResult.Visible)
             {
-                if (visibility == AzureStyleVisibilityResult.EvaluationFailure)
+                if (visibility == VectorStyleVisibilityResult.EvaluationFailure)
                 {
                     evaluationFailureCount++;
                 }
@@ -878,24 +878,24 @@ internal sealed class AzureVectorStyleAssets
                 {
                     continue;
                 }
-                AzureStyleEvaluationContext context = new(feature, zoom);
-                AzureStyleFilterResult filter = layer.EvaluateFilter(context);
-                if (filter != AzureStyleFilterResult.Match)
+                VectorStyleEvaluationContext context = new(feature, zoom);
+                VectorStyleFilterResult filter = layer.EvaluateFilter(context);
+                if (filter != VectorStyleFilterResult.Match)
                 {
-                    if (filter == AzureStyleFilterResult.EvaluationFailure)
+                    if (filter == VectorStyleFilterResult.EvaluationFailure)
                     {
                         evaluationFailureCount++;
                     }
                     continue;
                 }
-                AzureStyleFillResult fillResult =
+                VectorStyleFillResult fillResult =
                     layer.EvaluateFill(
                         context,
                         out VectorFillStyle style,
                         out string? patternName);
-                if (fillResult != AzureStyleFillResult.Resolved)
+                if (fillResult != VectorStyleFillResult.Resolved)
                 {
-                    if (fillResult == AzureStyleFillResult.EvaluationFailure)
+                    if (fillResult == VectorStyleFillResult.EvaluationFailure)
                     {
                         evaluationFailureCount++;
                     }
@@ -903,14 +903,14 @@ internal sealed class AzureVectorStyleAssets
                 }
                 if (patternName is not null)
                 {
-                    AzureSpriteLookupResult spriteResult =
+                    VectorSpriteLookupResult spriteResult =
                         _spriteAtlas.TryGetTexture(
                             patternName,
                             out VectorSpriteTextureData? texture,
-                            out AzureSpriteEntry entry);
+                            out VectorSpriteEntry entry);
                     if (spriteResult is
-                        AzureSpriteLookupResult.Missing or
-                        AzureSpriteLookupResult.Hidden)
+                        VectorSpriteLookupResult.Missing or
+                        VectorSpriteLookupResult.Hidden)
                     {
                         evaluationFailureCount++;
                         continue;
@@ -928,7 +928,7 @@ internal sealed class AzureVectorStyleAssets
                     style = style with
                     {
                         PatternTextureId = texture?.TextureId ??
-                            AzureSpriteAtlas.CreateTextureId(
+                            VectorSpriteAtlas.CreateTextureId(
                                 _styleIdentity,
                                 patternName),
                         PatternWidth = patternWidth,
@@ -953,28 +953,28 @@ internal sealed class AzureVectorStyleAssets
     private void CollectTextGlyphKeys(
         VectorTileFeatureCollection features,
         double zoom,
-        HashSet<AzureGlyphKey> glyphKeys,
+        HashSet<VectorGlyphKey> glyphKeys,
         CancellationToken cancellationToken)
     {
-        foreach (AzureTextStyleLayer layer in _symbolStyle.TextLayers)
+        foreach (VectorTextStyleLayer layer in _style.TextLayers)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (layer.EvaluateVisibility(zoom) != AzureStyleVisibilityResult.Visible)
+            if (layer.EvaluateVisibility(zoom) != VectorStyleVisibilityResult.Visible)
             {
                 continue;
             }
             foreach (VectorTileFeature feature in features.GetSourceLayer(layer.SourceLayer))
             {
-                if (layer.Placement == AzureSymbolPlacement.Line
+                if (layer.Placement == VectorSymbolPlacementKind.Line
                     ? feature.Lines.Length == 0
                     : feature.Points.Length == 0)
                 {
                     continue;
                 }
-                AzureStyleEvaluationContext context = new(feature, zoom);
-                if (layer.EvaluateFilter(context) != AzureStyleFilterResult.Match ||
-                    layer.EvaluateText(context, out AzureTextStyle text) !=
-                        AzureStyleTextResult.Resolved)
+                VectorStyleEvaluationContext context = new(feature, zoom);
+                if (layer.EvaluateFilter(context) != VectorStyleFilterResult.Match ||
+                    layer.EvaluateText(context, out VectorTextStyle text) !=
+                        VectorStyleTextResult.Resolved)
                 {
                     continue;
                 }
@@ -983,7 +983,7 @@ internal sealed class AzureVectorStyleAssets
                     if (rune.Value is not ('\r' or '\n') &&
                         rune.Value <= char.MaxValue)
                     {
-                        glyphKeys.Add(new AzureGlyphKey(text.FontStack, rune.Value));
+                        glyphKeys.Add(new VectorGlyphKey(text.FontStack, rune.Value));
                     }
                 }
             }
@@ -999,13 +999,13 @@ internal sealed class AzureVectorStyleAssets
         CancellationToken cancellationToken)
     {
         int nextLabelId = 0;
-        foreach (AzureTextStyleLayer layer in _symbolStyle.TextLayers)
+        foreach (VectorTextStyleLayer layer in _style.TextLayers)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            AzureStyleVisibilityResult visibility = layer.EvaluateVisibility(zoom);
-            if (visibility != AzureStyleVisibilityResult.Visible)
+            VectorStyleVisibilityResult visibility = layer.EvaluateVisibility(zoom);
+            if (visibility != VectorStyleVisibilityResult.Visible)
             {
-                if (visibility == AzureStyleVisibilityResult.EvaluationFailure)
+                if (visibility == VectorStyleVisibilityResult.EvaluationFailure)
                 {
                     counts.EvaluationFailureCount++;
                 }
@@ -1013,30 +1013,30 @@ internal sealed class AzureVectorStyleAssets
             }
             foreach (VectorTileFeature feature in features.GetSourceLayer(layer.SourceLayer))
             {
-                if (layer.Placement == AzureSymbolPlacement.Line
+                if (layer.Placement == VectorSymbolPlacementKind.Line
                     ? feature.Lines.Length == 0
                     : feature.Points.Length == 0)
                 {
                     continue;
                 }
-                AzureStyleEvaluationContext context = new(feature, zoom);
-                AzureStyleFilterResult filter = layer.EvaluateFilter(context);
-                if (filter != AzureStyleFilterResult.Match)
+                VectorStyleEvaluationContext context = new(feature, zoom);
+                VectorStyleFilterResult filter = layer.EvaluateFilter(context);
+                if (filter != VectorStyleFilterResult.Match)
                 {
-                    if (filter == AzureStyleFilterResult.EvaluationFailure)
+                    if (filter == VectorStyleFilterResult.EvaluationFailure)
                     {
                         counts.EvaluationFailureCount++;
                     }
                     continue;
                 }
-                if (layer.EvaluateText(context, out AzureTextStyle text) !=
-                    AzureStyleTextResult.Resolved)
+                if (layer.EvaluateText(context, out VectorTextStyle text) !=
+                    VectorStyleTextResult.Resolved)
                 {
                     counts.EvaluationFailureCount++;
                     continue;
                 }
                 text = text with { Size = text.Size * textScaleFactor };
-                if (layer.Placement == AzureSymbolPlacement.Line)
+                if (layer.Placement == VectorSymbolPlacementKind.Line)
                 {
                     foreach (VectorTileLine line in feature.Lines)
                     {
@@ -1077,7 +1077,7 @@ internal sealed class AzureVectorStyleAssets
         int order,
         VectorTilePoint point,
         VectorTilePoint[]? linePoints,
-        AzureTextStyle text,
+        VectorTextStyle text,
         int labelId,
         long symbolGroupId,
         List<VectorTileSymbol> symbols,
@@ -1095,8 +1095,8 @@ internal sealed class AzureVectorStyleAssets
         string[] lines = text.Text.Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n')
             .Split('\n');
-        List<(AzureGlyph Glyph, VectorSpriteTextureData Texture, double X)>[] shaped =
-            new List<(AzureGlyph, VectorSpriteTextureData, double)>[lines.Length];
+        List<(VectorGlyph Glyph, VectorSpriteTextureData Texture, double X)>[] shaped =
+            new List<(VectorGlyph, VectorSpriteTextureData, double)>[lines.Length];
         double[] widths = new double[lines.Length];
         double[] baselineOffsets = new double[lines.Length];
         double maximumWidth = 0;
@@ -1114,8 +1114,8 @@ internal sealed class AzureVectorStyleAssets
                     continue;
                 }
                 if (!_glyphAtlas.TryGetOrCreateTexture(
-                        new AzureGlyphKey(text.FontStack, rune.Value),
-                        out AzureGlyph glyph,
+                        new VectorGlyphKey(text.FontStack, rune.Value),
+                        out VectorGlyph glyph,
                         out VectorSpriteTextureData? texture))
                 {
                     counts.UnavailableGlyphCount++;
@@ -1161,13 +1161,13 @@ internal sealed class AzureVectorStyleAssets
                 (lineIndex * lineHeight) +
                 (lineHeight / 2) +
                 baselineOffsets[lineIndex];
-            foreach ((AzureGlyph glyph, VectorSpriteTextureData texture, double x)
+            foreach ((VectorGlyph glyph, VectorSpriteTextureData texture, double x)
                 in shaped[lineIndex])
             {
                 double left = lineX + x +
-                    ((glyph.Left - AzureGlyph.SdfBuffer) * scale);
+                    ((glyph.Left - VectorGlyph.SdfBuffer) * scale);
                 double top = baseline +
-                    ((-glyph.Top - AzureGlyph.SdfBuffer) * scale);
+                    ((-glyph.Top - VectorGlyph.SdfBuffer) * scale);
                 symbols.Add(new VectorTileSymbol(
                     order,
                     point.X,
@@ -1229,14 +1229,14 @@ internal sealed class AzureVectorStyleAssets
         CancellationToken cancellationToken)
     {
         VectorStyleResolutionCounts counts = default;
-        foreach (AzureSymbolStyleLayer layer in _symbolStyle.Layers)
+        foreach (VectorIconStyleLayer layer in _style.IconLayers)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            AzureStyleVisibilityResult visibility =
+            VectorStyleVisibilityResult visibility =
                 layer.EvaluateVisibility(zoom);
-            if (visibility != AzureStyleVisibilityResult.Visible)
+            if (visibility != VectorStyleVisibilityResult.Visible)
             {
-                if (visibility == AzureStyleVisibilityResult.EvaluationFailure)
+                if (visibility == VectorStyleVisibilityResult.EvaluationFailure)
                 {
                     counts.EvaluationFailureCount++;
                 }
@@ -1248,23 +1248,23 @@ internal sealed class AzureVectorStyleAssets
             foreach (VectorTileFeature feature in candidates)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (layer.Placement == AzureSymbolPlacement.Line
+                if (layer.Placement == VectorSymbolPlacementKind.Line
                     ? feature.Lines.Length == 0
                     : feature.Points.Length == 0)
                 {
                     continue;
                 }
-                AzureStyleEvaluationContext context = new(feature, zoom);
-                AzureStyleFilterResult filter = layer.EvaluateFilter(context);
-                if (filter != AzureStyleFilterResult.Match)
+                VectorStyleEvaluationContext context = new(feature, zoom);
+                VectorStyleFilterResult filter = layer.EvaluateFilter(context);
+                if (filter != VectorStyleFilterResult.Match)
                 {
-                    if (filter == AzureStyleFilterResult.EvaluationFailure)
+                    if (filter == VectorStyleFilterResult.EvaluationFailure)
                     {
                         counts.EvaluationFailureCount++;
                     }
                     continue;
                 }
-                AzureStyleIconResult icon = layer.EvaluateIcon(
+                VectorStyleIconResult icon = layer.EvaluateIcon(
                         context,
                         out string spriteName,
                         out double iconSize,
@@ -1282,30 +1282,30 @@ internal sealed class AzureVectorStyleAssets
                         out bool allowOverlap,
                         out bool ignorePlacement,
                         out bool optional);
-                if (icon != AzureStyleIconResult.Resolved)
+                if (icon != VectorStyleIconResult.Resolved)
                 {
-                    if (icon == AzureStyleIconResult.EvaluationFailure)
+                    if (icon == VectorStyleIconResult.EvaluationFailure)
                     {
                         counts.EvaluationFailureCount++;
                     }
                     continue;
                 }
 
-                AzureSpriteLookupResult spriteResult = createTextures
+                VectorSpriteLookupResult spriteResult = createTextures
                     ? _spriteAtlas.TryGetOrCreateTexture(
                         spriteName,
                         cancellationToken,
                         out VectorSpriteTextureData? texture,
-                        out AzureSpriteEntry entry)
+                        out VectorSpriteEntry entry)
                     : _spriteAtlas.TryGetTexture(
                         spriteName,
                         out texture,
                         out entry);
-                if (spriteResult != AzureSpriteLookupResult.Found ||
+                if (spriteResult != VectorSpriteLookupResult.Found ||
                     texture is null)
                 {
                     counts.UnavailableSpriteCount += layer.Placement ==
-                        AzureSymbolPlacement.Line
+                        VectorSymbolPlacementKind.Line
                         ? feature.Lines.Length
                         : feature.Points.Length;
                     continue;
@@ -1335,7 +1335,7 @@ internal sealed class AzureVectorStyleAssets
                     continue;
                 }
 
-                if (layer.Placement == AzureSymbolPlacement.Line)
+                if (layer.Placement == VectorSymbolPlacementKind.Line)
                 {
                     foreach (VectorTileLine line in feature.Lines)
                     {
@@ -1420,7 +1420,7 @@ internal sealed class AzureVectorStyleAssets
 /// <summary>
 /// Parses supported Style Spec v8 line and symbol layers.
 /// </summary>
-internal sealed class AzureSymbolStyle
+internal sealed class VectorStyle
 {
     private const int MaximumStyleLayers = 4096;
     private const int MaximumSymbolLayers = 2048;
@@ -1429,38 +1429,38 @@ internal sealed class AzureSymbolStyle
     private readonly double[] _zoomStops;
     private readonly int[] _unsupportedLayerCounts;
 
-    private AzureSymbolStyle(
-        AzureSymbolStyleLayer[] layers,
-        AzureTextStyleLayer[] textLayers,
-        AzureLineStyleLayer[] lineLayers,
-        AzureFillStyleLayer[] fillLayers,
-        AzureBackgroundStyleLayer[] backgroundLayers,
+    private VectorStyle(
+        VectorIconStyleLayer[] layers,
+        VectorTextStyleLayer[] textLayers,
+        VectorLineStyleLayer[] lineLayers,
+        VectorFillStyleLayer[] fillLayers,
+        VectorBackgroundStyleLayer[] backgroundLayers,
         int[] unsupportedLayerCounts)
     {
-        Layers = layers;
+        IconLayers = layers;
         TextLayers = textLayers;
         LineLayers = lineLayers;
         FillLayers = fillLayers;
         BackgroundLayers = backgroundLayers;
         _unsupportedLayerCounts = unsupportedLayerCounts;
         List<double> stops = [];
-        foreach (AzureSymbolStyleLayer layer in layers)
+        foreach (VectorIconStyleLayer layer in layers)
         {
             layer.CollectZoomStops(stops);
         }
-        foreach (AzureTextStyleLayer layer in textLayers)
+        foreach (VectorTextStyleLayer layer in textLayers)
         {
             layer.CollectZoomStops(stops);
         }
-        foreach (AzureLineStyleLayer layer in lineLayers)
+        foreach (VectorLineStyleLayer layer in lineLayers)
         {
             layer.CollectZoomStops(stops);
         }
-        foreach (AzureFillStyleLayer layer in fillLayers)
+        foreach (VectorFillStyleLayer layer in fillLayers)
         {
             layer.CollectZoomStops(stops);
         }
-        foreach (AzureBackgroundStyleLayer layer in backgroundLayers)
+        foreach (VectorBackgroundStyleLayer layer in backgroundLayers)
         {
             layer.CollectZoomStops(stops);
         }
@@ -1473,40 +1473,40 @@ internal sealed class AzureSymbolStyle
         ];
     }
 
-    internal AzureSymbolStyleLayer[] Layers { get; }
+    internal VectorIconStyleLayer[] IconLayers { get; }
 
-    internal AzureTextStyleLayer[] TextLayers { get; }
+    internal VectorTextStyleLayer[] TextLayers { get; }
 
-    internal AzureLineStyleLayer[] LineLayers { get; }
+    internal VectorLineStyleLayer[] LineLayers { get; }
 
-    internal AzureFillStyleLayer[] FillLayers { get; }
+    internal VectorFillStyleLayer[] FillLayers { get; }
 
-    internal AzureBackgroundStyleLayer[] BackgroundLayers { get; }
+    internal VectorBackgroundStyleLayer[] BackgroundLayers { get; }
 
     internal int LayerCount =>
-        Layers.Length + TextLayers.Length + LineLayers.Length +
+        IconLayers.Length + TextLayers.Length + LineLayers.Length +
         FillLayers.Length + BackgroundLayers.Length;
 
     internal int UnsupportedLayerCount =>
         _unsupportedLayerCounts.Sum();
 
     internal int GetUnsupportedLayerCount(
-        AzureStyleLayerParseResult result) =>
-        result == AzureStyleLayerParseResult.Parsed
+        VectorStyleLayerParseResult result) =>
+        result == VectorStyleLayerParseResult.Parsed
             ? 0
             : _unsupportedLayerCounts[(int)result];
 
-    internal static AzureSymbolStyle Parse(ReadOnlyMemory<byte> json)
+    internal static VectorStyle Parse(ReadOnlyMemory<byte> json)
     {
         return Parse(json, azureBaseSourceOnly: true);
     }
 
-    internal static AzureSymbolStyle ParseCustom(ReadOnlyMemory<byte> json)
+    internal static VectorStyle ParseCustom(ReadOnlyMemory<byte> json)
     {
         return Parse(json, azureBaseSourceOnly: false);
     }
 
-    private static AzureSymbolStyle Parse(
+    private static VectorStyle Parse(
         ReadOnlyMemory<byte> json,
         bool azureBaseSourceOnly)
     {
@@ -1524,51 +1524,51 @@ internal sealed class AzureSymbolStyle
             layers.ValueKind != JsonValueKind.Array)
         {
             throw new InvalidDataException(
-                "The Azure vector style is not a supported Style Spec v8 document.");
+                "The vector style is not a supported Style Spec v8 document.");
         }
 
-        List<AzureSymbolStyleLayer> parsed = [];
-        List<AzureTextStyleLayer> parsedText = [];
-        List<AzureLineStyleLayer> parsedLines = [];
-        List<AzureFillStyleLayer> parsedFills = [];
-        List<AzureBackgroundStyleLayer> parsedBackgrounds = [];
+        List<VectorIconStyleLayer> parsed = [];
+        List<VectorTextStyleLayer> parsedText = [];
+        List<VectorLineStyleLayer> parsedLines = [];
+        List<VectorFillStyleLayer> parsedFills = [];
+        List<VectorBackgroundStyleLayer> parsedBackgrounds = [];
         HashSet<string>? baseVectorSources = GetVectorSources(
             root,
             azureBaseSourceOnly);
         int[] unsupportedLayerCounts =
-            new int[Enum.GetValues<AzureStyleLayerParseResult>().Length];
+            new int[Enum.GetValues<VectorStyleLayerParseResult>().Length];
         int layerCount = 0;
         foreach (JsonElement layer in layers.EnumerateArray())
         {
             if (++layerCount > MaximumStyleLayers)
             {
                 throw new InvalidDataException(
-                    "The Azure vector style contains too many layers.");
+                    "The vector style contains too many layers.");
             }
             if (layer.ValueKind != JsonValueKind.Object)
             {
                 throw new InvalidDataException(
-                    "The Azure vector style contains a non-object layer.");
+                    "The vector style contains a non-object layer.");
             }
             if (!layer.TryGetProperty("type", out JsonElement type) ||
                 type.ValueKind != JsonValueKind.String)
             {
                 throw new InvalidDataException(
-                    "The Azure vector style contains a layer without a valid type.");
+                    "The vector style contains a layer without a valid type.");
             }
             string? layerType = type.GetString();
             if (string.Equals(layerType, "background", StringComparison.Ordinal))
             {
-                AzureStyleLayerParseResult result = TryParseBackgroundLayer(
+                VectorStyleLayerParseResult result = TryParseBackgroundLayer(
                     layer,
                     layerCount - 1,
-                    out AzureBackgroundStyleLayer? backgroundLayer);
-                if (result == AzureStyleLayerParseResult.InvalidDefinition)
+                    out VectorBackgroundStyleLayer? backgroundLayer);
+                if (result == VectorStyleLayerParseResult.InvalidDefinition)
                 {
                     throw new InvalidDataException(
                         "The vector style contains an invalid background layer.");
                 }
-                if (result != AzureStyleLayerParseResult.Parsed)
+                if (result != VectorStyleLayerParseResult.Parsed)
                 {
                     unsupportedLayerCounts[(int)result]++;
                 }
@@ -1580,17 +1580,17 @@ internal sealed class AzureSymbolStyle
             }
             if (string.Equals(layerType, "fill", StringComparison.Ordinal))
             {
-                AzureStyleLayerParseResult result = TryParseFillLayer(
+                VectorStyleLayerParseResult result = TryParseFillLayer(
                     layer,
                     baseVectorSources,
                     layerCount - 1,
-                    out AzureFillStyleLayer? fillLayer);
-                if (result == AzureStyleLayerParseResult.InvalidDefinition)
+                    out VectorFillStyleLayer? fillLayer);
+                if (result == VectorStyleLayerParseResult.InvalidDefinition)
                 {
                     throw new InvalidDataException(
-                        "The Azure vector style contains an invalid fill layer.");
+                        "The vector style contains an invalid fill layer.");
                 }
-                if (result != AzureStyleLayerParseResult.Parsed)
+                if (result != VectorStyleLayerParseResult.Parsed)
                 {
                     unsupportedLayerCounts[(int)result]++;
                 }
@@ -1599,7 +1599,7 @@ internal sealed class AzureSymbolStyle
                     if (parsedFills.Count >= MaximumSymbolLayers)
                     {
                         throw new InvalidDataException(
-                            "The Azure vector style contains too many fill layers.");
+                            "The vector style contains too many fill layers.");
                     }
                     parsedFills.Add(fillLayer!);
                 }
@@ -1607,17 +1607,17 @@ internal sealed class AzureSymbolStyle
             }
             if (string.Equals(layerType, "line", StringComparison.Ordinal))
             {
-                AzureStyleLayerParseResult result = TryParseLineLayer(
+                VectorStyleLayerParseResult result = TryParseLineLayer(
                     layer,
                     baseVectorSources,
                     layerCount - 1,
-                    out AzureLineStyleLayer? lineLayer);
-                if (result == AzureStyleLayerParseResult.InvalidDefinition)
+                    out VectorLineStyleLayer? lineLayer);
+                if (result == VectorStyleLayerParseResult.InvalidDefinition)
                 {
                     throw new InvalidDataException(
-                        "The Azure vector style contains an invalid line layer.");
+                        "The vector style contains an invalid line layer.");
                 }
-                if (result != AzureStyleLayerParseResult.Parsed)
+                if (result != VectorStyleLayerParseResult.Parsed)
                 {
                     unsupportedLayerCounts[(int)result]++;
                 }
@@ -1626,7 +1626,7 @@ internal sealed class AzureSymbolStyle
                     if (parsedLines.Count >= MaximumSymbolLayers)
                     {
                         throw new InvalidDataException(
-                            "The Azure vector style contains too many line layers.");
+                            "The vector style contains too many line layers.");
                     }
                     parsedLines.Add(lineLayer!);
                 }
@@ -1641,18 +1641,18 @@ internal sealed class AzureSymbolStyle
 
             if (layout.TryGetProperty("icon-image", out _))
             {
-                AzureStyleLayerParseResult result = TryParseLayer(
+                VectorStyleLayerParseResult result = TryParseLayer(
                     layer,
                     layout,
                     baseVectorSources,
                     layerCount - 1,
-                    out AzureSymbolStyleLayer? symbolLayer);
-                if (result != AzureStyleLayerParseResult.Parsed)
+                    out VectorIconStyleLayer? symbolLayer);
+                if (result != VectorStyleLayerParseResult.Parsed)
                 {
-                    if (result == AzureStyleLayerParseResult.InvalidDefinition)
+                    if (result == VectorStyleLayerParseResult.InvalidDefinition)
                     {
                         throw new InvalidDataException(
-                            "The Azure vector style contains an invalid point-symbol layer.");
+                            "The vector style contains an invalid point-symbol layer.");
                     }
                     unsupportedLayerCounts[(int)result]++;
                 }
@@ -1661,7 +1661,7 @@ internal sealed class AzureSymbolStyle
                     if (parsed.Count >= MaximumSymbolLayers)
                     {
                         throw new InvalidDataException(
-                            "The Azure vector style contains too many symbol layers.");
+                            "The vector style contains too many symbol layers.");
                     }
                     parsed.Add(symbolLayer!);
                 }
@@ -1669,18 +1669,18 @@ internal sealed class AzureSymbolStyle
 
             if (layout.TryGetProperty("text-field", out _))
             {
-                AzureStyleLayerParseResult result = TryParseTextLayer(
+                VectorStyleLayerParseResult result = TryParseTextLayer(
                     layer,
                     layout,
                     baseVectorSources,
                     layerCount - 1,
-                    out AzureTextStyleLayer? textLayer);
-                if (result != AzureStyleLayerParseResult.Parsed)
+                    out VectorTextStyleLayer? textLayer);
+                if (result != VectorStyleLayerParseResult.Parsed)
                 {
-                    if (result == AzureStyleLayerParseResult.InvalidDefinition)
+                    if (result == VectorStyleLayerParseResult.InvalidDefinition)
                     {
                         throw new InvalidDataException(
-                            "The Azure vector style contains an invalid point-label layer.");
+                            "The vector style contains an invalid point-label layer.");
                     }
                     unsupportedLayerCounts[(int)result]++;
                 }
@@ -1689,13 +1689,13 @@ internal sealed class AzureSymbolStyle
                     if (parsedText.Count >= MaximumSymbolLayers)
                     {
                         throw new InvalidDataException(
-                            "The Azure vector style contains too many text layers.");
+                            "The vector style contains too many text layers.");
                     }
                     parsedText.Add(textLayer!);
                 }
             }
         }
-        return new AzureSymbolStyle(
+        return new VectorStyle(
             parsed.ToArray(),
             parsedText.ToArray(),
             parsedLines.ToArray(),
@@ -1732,12 +1732,12 @@ internal sealed class AzureSymbolStyle
         ];
     }
 
-    private static AzureStyleLayerParseResult TryParseLayer(
+    private static VectorStyleLayerParseResult TryParseLayer(
         JsonElement layer,
         JsonElement layout,
         IReadOnlySet<string>? baseVectorSources,
         int order,
-        out AzureSymbolStyleLayer? parsed)
+        out VectorIconStyleLayer? parsed)
     {
         parsed = null;
         if (baseVectorSources is not null &&
@@ -1746,135 +1746,135 @@ internal sealed class AzureSymbolStyle
              sourceElement.GetString() is not string source ||
              !baseVectorSources.Contains(source)))
         {
-            return AzureStyleLayerParseResult.UnsupportedVectorSource;
+            return VectorStyleLayerParseResult.UnsupportedVectorSource;
         }
         if (!layer.TryGetProperty("source-layer", out JsonElement sourceLayerElement) ||
             sourceLayerElement.ValueKind != JsonValueKind.String)
         {
-            return AzureStyleLayerParseResult.UnsupportedSourceLayer;
+            return VectorStyleLayerParseResult.UnsupportedSourceLayer;
         }
         string? sourceLayer = sourceLayerElement.GetString();
         if (string.IsNullOrEmpty(sourceLayer) ||
             sourceLayer.Length > MaximumSourceLayerLength)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
 
         if (!layout.TryGetProperty("icon-image", out JsonElement iconImage) ||
-            !AzureStyleExpression.TryParseTokenized(
+            !VectorStyleExpression.TryParseTokenized(
                 iconImage,
-                out AzureStyleExpression? iconImageExpression))
+                out VectorStyleExpression? iconImageExpression))
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
         if (!TryParseSymbolPlacement(
                 layout,
-                out AzureSymbolPlacement placement))
+                out VectorSymbolPlacementKind placement))
         {
-            return AzureStyleLayerParseResult.UnsupportedSymbolPlacement;
+            return VectorStyleLayerParseResult.UnsupportedSymbolPlacement;
         }
 
         if (!TryParseOptionalExpression(
                 layout,
                 "visibility",
-                AzureStyleValue.FromString("visible"),
-                out AzureStyleExpression visibility) ||
+                VectorStyleValue.FromString("visible"),
+                out VectorStyleExpression visibility) ||
             !TryParseOptionalExpression(
                 layout,
                 "icon-size",
-                AzureStyleValue.FromNumber(1),
-                out AzureStyleExpression iconSize) ||
+                VectorStyleValue.FromNumber(1),
+                out VectorStyleExpression iconSize) ||
             !TryParseOptionalExpression(
                 layout,
                 "icon-offset",
-                AzureStyleValue.FromArray(
-                    [AzureStyleValue.FromNumber(0), AzureStyleValue.FromNumber(0)]),
-                out AzureStyleExpression iconOffset) ||
+                VectorStyleValue.FromArray(
+                    [VectorStyleValue.FromNumber(0), VectorStyleValue.FromNumber(0)]),
+                out VectorStyleExpression iconOffset) ||
             !TryParseOptionalExpression(
                 layout,
                 "icon-anchor",
-                AzureStyleValue.FromString("center"),
-                out AzureStyleExpression iconAnchor) ||
+                VectorStyleValue.FromString("center"),
+                out VectorStyleExpression iconAnchor) ||
             !TryParseOptionalExpression(
                 layout,
                 "symbol-spacing",
-                AzureStyleValue.FromNumber(250),
-                out AzureStyleExpression symbolSpacing) ||
+                VectorStyleValue.FromNumber(250),
+                out VectorStyleExpression symbolSpacing) ||
             !TryParseOptionalExpression(
                 layout,
                 "icon-rotate",
-                AzureStyleValue.FromNumber(0),
-                out AzureStyleExpression iconRotate) ||
+                VectorStyleValue.FromNumber(0),
+                out VectorStyleExpression iconRotate) ||
             !TryParseOptionalExpression(
                 layout,
                 "icon-rotation-alignment",
-                AzureStyleValue.FromString("auto"),
-                out AzureStyleExpression iconRotationAlignment) ||
+                VectorStyleValue.FromString("auto"),
+                out VectorStyleExpression iconRotationAlignment) ||
             !TryParseOptionalExpression(
                 layout,
                 "icon-text-fit",
-                AzureStyleValue.FromString("none"),
-                out AzureStyleExpression iconTextFit) ||
+                VectorStyleValue.FromString("none"),
+                out VectorStyleExpression iconTextFit) ||
             !TryParseOptionalExpression(
                 layout,
                 "icon-text-fit-padding",
-                AzureStyleValue.FromArray(
+                VectorStyleValue.FromArray(
                 [
-                    AzureStyleValue.FromNumber(0),
-                    AzureStyleValue.FromNumber(0),
-                    AzureStyleValue.FromNumber(0),
-                    AzureStyleValue.FromNumber(0),
+                    VectorStyleValue.FromNumber(0),
+                    VectorStyleValue.FromNumber(0),
+                    VectorStyleValue.FromNumber(0),
+                    VectorStyleValue.FromNumber(0),
                 ]),
-                out AzureStyleExpression iconTextFitPadding) ||
+                out VectorStyleExpression iconTextFitPadding) ||
             !TryParseOptionalExpression(
                 layout,
                 "symbol-sort-key",
-                AzureStyleValue.FromNumber(0),
-                out AzureStyleExpression symbolSortKey) ||
+                VectorStyleValue.FromNumber(0),
+                out VectorStyleExpression symbolSortKey) ||
             !TryParseOptionalExpression(
                 layout,
                 "icon-allow-overlap",
-                AzureStyleValue.FromBoolean(false),
-                out AzureStyleExpression iconAllowOverlap) ||
+                VectorStyleValue.FromBoolean(false),
+                out VectorStyleExpression iconAllowOverlap) ||
             !TryParseOptionalExpression(
                 layout,
                 "icon-ignore-placement",
-                AzureStyleValue.FromBoolean(false),
-                out AzureStyleExpression iconIgnorePlacement) ||
+                VectorStyleValue.FromBoolean(false),
+                out VectorStyleExpression iconIgnorePlacement) ||
             !TryParseOptionalExpression(
                 layout,
                 "icon-optional",
-                AzureStyleValue.FromBoolean(false),
-                out AzureStyleExpression iconOptional))
+                VectorStyleValue.FromBoolean(false),
+                out VectorStyleExpression iconOptional))
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
         JsonElement paint = default;
         bool hasPaint = layer.TryGetProperty("paint", out paint);
         if (hasPaint && paint.ValueKind != JsonValueKind.Object)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
         if (!TryParseOptionalExpression(
                 hasPaint ? paint : default,
                 "icon-opacity",
-                AzureStyleValue.FromNumber(1),
-                out AzureStyleExpression iconOpacity) ||
+                VectorStyleValue.FromNumber(1),
+                out VectorStyleExpression iconOpacity) ||
             !TryParseOptionalExpression(
                 hasPaint ? paint : default,
                 "icon-color",
-                AzureStyleValue.Null,
-                out AzureStyleExpression iconColor))
+                VectorStyleValue.Null,
+                out VectorStyleExpression iconColor))
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
 
-        AzureStyleExpression filter = AzureStyleExpression.Literal(
-            AzureStyleValue.FromBoolean(true));
+        VectorStyleExpression filter = VectorStyleExpression.Literal(
+            VectorStyleValue.FromBoolean(true));
         if (layer.TryGetProperty("filter", out JsonElement filterElement) &&
-            !AzureStyleExpression.TryParseFilter(filterElement, out filter))
+            !VectorStyleExpression.TryParseFilter(filterElement, out filter))
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
 
         double minimumZoom = 0;
@@ -1883,20 +1883,20 @@ internal sealed class AzureSymbolStyle
             (!minimumElement.TryGetDouble(out minimumZoom) ||
              !double.IsFinite(minimumZoom)))
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
         if (layer.TryGetProperty("maxzoom", out JsonElement maximumElement) &&
             (!maximumElement.TryGetDouble(out maximumZoom) ||
              !double.IsFinite(maximumZoom)))
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
         if (maximumZoom <= minimumZoom)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
 
-        parsed = new AzureSymbolStyleLayer(
+        parsed = new VectorIconStyleLayer(
             order,
             sourceLayer,
             minimumZoom,
@@ -1919,15 +1919,15 @@ internal sealed class AzureSymbolStyle
             iconOptional,
             iconOpacity,
             iconColor);
-        return AzureStyleLayerParseResult.Parsed;
+        return VectorStyleLayerParseResult.Parsed;
     }
 
-    private static AzureStyleLayerParseResult TryParseTextLayer(
+    private static VectorStyleLayerParseResult TryParseTextLayer(
         JsonElement layer,
         JsonElement layout,
         IReadOnlySet<string>? baseVectorSources,
         int order,
-        out AzureTextStyleLayer? parsed)
+        out VectorTextStyleLayer? parsed)
     {
         parsed = null;
         if (baseVectorSources is not null &&
@@ -1936,148 +1936,148 @@ internal sealed class AzureSymbolStyle
              sourceElement.GetString() is not string source ||
              !baseVectorSources.Contains(source)))
         {
-            return AzureStyleLayerParseResult.UnsupportedVectorSource;
+            return VectorStyleLayerParseResult.UnsupportedVectorSource;
         }
         if (!layer.TryGetProperty("source-layer", out JsonElement sourceLayerElement) ||
             sourceLayerElement.ValueKind != JsonValueKind.String)
         {
-            return AzureStyleLayerParseResult.UnsupportedSourceLayer;
+            return VectorStyleLayerParseResult.UnsupportedSourceLayer;
         }
         string? sourceLayer = sourceLayerElement.GetString();
         if (string.IsNullOrEmpty(sourceLayer) ||
             sourceLayer.Length > MaximumSourceLayerLength)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
         if (!TryParseSymbolPlacement(
                 layout,
-                out AzureSymbolPlacement placement))
+                out VectorSymbolPlacementKind placement))
         {
-            return AzureStyleLayerParseResult.UnsupportedSymbolPlacement;
+            return VectorStyleLayerParseResult.UnsupportedSymbolPlacement;
         }
         if (!layout.TryGetProperty("text-field", out JsonElement textField) ||
-            !AzureStyleExpression.TryParseTokenized(
+            !VectorStyleExpression.TryParseTokenized(
                 textField,
-                out AzureStyleExpression textFieldExpression) ||
+                out VectorStyleExpression textFieldExpression) ||
             !TryParseOptionalExpression(
                 layout,
                 "visibility",
-                AzureStyleValue.FromString("visible"),
-                out AzureStyleExpression visibility) ||
+                VectorStyleValue.FromString("visible"),
+                out VectorStyleExpression visibility) ||
             !TryParseOptionalLiteralExpression(
                 layout,
                 "text-font",
-                AzureStyleValue.FromArray(
-                    [AzureStyleValue.FromString("Roboto-Regular")]),
-                out AzureStyleExpression textFont) ||
+                VectorStyleValue.FromArray(
+                    [VectorStyleValue.FromString("Roboto-Regular")]),
+                out VectorStyleExpression textFont) ||
             !TryParseOptionalExpression(
                 layout,
                 "text-size",
-                AzureStyleValue.FromNumber(16),
-                out AzureStyleExpression textSize) ||
+                VectorStyleValue.FromNumber(16),
+                out VectorStyleExpression textSize) ||
             !TryParseOptionalExpression(
                 layout,
                 "text-offset",
-                AzureStyleValue.FromArray(
-                    [AzureStyleValue.FromNumber(0), AzureStyleValue.FromNumber(0)]),
-                out AzureStyleExpression textOffset) ||
+                VectorStyleValue.FromArray(
+                    [VectorStyleValue.FromNumber(0), VectorStyleValue.FromNumber(0)]),
+                out VectorStyleExpression textOffset) ||
             !TryParseOptionalExpression(
                 layout,
                 "text-anchor",
-                AzureStyleValue.FromString("center"),
-                out AzureStyleExpression textAnchor) ||
+                VectorStyleValue.FromString("center"),
+                out VectorStyleExpression textAnchor) ||
             !TryParseOptionalExpression(
                 layout,
                 "text-radial-offset",
-                AzureStyleValue.FromNumber(0),
-                out AzureStyleExpression textRadialOffset) ||
+                VectorStyleValue.FromNumber(0),
+                out VectorStyleExpression textRadialOffset) ||
             !TryParseOptionalExpression(
                 layout,
                 "text-letter-spacing",
-                AzureStyleValue.FromNumber(0),
-                out AzureStyleExpression textLetterSpacing) ||
+                VectorStyleValue.FromNumber(0),
+                out VectorStyleExpression textLetterSpacing) ||
             !TryParseOptionalExpression(
                 layout,
                 "text-transform",
-                AzureStyleValue.FromString("none"),
-                out AzureStyleExpression textTransform) ||
+                VectorStyleValue.FromString("none"),
+                out VectorStyleExpression textTransform) ||
             !TryParseOptionalExpression(
                 layout,
                 "text-rotation-alignment",
-                AzureStyleValue.FromString("auto"),
-                out AzureStyleExpression textRotationAlignment) ||
+                VectorStyleValue.FromString("auto"),
+                out VectorStyleExpression textRotationAlignment) ||
             !TryParseOptionalExpression(
                 layout,
                 "symbol-spacing",
-                AzureStyleValue.FromNumber(250),
-                out AzureStyleExpression symbolSpacing) ||
+                VectorStyleValue.FromNumber(250),
+                out VectorStyleExpression symbolSpacing) ||
             !TryParseOptionalExpression(
                 layout,
                 "symbol-sort-key",
-                AzureStyleValue.FromNumber(0),
-                out AzureStyleExpression symbolSortKey) ||
+                VectorStyleValue.FromNumber(0),
+                out VectorStyleExpression symbolSortKey) ||
             !TryParseOptionalExpression(
                 layout,
                 "text-allow-overlap",
-                AzureStyleValue.FromBoolean(false),
-                out AzureStyleExpression textAllowOverlap) ||
+                VectorStyleValue.FromBoolean(false),
+                out VectorStyleExpression textAllowOverlap) ||
             !TryParseOptionalExpression(
                 layout,
                 "text-ignore-placement",
-                AzureStyleValue.FromBoolean(false),
-                out AzureStyleExpression textIgnorePlacement) ||
+                VectorStyleValue.FromBoolean(false),
+                out VectorStyleExpression textIgnorePlacement) ||
             !TryParseOptionalExpression(
                 layout,
                 "text-optional",
-                AzureStyleValue.FromBoolean(false),
-                out AzureStyleExpression textOptional))
+                VectorStyleValue.FromBoolean(false),
+                out VectorStyleExpression textOptional))
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
 
-        AzureStyleExpression textVariableAnchor =
-            AzureStyleExpression.Literal(AzureStyleValue.Null);
+        VectorStyleExpression textVariableAnchor =
+            VectorStyleExpression.Literal(VectorStyleValue.Null);
         if (layout.TryGetProperty(
                 "text-variable-anchor",
                 out JsonElement variableAnchor) &&
-            !AzureStyleExpression.TryParseLiteralExpression(
+            !VectorStyleExpression.TryParseLiteralExpression(
                 variableAnchor,
                 out textVariableAnchor))
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
 
         JsonElement paint = default;
         bool hasPaint = layer.TryGetProperty("paint", out paint);
         if (hasPaint && paint.ValueKind != JsonValueKind.Object)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
         if (!TryParseOptionalExpression(
                 hasPaint ? paint : default,
                 "text-color",
-                AzureStyleValue.FromString("#000000"),
-                out AzureStyleExpression textColor) ||
+                VectorStyleValue.FromString("#000000"),
+                out VectorStyleExpression textColor) ||
             !TryParseOptionalExpression(
                 hasPaint ? paint : default,
                 "text-halo-color",
-                AzureStyleValue.FromString("#00000000"),
-                out AzureStyleExpression textHaloColor) ||
+                VectorStyleValue.FromString("#00000000"),
+                out VectorStyleExpression textHaloColor) ||
             !TryParseOptionalExpression(
                 hasPaint ? paint : default,
                 "text-halo-width",
-                AzureStyleValue.FromNumber(0),
-                out AzureStyleExpression textHaloWidth))
+                VectorStyleValue.FromNumber(0),
+                out VectorStyleExpression textHaloWidth))
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
 
-        AzureStyleExpression filter = AzureStyleExpression.Literal(
-            AzureStyleValue.FromBoolean(true));
+        VectorStyleExpression filter = VectorStyleExpression.Literal(
+            VectorStyleValue.FromBoolean(true));
         if (layer.TryGetProperty("filter", out JsonElement filterElement) &&
-            !AzureStyleExpression.TryParseFilter(filterElement, out filter))
+            !VectorStyleExpression.TryParseFilter(filterElement, out filter))
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
         double minimumZoom = 0;
         double maximumZoom = MapCamera.MaximumTileZoom + 1;
@@ -2089,10 +2089,10 @@ internal sealed class AzureSymbolStyle
              !double.IsFinite(maximumZoom)) ||
             maximumZoom <= minimumZoom)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
 
-        parsed = new AzureTextStyleLayer(
+        parsed = new VectorTextStyleLayer(
             order,
             sourceLayer,
             minimumZoom,
@@ -2118,14 +2118,14 @@ internal sealed class AzureSymbolStyle
             textAllowOverlap,
             textIgnorePlacement,
             textOptional);
-        return AzureStyleLayerParseResult.Parsed;
+        return VectorStyleLayerParseResult.Parsed;
     }
 
     private static bool TryParseSymbolPlacement(
         JsonElement layout,
-        out AzureSymbolPlacement placement)
+        out VectorSymbolPlacementKind placement)
     {
-        placement = AzureSymbolPlacement.Point;
+        placement = VectorSymbolPlacementKind.Point;
         if (!layout.TryGetProperty(
                 "symbol-placement",
                 out JsonElement symbolPlacement))
@@ -2138,18 +2138,18 @@ internal sealed class AzureSymbolStyle
         }
         placement = symbolPlacement.GetString() switch
         {
-            "point" => AzureSymbolPlacement.Point,
-            "line" => AzureSymbolPlacement.Line,
-            _ => (AzureSymbolPlacement)(-1),
+            "point" => VectorSymbolPlacementKind.Point,
+            "line" => VectorSymbolPlacementKind.Line,
+            _ => (VectorSymbolPlacementKind)(-1),
         };
         return (int)placement >= 0;
     }
 
-    private static AzureStyleLayerParseResult TryParseFillLayer(
+    private static VectorStyleLayerParseResult TryParseFillLayer(
         JsonElement layer,
         IReadOnlySet<string>? baseVectorSources,
         int order,
-        out AzureFillStyleLayer? parsed)
+        out VectorFillStyleLayer? parsed)
     {
         parsed = null;
         if (baseVectorSources is not null &&
@@ -2158,67 +2158,67 @@ internal sealed class AzureSymbolStyle
              sourceElement.GetString() is not string source ||
              !baseVectorSources.Contains(source)))
         {
-            return AzureStyleLayerParseResult.UnsupportedVectorSource;
+            return VectorStyleLayerParseResult.UnsupportedVectorSource;
         }
         if (!layer.TryGetProperty("source-layer", out JsonElement sourceLayerElement) ||
             sourceLayerElement.ValueKind != JsonValueKind.String)
         {
-            return AzureStyleLayerParseResult.UnsupportedSourceLayer;
+            return VectorStyleLayerParseResult.UnsupportedSourceLayer;
         }
         string? sourceLayer = sourceLayerElement.GetString();
         if (string.IsNullOrEmpty(sourceLayer) ||
             sourceLayer.Length > MaximumSourceLayerLength)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
 
         JsonElement layout = default;
         if (layer.TryGetProperty("layout", out layout) &&
             layout.ValueKind != JsonValueKind.Object)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
         JsonElement paint = default;
         if (layer.TryGetProperty("paint", out paint) &&
             paint.ValueKind != JsonValueKind.Object)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
         if (!TryParseOptionalExpression(
                 layout,
                 "visibility",
-                AzureStyleValue.FromString("visible"),
-                out AzureStyleExpression visibility) ||
+                VectorStyleValue.FromString("visible"),
+                out VectorStyleExpression visibility) ||
             !TryParseOptionalExpression(
                 paint,
                 "fill-color",
-                AzureStyleValue.FromString("#000000"),
-                out AzureStyleExpression fillColor) ||
+                VectorStyleValue.FromString("#000000"),
+                out VectorStyleExpression fillColor) ||
             !TryParseOptionalExpression(
                 paint,
                 "fill-opacity",
-                AzureStyleValue.FromNumber(1),
-                out AzureStyleExpression fillOpacity) ||
+                VectorStyleValue.FromNumber(1),
+                out VectorStyleExpression fillOpacity) ||
             !TryParseOptionalExpression(
                 paint,
                 "fill-outline-color",
-                AzureStyleValue.Null,
-                out AzureStyleExpression fillOutlineColor) ||
+                VectorStyleValue.Null,
+                out VectorStyleExpression fillOutlineColor) ||
             !TryParseOptionalExpression(
                 paint,
                 "fill-pattern",
-                AzureStyleValue.Null,
-                out AzureStyleExpression fillPattern))
+                VectorStyleValue.Null,
+                out VectorStyleExpression fillPattern))
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
 
-        AzureStyleExpression filter = AzureStyleExpression.Literal(
-            AzureStyleValue.FromBoolean(true));
+        VectorStyleExpression filter = VectorStyleExpression.Literal(
+            VectorStyleValue.FromBoolean(true));
         if (layer.TryGetProperty("filter", out JsonElement filterElement) &&
-            !AzureStyleExpression.TryParseFilter(filterElement, out filter))
+            !VectorStyleExpression.TryParseFilter(filterElement, out filter))
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
         double minimumZoom = 0;
         double maximumZoom = MapCamera.MaximumTileZoom + 1;
@@ -2230,10 +2230,10 @@ internal sealed class AzureSymbolStyle
              !double.IsFinite(maximumZoom)) ||
             maximumZoom <= minimumZoom)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
 
-        parsed = new AzureFillStyleLayer(
+        parsed = new VectorFillStyleLayer(
             order,
             sourceLayer,
             minimumZoom,
@@ -2244,69 +2244,69 @@ internal sealed class AzureSymbolStyle
             fillOpacity,
             fillOutlineColor,
             fillPattern);
-        return AzureStyleLayerParseResult.Parsed;
+        return VectorStyleLayerParseResult.Parsed;
     }
 
-    private static AzureStyleLayerParseResult TryParseBackgroundLayer(
+    private static VectorStyleLayerParseResult TryParseBackgroundLayer(
         JsonElement layer,
         int order,
-        out AzureBackgroundStyleLayer? parsed)
+        out VectorBackgroundStyleLayer? parsed)
     {
         parsed = null;
         if (order != 0)
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
         JsonElement layout = default;
         bool hasLayout = layer.TryGetProperty("layout", out layout);
         if (hasLayout && layout.ValueKind != JsonValueKind.Object)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
         JsonElement paint = default;
         bool hasPaint = layer.TryGetProperty("paint", out paint);
         if (hasPaint && paint.ValueKind != JsonValueKind.Object)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
         if (hasPaint &&
             paint.TryGetProperty("background-pattern", out JsonElement pattern) &&
             pattern.ValueKind != JsonValueKind.Null)
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
         if (!TryParseOptionalExpression(
                 hasLayout ? layout : default,
                 "visibility",
-                AzureStyleValue.FromString("visible"),
-                out AzureStyleExpression visibility) ||
+                VectorStyleValue.FromString("visible"),
+                out VectorStyleExpression visibility) ||
             !TryParseOptionalExpression(
                 hasPaint ? paint : default,
                 "background-color",
-                AzureStyleValue.FromString("#000000"),
-                out AzureStyleExpression color) ||
+                VectorStyleValue.FromString("#000000"),
+                out VectorStyleExpression color) ||
             !TryParseOptionalExpression(
                 hasPaint ? paint : default,
                 "background-opacity",
-                AzureStyleValue.FromNumber(1),
-                out AzureStyleExpression opacity))
+                VectorStyleValue.FromNumber(1),
+                out VectorStyleExpression opacity))
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
 
-        parsed = new AzureBackgroundStyleLayer(
+        parsed = new VectorBackgroundStyleLayer(
             order,
             visibility,
             color,
             opacity);
-        return AzureStyleLayerParseResult.Parsed;
+        return VectorStyleLayerParseResult.Parsed;
     }
 
-    private static AzureStyleLayerParseResult TryParseLineLayer(
+    private static VectorStyleLayerParseResult TryParseLineLayer(
         JsonElement layer,
         IReadOnlySet<string>? baseVectorSources,
         int order,
-        out AzureLineStyleLayer? parsed)
+        out VectorLineStyleLayer? parsed)
     {
         parsed = null;
         if (baseVectorSources is not null &&
@@ -2315,105 +2315,105 @@ internal sealed class AzureSymbolStyle
              sourceElement.GetString() is not string source ||
              !baseVectorSources.Contains(source)))
         {
-            return AzureStyleLayerParseResult.UnsupportedVectorSource;
+            return VectorStyleLayerParseResult.UnsupportedVectorSource;
         }
         if (!layer.TryGetProperty("source-layer", out JsonElement sourceLayerElement) ||
             sourceLayerElement.ValueKind != JsonValueKind.String)
         {
-            return AzureStyleLayerParseResult.UnsupportedSourceLayer;
+            return VectorStyleLayerParseResult.UnsupportedSourceLayer;
         }
         string? sourceLayer = sourceLayerElement.GetString();
         if (string.IsNullOrEmpty(sourceLayer) ||
             sourceLayer.Length > MaximumSourceLayerLength)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
 
         JsonElement layout = default;
         if (layer.TryGetProperty("layout", out layout) &&
             layout.ValueKind != JsonValueKind.Object)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
         JsonElement paint = default;
         if (layer.TryGetProperty("paint", out paint) &&
             paint.ValueKind != JsonValueKind.Object)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
         if (!TryParseOptionalExpression(
                 layout,
                 "visibility",
-                AzureStyleValue.FromString("visible"),
-                out AzureStyleExpression visibility) ||
+                VectorStyleValue.FromString("visible"),
+                out VectorStyleExpression visibility) ||
             !TryParseOptionalExpression(
                 layout,
                 "line-cap",
-                AzureStyleValue.FromString("butt"),
-                out AzureStyleExpression lineCap) ||
+                VectorStyleValue.FromString("butt"),
+                out VectorStyleExpression lineCap) ||
             !TryParseOptionalExpression(
                 layout,
                 "line-join",
-                AzureStyleValue.FromString("miter"),
-                out AzureStyleExpression lineJoin) ||
+                VectorStyleValue.FromString("miter"),
+                out VectorStyleExpression lineJoin) ||
             !TryParseOptionalExpression(
                 paint,
                 "line-color",
-                AzureStyleValue.FromString("#000000"),
-                out AzureStyleExpression lineColor) ||
+                VectorStyleValue.FromString("#000000"),
+                out VectorStyleExpression lineColor) ||
             !TryParseOptionalExpression(
                 paint,
                 "line-opacity",
-                AzureStyleValue.FromNumber(1),
-                out AzureStyleExpression lineOpacity) ||
+                VectorStyleValue.FromNumber(1),
+                out VectorStyleExpression lineOpacity) ||
             !TryParseOptionalExpression(
                 paint,
                 "line-width",
-                AzureStyleValue.FromNumber(1),
-                out AzureStyleExpression lineWidth) ||
+                VectorStyleValue.FromNumber(1),
+                out VectorStyleExpression lineWidth) ||
             !TryParseOptionalExpression(
                 paint,
                 "line-offset",
-                AzureStyleValue.FromNumber(0),
-                out AzureStyleExpression lineOffset) ||
+                VectorStyleValue.FromNumber(0),
+                out VectorStyleExpression lineOffset) ||
             !TryParseOptionalExpression(
                 paint,
                 "line-gap-width",
-                AzureStyleValue.FromNumber(0),
-                out AzureStyleExpression lineGapWidth) ||
+                VectorStyleValue.FromNumber(0),
+                out VectorStyleExpression lineGapWidth) ||
             !TryParseOptionalExpression(
                 paint,
                 "line-blur",
-                AzureStyleValue.FromNumber(0),
-                out AzureStyleExpression lineBlur) ||
+                VectorStyleValue.FromNumber(0),
+                out VectorStyleExpression lineBlur) ||
             !TryParseOptionalExpression(
                 layout,
                 "line-miter-limit",
-                AzureStyleValue.FromNumber(2),
-                out AzureStyleExpression lineMiterLimit) ||
+                VectorStyleValue.FromNumber(2),
+                out VectorStyleExpression lineMiterLimit) ||
             !TryParseOptionalExpression(
                 paint,
                 "line-dasharray",
-                AzureStyleValue.FromArray([]),
-                out AzureStyleExpression lineDashArray) ||
+                VectorStyleValue.FromArray([]),
+                out VectorStyleExpression lineDashArray) ||
             !TryParseOptionalExpression(
                 paint,
                 "line-pattern",
-                AzureStyleValue.Null,
-                out AzureStyleExpression linePattern) ||
+                VectorStyleValue.Null,
+                out VectorStyleExpression linePattern) ||
             !TryParseLineGradient(
                 paint,
                 out ImmutableArray<VectorLineGradientStop> lineGradient))
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
 
-        AzureStyleExpression filter = AzureStyleExpression.Literal(
-            AzureStyleValue.FromBoolean(true));
+        VectorStyleExpression filter = VectorStyleExpression.Literal(
+            VectorStyleValue.FromBoolean(true));
         if (layer.TryGetProperty("filter", out JsonElement filterElement) &&
-            !AzureStyleExpression.TryParseFilter(filterElement, out filter))
+            !VectorStyleExpression.TryParseFilter(filterElement, out filter))
         {
-            return AzureStyleLayerParseResult.UnsupportedExpression;
+            return VectorStyleLayerParseResult.UnsupportedExpression;
         }
         double minimumZoom = 0;
         double maximumZoom = MapCamera.MaximumTileZoom + 1;
@@ -2425,10 +2425,10 @@ internal sealed class AzureSymbolStyle
              !double.IsFinite(maximumZoom)) ||
             maximumZoom <= minimumZoom)
         {
-            return AzureStyleLayerParseResult.InvalidDefinition;
+            return VectorStyleLayerParseResult.InvalidDefinition;
         }
 
-        parsed = new AzureLineStyleLayer(
+        parsed = new VectorLineStyleLayer(
             order,
             sourceLayer,
             minimumZoom,
@@ -2447,7 +2447,7 @@ internal sealed class AzureSymbolStyle
             lineBlur,
             lineMiterLimit,
             lineGradient);
-        return AzureStyleLayerParseResult.Parsed;
+        return VectorStyleLayerParseResult.Parsed;
     }
 
     private static HashSet<string>? GetVectorSources(
@@ -2461,7 +2461,7 @@ internal sealed class AzureSymbolStyle
         if (sources.ValueKind != JsonValueKind.Object)
         {
             throw new InvalidDataException(
-                "The Azure vector style contains an invalid sources object.");
+                "The vector style contains an invalid sources object.");
         }
 
         HashSet<string> result = new(StringComparer.Ordinal);
@@ -2471,7 +2471,7 @@ internal sealed class AzureSymbolStyle
                 source.Value.ValueKind != JsonValueKind.Object)
             {
                 throw new InvalidDataException(
-                    "The Azure vector style contains an invalid source.");
+                    "The vector style contains an invalid source.");
             }
             if (source.Value.TryGetProperty("type", out JsonElement type) &&
                 type.ValueKind == JsonValueKind.String &&
@@ -2491,7 +2491,7 @@ internal sealed class AzureSymbolStyle
         {
             throw new InvalidDataException(
                 azureBaseSourceOnly
-                    ? "The Azure vector style does not define the Azure base vector source."
+                    ? "The vector style does not define the Azure base vector source."
                     : "The custom vector style does not define a vector source.");
         }
         if (!azureBaseSourceOnly && result.Count > 1)
@@ -2505,16 +2505,16 @@ internal sealed class AzureSymbolStyle
     private static bool TryParseOptionalExpression(
         JsonElement owner,
         string propertyName,
-        AzureStyleValue defaultValue,
-        out AzureStyleExpression expression)
+        VectorStyleValue defaultValue,
+        out VectorStyleExpression expression)
     {
         if (owner.ValueKind != JsonValueKind.Object ||
             !owner.TryGetProperty(propertyName, out JsonElement value))
         {
-            expression = AzureStyleExpression.Literal(defaultValue);
+            expression = VectorStyleExpression.Literal(defaultValue);
             return true;
         }
-        return AzureStyleExpression.TryParseStyleValue(
+        return VectorStyleExpression.TryParseStyleValue(
             value,
             defaultValue,
             out expression);
@@ -2572,8 +2572,8 @@ internal sealed class AzureSymbolStyle
                 offset > 1 ||
                 offset <= previousOffset ||
                 items[index + 1].ValueKind != JsonValueKind.String ||
-                !AzureTextStyleLayer.TryParseColor(
-                    AzureStyleValue.FromString(
+                !VectorTextStyleLayer.TryParseColor(
+                    VectorStyleValue.FromString(
                         items[index + 1].GetString()!),
                     out Vector4 color))
             {
@@ -2593,83 +2593,83 @@ internal sealed class AzureSymbolStyle
     private static bool TryParseOptionalLiteralExpression(
         JsonElement owner,
         string propertyName,
-        AzureStyleValue defaultValue,
-        out AzureStyleExpression expression)
+        VectorStyleValue defaultValue,
+        out VectorStyleExpression expression)
     {
         if (owner.ValueKind != JsonValueKind.Object ||
             !owner.TryGetProperty(propertyName, out JsonElement value))
         {
-            expression = AzureStyleExpression.Literal(defaultValue);
+            expression = VectorStyleExpression.Literal(defaultValue);
             return true;
         }
-        return AzureStyleExpression.TryParseLiteralExpression(
+        return VectorStyleExpression.TryParseLiteralExpression(
             value,
             out expression);
     }
 }
 
-internal sealed class AzureSymbolStyleLayer(
+internal sealed class VectorIconStyleLayer(
     int order,
     string sourceLayer,
     double minimumZoom,
     double maximumZoom,
-    AzureStyleExpression visibility,
-    AzureStyleExpression filter,
-    AzureSymbolPlacement placement,
-    AzureStyleExpression symbolSpacing,
-    AzureStyleExpression iconImage,
-    AzureStyleExpression iconSize,
-    AzureStyleExpression iconOffset,
-    AzureStyleExpression iconAnchor,
-    AzureStyleExpression iconRotate,
-    AzureStyleExpression iconRotationAlignment,
-    AzureStyleExpression iconTextFit,
-    AzureStyleExpression iconTextFitPadding,
-    AzureStyleExpression symbolSortKey,
-    AzureStyleExpression iconAllowOverlap,
-    AzureStyleExpression iconIgnorePlacement,
-    AzureStyleExpression iconOptional,
-    AzureStyleExpression iconOpacity,
-    AzureStyleExpression iconColor)
+    VectorStyleExpression visibility,
+    VectorStyleExpression filter,
+    VectorSymbolPlacementKind placement,
+    VectorStyleExpression symbolSpacing,
+    VectorStyleExpression iconImage,
+    VectorStyleExpression iconSize,
+    VectorStyleExpression iconOffset,
+    VectorStyleExpression iconAnchor,
+    VectorStyleExpression iconRotate,
+    VectorStyleExpression iconRotationAlignment,
+    VectorStyleExpression iconTextFit,
+    VectorStyleExpression iconTextFitPadding,
+    VectorStyleExpression symbolSortKey,
+    VectorStyleExpression iconAllowOverlap,
+    VectorStyleExpression iconIgnorePlacement,
+    VectorStyleExpression iconOptional,
+    VectorStyleExpression iconOpacity,
+    VectorStyleExpression iconColor)
 {
     internal int Order { get; } = order;
 
     internal string SourceLayer { get; } = sourceLayer;
 
-    internal AzureSymbolPlacement Placement { get; } = placement;
+    internal VectorSymbolPlacementKind Placement { get; } = placement;
 
-    internal AzureStyleVisibilityResult EvaluateVisibility(double zoom)
+    internal VectorStyleVisibilityResult EvaluateVisibility(double zoom)
     {
         if (zoom < minimumZoom || zoom >= maximumZoom)
         {
-            return AzureStyleVisibilityResult.Hidden;
+            return VectorStyleVisibilityResult.Hidden;
         }
-        AzureStyleEvaluationContext context = new(null, zoom);
-        if (!visibility.TryEvaluate(context, out AzureStyleValue value) ||
-            value.Kind != AzureStyleValueKind.String)
+        VectorStyleEvaluationContext context = new(null, zoom);
+        if (!visibility.TryEvaluate(context, out VectorStyleValue value) ||
+            value.Kind != VectorStyleValueKind.String)
         {
-            return AzureStyleVisibilityResult.EvaluationFailure;
+            return VectorStyleVisibilityResult.EvaluationFailure;
         }
         return string.Equals(value.StringValue, "none", StringComparison.Ordinal)
-            ? AzureStyleVisibilityResult.Hidden
-            : AzureStyleVisibilityResult.Visible;
+            ? VectorStyleVisibilityResult.Hidden
+            : VectorStyleVisibilityResult.Visible;
     }
 
-    internal AzureStyleFilterResult EvaluateFilter(
-        AzureStyleEvaluationContext context)
+    internal VectorStyleFilterResult EvaluateFilter(
+        VectorStyleEvaluationContext context)
     {
-        if (!filter.TryEvaluate(context, out AzureStyleValue result) ||
-            result.Kind != AzureStyleValueKind.Boolean)
+        if (!filter.TryEvaluate(context, out VectorStyleValue result) ||
+            result.Kind != VectorStyleValueKind.Boolean)
         {
-            return AzureStyleFilterResult.EvaluationFailure;
+            return VectorStyleFilterResult.EvaluationFailure;
         }
         return result.BooleanValue
-            ? AzureStyleFilterResult.Match
-            : AzureStyleFilterResult.NoMatch;
+            ? VectorStyleFilterResult.Match
+            : VectorStyleFilterResult.NoMatch;
     }
 
-    internal AzureStyleIconResult EvaluateIcon(
-        AzureStyleEvaluationContext context,
+    internal VectorStyleIconResult EvaluateIcon(
+        VectorStyleEvaluationContext context,
         out string spriteName,
         out double size,
         out double offsetX,
@@ -2703,58 +2703,58 @@ internal sealed class AzureSymbolStyleLayer(
         allowOverlap = false;
         ignorePlacement = false;
         optional = false;
-        if (!iconImage.TryEvaluate(context, out AzureStyleValue image) ||
-            image.Kind != AzureStyleValueKind.String)
+        if (!iconImage.TryEvaluate(context, out VectorStyleValue image) ||
+            image.Kind != VectorStyleValueKind.String)
         {
-            return AzureStyleIconResult.EvaluationFailure;
+            return VectorStyleIconResult.EvaluationFailure;
         }
         if (string.IsNullOrEmpty(image.StringValue))
         {
-            return AzureStyleIconResult.NoIcon;
+            return VectorStyleIconResult.NoIcon;
         }
-        if (!iconSize.TryEvaluate(context, out AzureStyleValue sizeValue) ||
+        if (!iconSize.TryEvaluate(context, out VectorStyleValue sizeValue) ||
             !sizeValue.TryGetNumber(out size) ||
             !double.IsFinite(size))
         {
-            return AzureStyleIconResult.EvaluationFailure;
+            return VectorStyleIconResult.EvaluationFailure;
         }
         if (size <= 0)
         {
-            return AzureStyleIconResult.NoIcon;
+            return VectorStyleIconResult.NoIcon;
         }
-        if (!iconOffset.TryEvaluate(context, out AzureStyleValue offset) ||
-            offset.Kind != AzureStyleValueKind.Array ||
+        if (!iconOffset.TryEvaluate(context, out VectorStyleValue offset) ||
+            offset.Kind != VectorStyleValueKind.Array ||
             offset.ArrayValue is null ||
             offset.ArrayValue.Length != 2 ||
             !offset.ArrayValue[0].TryGetNumber(out offsetX) ||
             !offset.ArrayValue[1].TryGetNumber(out offsetY) ||
             !double.IsFinite(offsetX) ||
             !double.IsFinite(offsetY) ||
-            !iconAnchor.TryEvaluate(context, out AzureStyleValue anchor) ||
-            anchor.Kind != AzureStyleValueKind.String ||
+            !iconAnchor.TryEvaluate(context, out VectorStyleValue anchor) ||
+            anchor.Kind != VectorStyleValueKind.String ||
             !TryGetAnchorOffsets(anchor.StringValue, out anchorX, out anchorY) ||
-            !symbolSpacing.TryEvaluate(context, out AzureStyleValue spacingValue) ||
+            !symbolSpacing.TryEvaluate(context, out VectorStyleValue spacingValue) ||
             !spacingValue.TryGetNumber(out spacing) ||
             !double.IsFinite(spacing) ||
             spacing <= 0 ||
-            !iconRotate.TryEvaluate(context, out AzureStyleValue rotationValue) ||
+            !iconRotate.TryEvaluate(context, out VectorStyleValue rotationValue) ||
             !rotationValue.TryGetNumber(out rotation) ||
             !double.IsFinite(rotation) ||
             !iconRotationAlignment.TryEvaluate(
                 context,
-                out AzureStyleValue alignmentValue) ||
+                out VectorStyleValue alignmentValue) ||
             !TryGetViewportAlignment(
                 alignmentValue,
                 Placement,
                 out viewportAligned) ||
-            !iconTextFit.TryEvaluate(context, out AzureStyleValue fitValue) ||
-            fitValue.Kind != AzureStyleValueKind.String ||
+            !iconTextFit.TryEvaluate(context, out VectorStyleValue fitValue) ||
+            fitValue.Kind != VectorStyleValueKind.String ||
             !TryGetTextFit(fitValue.StringValue, out textFit) ||
             !iconTextFitPadding.TryEvaluate(
                 context,
-                out AzureStyleValue paddingValue) ||
+                out VectorStyleValue paddingValue) ||
             !TryGetTextFitPadding(paddingValue, out textFitPadding) ||
-            !symbolSortKey.TryEvaluate(context, out AzureStyleValue sortValue) ||
+            !symbolSortKey.TryEvaluate(context, out VectorStyleValue sortValue) ||
             !sortValue.TryGetNumber(out sortKey) ||
             !double.IsFinite(sortKey) ||
             !TryEvaluateBoolean(
@@ -2766,13 +2766,13 @@ internal sealed class AzureSymbolStyleLayer(
                 context,
                 out ignorePlacement) ||
             !TryEvaluateBoolean(iconOptional, context, out optional) ||
-            !iconOpacity.TryEvaluate(context, out AzureStyleValue opacityValue) ||
+            !iconOpacity.TryEvaluate(context, out VectorStyleValue opacityValue) ||
             !opacityValue.TryGetNumber(out double opacity) ||
             !double.IsFinite(opacity) ||
-            !iconColor.TryEvaluate(context, out AzureStyleValue colorValue) ||
+            !iconColor.TryEvaluate(context, out VectorStyleValue colorValue) ||
             !TryGetIconPaint(colorValue, out paint))
         {
-            return AzureStyleIconResult.EvaluationFailure;
+            return VectorStyleIconResult.EvaluationFailure;
         }
         spriteName = image.StringValue;
         rotation = rotation * Math.PI / 180;
@@ -2783,35 +2783,35 @@ internal sealed class AzureSymbolStyleLayer(
         };
         if (paint.Color.W <= 0)
         {
-            return AzureStyleIconResult.NoIcon;
+            return VectorStyleIconResult.NoIcon;
         }
-        return AzureStyleIconResult.Resolved;
+        return VectorStyleIconResult.Resolved;
     }
 
     private static bool TryGetViewportAlignment(
-        AzureStyleValue value,
-        AzureSymbolPlacement placement,
+        VectorStyleValue value,
+        VectorSymbolPlacementKind placement,
         out bool viewportAligned)
     {
         viewportAligned = value.StringValue switch
         {
             "viewport" => true,
             "map" => false,
-            "auto" => placement == AzureSymbolPlacement.Point,
+            "auto" => placement == VectorSymbolPlacementKind.Point,
             _ => false,
         };
-        return value.Kind == AzureStyleValueKind.String &&
+        return value.Kind == VectorStyleValueKind.String &&
             value.StringValue is "viewport" or "map" or "auto";
     }
 
     private static bool TryEvaluateBoolean(
-        AzureStyleExpression expression,
-        AzureStyleEvaluationContext context,
+        VectorStyleExpression expression,
+        VectorStyleEvaluationContext context,
         out bool value)
     {
         value = false;
-        if (!expression.TryEvaluate(context, out AzureStyleValue result) ||
-            result.Kind != AzureStyleValueKind.Boolean)
+        if (!expression.TryEvaluate(context, out VectorStyleValue result) ||
+            result.Kind != VectorStyleValueKind.Boolean)
         {
             return false;
         }
@@ -2835,13 +2835,13 @@ internal sealed class AzureSymbolStyleLayer(
     }
 
     private static bool TryGetTextFitPadding(
-        AzureStyleValue value,
+        VectorStyleValue value,
         out Vector4 padding)
     {
         padding = default;
         if (value is not
             {
-                Kind: AzureStyleValueKind.Array,
+                Kind: VectorStyleValueKind.Array,
                 ArrayValue.Length: 4
             } ||
             value.ArrayValue is not { } values ||
@@ -2869,15 +2869,15 @@ internal sealed class AzureSymbolStyleLayer(
     }
 
     private static bool TryGetIconPaint(
-        AzureStyleValue value,
+        VectorStyleValue value,
         out VectorIconPaint paint)
     {
-        if (value.Kind == AzureStyleValueKind.Null)
+        if (value.Kind == VectorStyleValueKind.Null)
         {
             paint = VectorIconPaint.Default;
             return true;
         }
-        if (!AzureTextStyleLayer.TryParseColor(value, out Vector4 color))
+        if (!VectorTextStyleLayer.TryParseColor(value, out Vector4 color))
         {
             paint = default;
             return false;
@@ -2932,40 +2932,40 @@ internal sealed class AzureSymbolStyleLayer(
     }
 }
 
-internal sealed class AzureBackgroundStyleLayer(
+internal sealed class VectorBackgroundStyleLayer(
     int order,
-    AzureStyleExpression visibility,
-    AzureStyleExpression backgroundColor,
-    AzureStyleExpression backgroundOpacity)
+    VectorStyleExpression visibility,
+    VectorStyleExpression backgroundColor,
+    VectorStyleExpression backgroundOpacity)
 {
     internal int Order { get; } = order;
 
-    internal AzureStyleFillResult Evaluate(
+    internal VectorStyleFillResult Evaluate(
         double zoom,
         out VectorFillStyle style)
     {
         style = default;
-        AzureStyleEvaluationContext context = new(null, zoom);
-        if (!visibility.TryEvaluate(context, out AzureStyleValue visibilityValue) ||
-            visibilityValue.Kind != AzureStyleValueKind.String)
+        VectorStyleEvaluationContext context = new(null, zoom);
+        if (!visibility.TryEvaluate(context, out VectorStyleValue visibilityValue) ||
+            visibilityValue.Kind != VectorStyleValueKind.String)
         {
-            return AzureStyleFillResult.EvaluationFailure;
+            return VectorStyleFillResult.EvaluationFailure;
         }
         if (visibilityValue.StringValue == "none")
         {
-            return AzureStyleFillResult.Hidden;
+            return VectorStyleFillResult.Hidden;
         }
         if (visibilityValue.StringValue != "visible" ||
-            !backgroundColor.TryEvaluate(context, out AzureStyleValue colorValue) ||
-            !AzureTextStyleLayer.TryParseColor(colorValue, out Vector4 color) ||
+            !backgroundColor.TryEvaluate(context, out VectorStyleValue colorValue) ||
+            !VectorTextStyleLayer.TryParseColor(colorValue, out Vector4 color) ||
             !backgroundOpacity.TryEvaluate(
                 context,
-                out AzureStyleValue opacityValue) ||
+                out VectorStyleValue opacityValue) ||
             !opacityValue.TryGetNumber(out double opacity) ||
             !double.IsFinite(opacity) ||
             opacity is < 0 or > 1)
         {
-            return AzureStyleFillResult.EvaluationFailure;
+            return VectorStyleFillResult.EvaluationFailure;
         }
 
         style = new VectorFillStyle(
@@ -2974,7 +2974,7 @@ internal sealed class AzureBackgroundStyleLayer(
             0,
             0,
             0);
-        return AzureStyleFillResult.Resolved;
+        return VectorStyleFillResult.Resolved;
     }
 
     internal void CollectZoomStops(List<double> stops)
@@ -2985,74 +2985,74 @@ internal sealed class AzureBackgroundStyleLayer(
     }
 }
 
-internal sealed class AzureFillStyleLayer(
+internal sealed class VectorFillStyleLayer(
     int order,
     string sourceLayer,
     double minimumZoom,
     double maximumZoom,
-    AzureStyleExpression visibility,
-    AzureStyleExpression filter,
-    AzureStyleExpression fillColor,
-    AzureStyleExpression fillOpacity,
-    AzureStyleExpression fillOutlineColor,
-    AzureStyleExpression fillPattern)
+    VectorStyleExpression visibility,
+    VectorStyleExpression filter,
+    VectorStyleExpression fillColor,
+    VectorStyleExpression fillOpacity,
+    VectorStyleExpression fillOutlineColor,
+    VectorStyleExpression fillPattern)
 {
     internal int Order { get; } = order;
 
     internal string SourceLayer { get; } = sourceLayer;
 
-    internal AzureStyleVisibilityResult EvaluateVisibility(double zoom)
+    internal VectorStyleVisibilityResult EvaluateVisibility(double zoom)
     {
         if (zoom < minimumZoom || zoom >= maximumZoom)
         {
-            return AzureStyleVisibilityResult.Hidden;
+            return VectorStyleVisibilityResult.Hidden;
         }
-        AzureStyleEvaluationContext context = new(null, zoom);
-        if (!visibility.TryEvaluate(context, out AzureStyleValue value) ||
-            value.Kind != AzureStyleValueKind.String)
+        VectorStyleEvaluationContext context = new(null, zoom);
+        if (!visibility.TryEvaluate(context, out VectorStyleValue value) ||
+            value.Kind != VectorStyleValueKind.String)
         {
-            return AzureStyleVisibilityResult.EvaluationFailure;
+            return VectorStyleVisibilityResult.EvaluationFailure;
         }
         return string.Equals(value.StringValue, "none", StringComparison.Ordinal)
-            ? AzureStyleVisibilityResult.Hidden
-            : AzureStyleVisibilityResult.Visible;
+            ? VectorStyleVisibilityResult.Hidden
+            : VectorStyleVisibilityResult.Visible;
     }
 
-    internal AzureStyleFilterResult EvaluateFilter(
-        AzureStyleEvaluationContext context)
+    internal VectorStyleFilterResult EvaluateFilter(
+        VectorStyleEvaluationContext context)
     {
-        if (!filter.TryEvaluate(context, out AzureStyleValue value) ||
-            value.Kind != AzureStyleValueKind.Boolean)
+        if (!filter.TryEvaluate(context, out VectorStyleValue value) ||
+            value.Kind != VectorStyleValueKind.Boolean)
         {
-            return AzureStyleFilterResult.EvaluationFailure;
+            return VectorStyleFilterResult.EvaluationFailure;
         }
         return value.BooleanValue
-            ? AzureStyleFilterResult.Match
-            : AzureStyleFilterResult.NoMatch;
+            ? VectorStyleFilterResult.Match
+            : VectorStyleFilterResult.NoMatch;
     }
 
-    internal AzureStyleFillResult EvaluateFill(
-        AzureStyleEvaluationContext context,
+    internal VectorStyleFillResult EvaluateFill(
+        VectorStyleEvaluationContext context,
         out VectorFillStyle result,
         out string? patternName)
     {
         result = default;
         patternName = null;
-        if (!fillColor.TryEvaluate(context, out AzureStyleValue colorValue) ||
-            !AzureTextStyleLayer.TryParseColor(colorValue, out Vector4 color) ||
-            !fillOpacity.TryEvaluate(context, out AzureStyleValue opacityValue) ||
+        if (!fillColor.TryEvaluate(context, out VectorStyleValue colorValue) ||
+            !VectorTextStyleLayer.TryParseColor(colorValue, out Vector4 color) ||
+            !fillOpacity.TryEvaluate(context, out VectorStyleValue opacityValue) ||
             !opacityValue.TryGetNumber(out double opacity) ||
             !double.IsFinite(opacity) ||
             !fillOutlineColor.TryEvaluate(
                 context,
-                out AzureStyleValue outlineValue) ||
+                out VectorStyleValue outlineValue) ||
             !TryResolveOptionalColor(
                 outlineValue,
                 out Vector4? outlineColor) ||
-            !fillPattern.TryEvaluate(context, out AzureStyleValue patternValue) ||
+            !fillPattern.TryEvaluate(context, out VectorStyleValue patternValue) ||
             !TryResolvePattern(patternValue, out patternName))
         {
-            return AzureStyleFillResult.EvaluationFailure;
+            return VectorStyleFillResult.EvaluationFailure;
         }
         opacity = Math.Clamp(opacity, 0, 1);
         if (opacity <= 0 ||
@@ -3060,7 +3060,7 @@ internal sealed class AzureFillStyleLayer(
             (outlineColor is not Vector4 visibleOutline ||
              visibleOutline.W <= 0))
         {
-            return AzureStyleFillResult.Hidden;
+            return VectorStyleFillResult.Hidden;
         }
         color *= (float)opacity;
         if (outlineColor is Vector4 outline)
@@ -3071,7 +3071,7 @@ internal sealed class AzureFillStyleLayer(
             patternName is null ? color : Vector4.Zero,
             outlineColor,
             Opacity: opacity);
-        return AzureStyleFillResult.Resolved;
+        return VectorStyleFillResult.Resolved;
     }
 
     internal void CollectZoomStops(List<double> stops)
@@ -3087,15 +3087,15 @@ internal sealed class AzureFillStyleLayer(
     }
 
     private static bool TryResolveOptionalColor(
-        AzureStyleValue value,
+        VectorStyleValue value,
         out Vector4? color)
     {
         color = null;
-        if (value.Kind == AzureStyleValueKind.Null)
+        if (value.Kind == VectorStyleValueKind.Null)
         {
             return true;
         }
-        if (!AzureTextStyleLayer.TryParseColor(value, out Vector4 resolved))
+        if (!VectorTextStyleLayer.TryParseColor(value, out Vector4 resolved))
         {
             return false;
         }
@@ -3104,15 +3104,15 @@ internal sealed class AzureFillStyleLayer(
     }
 
     private static bool TryResolvePattern(
-        AzureStyleValue value,
+        VectorStyleValue value,
         out string? patternName)
     {
         patternName = null;
-        if (value.Kind == AzureStyleValueKind.Null)
+        if (value.Kind == VectorStyleValueKind.Null)
         {
             return true;
         }
-        if (value.Kind != AzureStyleValueKind.String ||
+        if (value.Kind != VectorStyleValueKind.String ||
             string.IsNullOrWhiteSpace(value.StringValue))
         {
             return false;
@@ -3122,101 +3122,101 @@ internal sealed class AzureFillStyleLayer(
     }
 }
 
-internal sealed class AzureLineStyleLayer(
+internal sealed class VectorLineStyleLayer(
     int order,
     string sourceLayer,
     double minimumZoom,
     double maximumZoom,
-    AzureStyleExpression visibility,
-    AzureStyleExpression filter,
-    AzureStyleExpression lineColor,
-    AzureStyleExpression lineOpacity,
-    AzureStyleExpression lineWidth,
-    AzureStyleExpression lineCap,
-    AzureStyleExpression lineJoin,
-    AzureStyleExpression lineDashArray,
-    AzureStyleExpression linePattern,
-    AzureStyleExpression lineOffset,
-    AzureStyleExpression lineGapWidth,
-    AzureStyleExpression lineBlur,
-    AzureStyleExpression lineMiterLimit,
+    VectorStyleExpression visibility,
+    VectorStyleExpression filter,
+    VectorStyleExpression lineColor,
+    VectorStyleExpression lineOpacity,
+    VectorStyleExpression lineWidth,
+    VectorStyleExpression lineCap,
+    VectorStyleExpression lineJoin,
+    VectorStyleExpression lineDashArray,
+    VectorStyleExpression linePattern,
+    VectorStyleExpression lineOffset,
+    VectorStyleExpression lineGapWidth,
+    VectorStyleExpression lineBlur,
+    VectorStyleExpression lineMiterLimit,
     ImmutableArray<VectorLineGradientStop> lineGradient)
 {
     internal int Order { get; } = order;
 
     internal string SourceLayer { get; } = sourceLayer;
 
-    internal AzureStyleVisibilityResult EvaluateVisibility(double zoom)
+    internal VectorStyleVisibilityResult EvaluateVisibility(double zoom)
     {
         if (zoom < minimumZoom || zoom >= maximumZoom)
         {
-            return AzureStyleVisibilityResult.Hidden;
+            return VectorStyleVisibilityResult.Hidden;
         }
-        AzureStyleEvaluationContext context = new(null, zoom);
-        if (!visibility.TryEvaluate(context, out AzureStyleValue value) ||
-            value.Kind != AzureStyleValueKind.String)
+        VectorStyleEvaluationContext context = new(null, zoom);
+        if (!visibility.TryEvaluate(context, out VectorStyleValue value) ||
+            value.Kind != VectorStyleValueKind.String)
         {
-            return AzureStyleVisibilityResult.EvaluationFailure;
+            return VectorStyleVisibilityResult.EvaluationFailure;
         }
         return string.Equals(value.StringValue, "none", StringComparison.Ordinal)
-            ? AzureStyleVisibilityResult.Hidden
-            : AzureStyleVisibilityResult.Visible;
+            ? VectorStyleVisibilityResult.Hidden
+            : VectorStyleVisibilityResult.Visible;
     }
 
-    internal AzureStyleFilterResult EvaluateFilter(
-        AzureStyleEvaluationContext context)
+    internal VectorStyleFilterResult EvaluateFilter(
+        VectorStyleEvaluationContext context)
     {
-        if (!filter.TryEvaluate(context, out AzureStyleValue value) ||
-            value.Kind != AzureStyleValueKind.Boolean)
+        if (!filter.TryEvaluate(context, out VectorStyleValue value) ||
+            value.Kind != VectorStyleValueKind.Boolean)
         {
-            return AzureStyleFilterResult.EvaluationFailure;
+            return VectorStyleFilterResult.EvaluationFailure;
         }
         return value.BooleanValue
-            ? AzureStyleFilterResult.Match
-            : AzureStyleFilterResult.NoMatch;
+            ? VectorStyleFilterResult.Match
+            : VectorStyleFilterResult.NoMatch;
     }
 
-    internal AzureStyleLineResult EvaluateLine(
-        AzureStyleEvaluationContext context,
+    internal VectorStyleLineResult EvaluateLine(
+        VectorStyleEvaluationContext context,
         out VectorLineStyle result)
     {
         result = default;
-        if (!lineColor.TryEvaluate(context, out AzureStyleValue colorValue) ||
-            !AzureTextStyleLayer.TryParseColor(colorValue, out Vector4 color) ||
-            !lineOpacity.TryEvaluate(context, out AzureStyleValue opacityValue) ||
+        if (!lineColor.TryEvaluate(context, out VectorStyleValue colorValue) ||
+            !VectorTextStyleLayer.TryParseColor(colorValue, out Vector4 color) ||
+            !lineOpacity.TryEvaluate(context, out VectorStyleValue opacityValue) ||
             !opacityValue.TryGetNumber(out double opacity) ||
             !double.IsFinite(opacity) ||
-            !lineWidth.TryEvaluate(context, out AzureStyleValue widthValue) ||
+            !lineWidth.TryEvaluate(context, out VectorStyleValue widthValue) ||
             !widthValue.TryGetNumber(out double width) ||
             !double.IsFinite(width) ||
-            !lineOffset.TryEvaluate(context, out AzureStyleValue offsetValue) ||
+            !lineOffset.TryEvaluate(context, out VectorStyleValue offsetValue) ||
             !offsetValue.TryGetNumber(out double offset) ||
             !double.IsFinite(offset) ||
-            !lineGapWidth.TryEvaluate(context, out AzureStyleValue gapValue) ||
+            !lineGapWidth.TryEvaluate(context, out VectorStyleValue gapValue) ||
             !gapValue.TryGetNumber(out double gapWidth) ||
             !double.IsFinite(gapWidth) ||
-            !lineBlur.TryEvaluate(context, out AzureStyleValue blurValue) ||
+            !lineBlur.TryEvaluate(context, out VectorStyleValue blurValue) ||
             !blurValue.TryGetNumber(out double blur) ||
             !double.IsFinite(blur) ||
             !lineMiterLimit.TryEvaluate(
                 context,
-                out AzureStyleValue miterLimitValue) ||
+                out VectorStyleValue miterLimitValue) ||
             !miterLimitValue.TryGetNumber(out double miterLimit) ||
             !double.IsFinite(miterLimit) ||
-            !lineCap.TryEvaluate(context, out AzureStyleValue capValue) ||
-            capValue.Kind != AzureStyleValueKind.String ||
+            !lineCap.TryEvaluate(context, out VectorStyleValue capValue) ||
+            capValue.Kind != VectorStyleValueKind.String ||
             !TryGetCap(capValue.StringValue, out VectorLineCap cap) ||
-            !lineJoin.TryEvaluate(context, out AzureStyleValue joinValue) ||
-            joinValue.Kind != AzureStyleValueKind.String ||
+            !lineJoin.TryEvaluate(context, out VectorStyleValue joinValue) ||
+            joinValue.Kind != VectorStyleValueKind.String ||
             !TryGetJoin(joinValue.StringValue, out VectorLineJoin join))
         {
-            return AzureStyleLineResult.EvaluationFailure;
+            return VectorStyleLineResult.EvaluationFailure;
         }
         if (opacity <= 0 ||
             width <= 0 ||
             lineGradient.IsDefaultOrEmpty && color.W <= 0)
         {
-            return AzureStyleLineResult.Hidden;
+            return VectorStyleLineResult.Hidden;
         }
         if (width > 256 ||
             Math.Abs(offset) > 4096 ||
@@ -3227,15 +3227,15 @@ internal sealed class AzureLineStyleLayer(
             miterLimit < 1 ||
             miterLimit > 16)
         {
-            return AzureStyleLineResult.EvaluationFailure;
+            return VectorStyleLineResult.EvaluationFailure;
         }
-        if (!lineDashArray.TryEvaluate(context, out AzureStyleValue dashValue) ||
+        if (!lineDashArray.TryEvaluate(context, out VectorStyleValue dashValue) ||
             !TryResolveDashArray(
                 dashValue,
                 width,
                 out ImmutableArray<double> dashArray))
         {
-            return AzureStyleLineResult.EvaluationFailure;
+            return VectorStyleLineResult.EvaluationFailure;
         }
         color *= (float)Math.Clamp(opacity, 0, 1);
         ImmutableArray<VectorLineGradientStop> gradient =
@@ -3256,27 +3256,27 @@ internal sealed class AzureLineStyleLayer(
             blur,
             miterLimit,
             gradient);
-        return AzureStyleLineResult.Resolved;
+        return VectorStyleLineResult.Resolved;
     }
 
     internal bool TryEvaluatePattern(
-        AzureStyleEvaluationContext context,
+        VectorStyleEvaluationContext context,
         out string? patternName,
         out double opacity)
     {
         patternName = null;
         opacity = 0;
-        if (!linePattern.TryEvaluate(context, out AzureStyleValue patternValue))
+        if (!linePattern.TryEvaluate(context, out VectorStyleValue patternValue))
         {
             return false;
         }
-        if (patternValue.Kind == AzureStyleValueKind.Null)
+        if (patternValue.Kind == VectorStyleValueKind.Null)
         {
             return true;
         }
-        if (patternValue.Kind != AzureStyleValueKind.String ||
+        if (patternValue.Kind != VectorStyleValueKind.String ||
             string.IsNullOrWhiteSpace(patternValue.StringValue) ||
-            !lineOpacity.TryEvaluate(context, out AzureStyleValue opacityValue) ||
+            !lineOpacity.TryEvaluate(context, out VectorStyleValue opacityValue) ||
             !opacityValue.TryGetNumber(out opacity) ||
             !double.IsFinite(opacity))
         {
@@ -3307,19 +3307,19 @@ internal sealed class AzureLineStyleLayer(
     }
 
     private static bool TryResolveDashArray(
-        AzureStyleValue value,
+        VectorStyleValue value,
         double lineWidth,
         out ImmutableArray<double> dashArray)
     {
         dashArray = [];
-        if (value.Kind == AzureStyleValueKind.Null ||
-            value is { Kind: AzureStyleValueKind.Array, ArrayValue.Length: 0 })
+        if (value.Kind == VectorStyleValueKind.Null ||
+            value is { Kind: VectorStyleValueKind.Array, ArrayValue.Length: 0 })
         {
             return true;
         }
         if (value is not
             {
-                Kind: AzureStyleValueKind.Array,
+                Kind: VectorStyleValueKind.Array,
                 ArrayValue.Length: >= 2
             } ||
             value.ArrayValue is not { } values)
@@ -3375,125 +3375,125 @@ internal sealed class AzureLineStyleLayer(
     }
 }
 
-internal sealed class AzureTextStyleLayer(
+internal sealed class VectorTextStyleLayer(
     int order,
     string sourceLayer,
     double minimumZoom,
     double maximumZoom,
-    AzureStyleExpression visibility,
-    AzureStyleExpression filter,
-    AzureSymbolPlacement placement,
-    AzureStyleExpression symbolSpacing,
-    AzureStyleExpression textField,
-    AzureStyleExpression textFont,
-    AzureStyleExpression textSize,
-    AzureStyleExpression textOffset,
-    AzureStyleExpression textAnchor,
-    AzureStyleExpression textVariableAnchor,
-    AzureStyleExpression textRadialOffset,
-    AzureStyleExpression textLetterSpacing,
-    AzureStyleExpression textTransform,
-    AzureStyleExpression textRotationAlignment,
-    AzureStyleExpression textColor,
-    AzureStyleExpression textHaloColor,
-    AzureStyleExpression textHaloWidth,
-    AzureStyleExpression symbolSortKey,
-    AzureStyleExpression textAllowOverlap,
-    AzureStyleExpression textIgnorePlacement,
-    AzureStyleExpression textOptional)
+    VectorStyleExpression visibility,
+    VectorStyleExpression filter,
+    VectorSymbolPlacementKind placement,
+    VectorStyleExpression symbolSpacing,
+    VectorStyleExpression textField,
+    VectorStyleExpression textFont,
+    VectorStyleExpression textSize,
+    VectorStyleExpression textOffset,
+    VectorStyleExpression textAnchor,
+    VectorStyleExpression textVariableAnchor,
+    VectorStyleExpression textRadialOffset,
+    VectorStyleExpression textLetterSpacing,
+    VectorStyleExpression textTransform,
+    VectorStyleExpression textRotationAlignment,
+    VectorStyleExpression textColor,
+    VectorStyleExpression textHaloColor,
+    VectorStyleExpression textHaloWidth,
+    VectorStyleExpression symbolSortKey,
+    VectorStyleExpression textAllowOverlap,
+    VectorStyleExpression textIgnorePlacement,
+    VectorStyleExpression textOptional)
 {
     internal int Order { get; } = order;
 
     internal string SourceLayer { get; } = sourceLayer;
 
-    internal AzureSymbolPlacement Placement { get; } = placement;
+    internal VectorSymbolPlacementKind Placement { get; } = placement;
 
-    internal AzureStyleVisibilityResult EvaluateVisibility(double zoom)
+    internal VectorStyleVisibilityResult EvaluateVisibility(double zoom)
     {
         if (zoom < minimumZoom || zoom >= maximumZoom)
         {
-            return AzureStyleVisibilityResult.Hidden;
+            return VectorStyleVisibilityResult.Hidden;
         }
-        AzureStyleEvaluationContext context = new(null, zoom);
-        if (!visibility.TryEvaluate(context, out AzureStyleValue value) ||
-            value.Kind != AzureStyleValueKind.String)
+        VectorStyleEvaluationContext context = new(null, zoom);
+        if (!visibility.TryEvaluate(context, out VectorStyleValue value) ||
+            value.Kind != VectorStyleValueKind.String)
         {
-            return AzureStyleVisibilityResult.EvaluationFailure;
+            return VectorStyleVisibilityResult.EvaluationFailure;
         }
         return string.Equals(value.StringValue, "none", StringComparison.Ordinal)
-            ? AzureStyleVisibilityResult.Hidden
-            : AzureStyleVisibilityResult.Visible;
+            ? VectorStyleVisibilityResult.Hidden
+            : VectorStyleVisibilityResult.Visible;
     }
 
-    internal AzureStyleFilterResult EvaluateFilter(
-        AzureStyleEvaluationContext context)
+    internal VectorStyleFilterResult EvaluateFilter(
+        VectorStyleEvaluationContext context)
     {
-        if (!filter.TryEvaluate(context, out AzureStyleValue value) ||
-            value.Kind != AzureStyleValueKind.Boolean)
+        if (!filter.TryEvaluate(context, out VectorStyleValue value) ||
+            value.Kind != VectorStyleValueKind.Boolean)
         {
-            return AzureStyleFilterResult.EvaluationFailure;
+            return VectorStyleFilterResult.EvaluationFailure;
         }
         return value.BooleanValue
-            ? AzureStyleFilterResult.Match
-            : AzureStyleFilterResult.NoMatch;
+            ? VectorStyleFilterResult.Match
+            : VectorStyleFilterResult.NoMatch;
     }
 
-    internal AzureStyleTextResult EvaluateText(
-        AzureStyleEvaluationContext context,
-        out AzureTextStyle result)
+    internal VectorStyleTextResult EvaluateText(
+        VectorStyleEvaluationContext context,
+        out VectorTextStyle result)
     {
         result = default;
-        if (!textField.TryEvaluate(context, out AzureStyleValue field) ||
-            field.Kind != AzureStyleValueKind.String)
+        if (!textField.TryEvaluate(context, out VectorStyleValue field) ||
+            field.Kind != VectorStyleValueKind.String)
         {
-            return AzureStyleTextResult.EvaluationFailure;
+            return VectorStyleTextResult.EvaluationFailure;
         }
         string text = field.StringValue ?? string.Empty;
         if (string.IsNullOrWhiteSpace(text))
         {
-            return AzureStyleTextResult.NoText;
+            return VectorStyleTextResult.NoText;
         }
-        if (!textFont.TryEvaluate(context, out AzureStyleValue fontValue) ||
+        if (!textFont.TryEvaluate(context, out VectorStyleValue fontValue) ||
             !TryGetFontStack(fontValue, out string fontStack) ||
-            !textSize.TryEvaluate(context, out AzureStyleValue sizeValue) ||
+            !textSize.TryEvaluate(context, out VectorStyleValue sizeValue) ||
             !sizeValue.TryGetNumber(out double size) ||
             !double.IsFinite(size) ||
-            !textOffset.TryEvaluate(context, out AzureStyleValue offsetValue) ||
+            !textOffset.TryEvaluate(context, out VectorStyleValue offsetValue) ||
             !TryGetPair(offsetValue, out double offsetX, out double offsetY) ||
-            !textAnchor.TryEvaluate(context, out AzureStyleValue anchorValue) ||
-            anchorValue.Kind != AzureStyleValueKind.String ||
+            !textAnchor.TryEvaluate(context, out VectorStyleValue anchorValue) ||
+            anchorValue.Kind != VectorStyleValueKind.String ||
             !TryGetAnchor(anchorValue.StringValue, out string anchor) ||
             !textRadialOffset.TryEvaluate(
                 context,
-                out AzureStyleValue radialOffsetValue) ||
+                out VectorStyleValue radialOffsetValue) ||
             !radialOffsetValue.TryGetNumber(out double radialOffset) ||
             !double.IsFinite(radialOffset) ||
             !textLetterSpacing.TryEvaluate(
                 context,
-                out AzureStyleValue letterSpacingValue) ||
+                out VectorStyleValue letterSpacingValue) ||
             !letterSpacingValue.TryGetNumber(out double letterSpacing) ||
             !double.IsFinite(letterSpacing) ||
-            !textTransform.TryEvaluate(context, out AzureStyleValue transformValue) ||
-            transformValue.Kind != AzureStyleValueKind.String ||
+            !textTransform.TryEvaluate(context, out VectorStyleValue transformValue) ||
+            transformValue.Kind != VectorStyleValueKind.String ||
             !textRotationAlignment.TryEvaluate(
                 context,
-                out AzureStyleValue alignmentValue) ||
+                out VectorStyleValue alignmentValue) ||
             !TryGetViewportAlignment(
                 alignmentValue,
                 Placement,
                 out bool viewportAligned) ||
-            !textColor.TryEvaluate(context, out AzureStyleValue colorValue) ||
+            !textColor.TryEvaluate(context, out VectorStyleValue colorValue) ||
             !TryParseColor(colorValue, out Vector4 color) ||
-            !textHaloColor.TryEvaluate(context, out AzureStyleValue haloColorValue) ||
+            !textHaloColor.TryEvaluate(context, out VectorStyleValue haloColorValue) ||
             !TryParseColor(haloColorValue, out Vector4 haloColor) ||
-            !textHaloWidth.TryEvaluate(context, out AzureStyleValue haloWidthValue) ||
+            !textHaloWidth.TryEvaluate(context, out VectorStyleValue haloWidthValue) ||
             !haloWidthValue.TryGetNumber(out double haloWidth) ||
             !double.IsFinite(haloWidth) ||
-            !symbolSpacing.TryEvaluate(context, out AzureStyleValue spacingValue) ||
+            !symbolSpacing.TryEvaluate(context, out VectorStyleValue spacingValue) ||
             !spacingValue.TryGetNumber(out double spacing) ||
             !double.IsFinite(spacing) ||
             spacing <= 0 ||
-            !symbolSortKey.TryEvaluate(context, out AzureStyleValue sortValue) ||
+            !symbolSortKey.TryEvaluate(context, out VectorStyleValue sortValue) ||
             !sortValue.TryGetNumber(out double sortKey) ||
             !double.IsFinite(sortKey) ||
             !TryEvaluateBoolean(
@@ -3506,16 +3506,16 @@ internal sealed class AzureTextStyleLayer(
                 out bool ignorePlacement) ||
             !TryEvaluateBoolean(textOptional, context, out bool optional))
         {
-            return AzureStyleTextResult.EvaluationFailure;
+            return VectorStyleTextResult.EvaluationFailure;
         }
         if (size <= 0 || size > 256 || haloWidth < 0 || haloWidth > 32)
         {
-            return AzureStyleTextResult.NoText;
+            return VectorStyleTextResult.NoText;
         }
         if (textVariableAnchor.TryEvaluate(
                 context,
-                out AzureStyleValue variableAnchorValue) &&
-            variableAnchorValue.Kind != AzureStyleValueKind.Null &&
+                out VectorStyleValue variableAnchorValue) &&
+            variableAnchorValue.Kind != VectorStyleValueKind.Null &&
             TryGetFirstAnchor(variableAnchorValue, out string variableAnchor))
         {
             anchor = variableAnchor;
@@ -3529,9 +3529,9 @@ internal sealed class AzureTextStyleLayer(
         };
         if (text.Length == 0)
         {
-            return AzureStyleTextResult.EvaluationFailure;
+            return VectorStyleTextResult.EvaluationFailure;
         }
-        result = new AzureTextStyle(
+        result = new VectorTextStyle(
             text,
             fontStack,
             size,
@@ -3547,35 +3547,35 @@ internal sealed class AzureTextStyleLayer(
             ignorePlacement,
             optional,
             viewportAligned);
-        return AzureStyleTextResult.Resolved;
+        return VectorStyleTextResult.Resolved;
     }
 
-    internal AzureStyleTextResult EvaluateAccessibilityText(
-        AzureStyleEvaluationContext context,
+    internal VectorStyleTextResult EvaluateAccessibilityText(
+        VectorStyleEvaluationContext context,
         out string text,
         out double prominence)
     {
         text = string.Empty;
         prominence = 0;
-        if (!textField.TryEvaluate(context, out AzureStyleValue field) ||
-            field.Kind != AzureStyleValueKind.String ||
-            !textSize.TryEvaluate(context, out AzureStyleValue sizeValue) ||
+        if (!textField.TryEvaluate(context, out VectorStyleValue field) ||
+            field.Kind != VectorStyleValueKind.String ||
+            !textSize.TryEvaluate(context, out VectorStyleValue sizeValue) ||
             !sizeValue.TryGetNumber(out double size) ||
             !double.IsFinite(size) ||
-            !textTransform.TryEvaluate(context, out AzureStyleValue transformValue) ||
-            transformValue.Kind != AzureStyleValueKind.String ||
-            !symbolSortKey.TryEvaluate(context, out AzureStyleValue sortValue) ||
+            !textTransform.TryEvaluate(context, out VectorStyleValue transformValue) ||
+            transformValue.Kind != VectorStyleValueKind.String ||
+            !symbolSortKey.TryEvaluate(context, out VectorStyleValue sortValue) ||
             !sortValue.TryGetNumber(out double sortKey) ||
             !double.IsFinite(sortKey))
         {
-            return AzureStyleTextResult.EvaluationFailure;
+            return VectorStyleTextResult.EvaluationFailure;
         }
 
         text = field.StringValue ?? string.Empty;
         if (string.IsNullOrWhiteSpace(text) || size <= 0 || size > 256)
         {
             text = string.Empty;
-            return AzureStyleTextResult.NoText;
+            return VectorStyleTextResult.NoText;
         }
 
         text = transformValue.StringValue switch
@@ -3588,7 +3588,7 @@ internal sealed class AzureTextStyleLayer(
         text = text.Trim();
         if (text.Length == 0)
         {
-            return AzureStyleTextResult.EvaluationFailure;
+            return VectorStyleTextResult.EvaluationFailure;
         }
         if (text.Length > 256)
         {
@@ -3596,7 +3596,7 @@ internal sealed class AzureTextStyleLayer(
         }
 
         prominence = size - sortKey;
-        return AzureStyleTextResult.Resolved;
+        return VectorStyleTextResult.Resolved;
     }
 
     internal void CollectZoomStops(List<double> stops)
@@ -3626,13 +3626,13 @@ internal sealed class AzureTextStyleLayer(
     }
 
     private static bool TryEvaluateBoolean(
-        AzureStyleExpression expression,
-        AzureStyleEvaluationContext context,
+        VectorStyleExpression expression,
+        VectorStyleEvaluationContext context,
         out bool value)
     {
         value = false;
-        if (!expression.TryEvaluate(context, out AzureStyleValue result) ||
-            result.Kind != AzureStyleValueKind.Boolean)
+        if (!expression.TryEvaluate(context, out VectorStyleValue result) ||
+            result.Kind != VectorStyleValueKind.Boolean)
         {
             return false;
         }
@@ -3641,34 +3641,34 @@ internal sealed class AzureTextStyleLayer(
     }
 
     private static bool TryGetViewportAlignment(
-        AzureStyleValue value,
-        AzureSymbolPlacement placement,
+        VectorStyleValue value,
+        VectorSymbolPlacementKind placement,
         out bool viewportAligned)
     {
         viewportAligned = value.StringValue switch
         {
             "viewport" => true,
             "map" => false,
-            "auto" => placement == AzureSymbolPlacement.Point,
+            "auto" => placement == VectorSymbolPlacementKind.Point,
             _ => false,
         };
-        return value.Kind == AzureStyleValueKind.String &&
+        return value.Kind == VectorStyleValueKind.String &&
             value.StringValue is "viewport" or "map" or "auto";
     }
 
     private static bool TryGetFontStack(
-        AzureStyleValue value,
+        VectorStyleValue value,
         out string fontStack)
     {
-        if (value.Kind == AzureStyleValueKind.String &&
+        if (value.Kind == VectorStyleValueKind.String &&
             !string.IsNullOrWhiteSpace(value.StringValue))
         {
             fontStack = value.StringValue;
             return true;
         }
-        if (value.Kind == AzureStyleValueKind.Array &&
+        if (value.Kind == VectorStyleValueKind.Array &&
             value.ArrayValue is { Length: > 0 } fonts &&
-            fonts[0].Kind == AzureStyleValueKind.String &&
+            fonts[0].Kind == VectorStyleValueKind.String &&
             !string.IsNullOrWhiteSpace(fonts[0].StringValue))
         {
             fontStack = fonts[0].StringValue!;
@@ -3679,11 +3679,11 @@ internal sealed class AzureTextStyleLayer(
     }
 
     private static bool TryGetPair(
-        AzureStyleValue value,
+        VectorStyleValue value,
         out double x,
         out double y)
     {
-        if (value.Kind == AzureStyleValueKind.Array &&
+        if (value.Kind == VectorStyleValueKind.Array &&
             value.ArrayValue is { Length: 2 } values &&
             values[0].TryGetNumber(out x) &&
             values[1].TryGetNumber(out y) &&
@@ -3698,16 +3698,16 @@ internal sealed class AzureTextStyleLayer(
     }
 
     private static bool TryGetFirstAnchor(
-        AzureStyleValue value,
+        VectorStyleValue value,
         out string anchor)
     {
-        if (value.Kind == AzureStyleValueKind.String)
+        if (value.Kind == VectorStyleValueKind.String)
         {
             return TryGetAnchor(value.StringValue, out anchor);
         }
-        if (value.Kind == AzureStyleValueKind.Array &&
+        if (value.Kind == VectorStyleValueKind.Array &&
             value.ArrayValue is { Length: > 0 } anchors &&
-            anchors[0].Kind == AzureStyleValueKind.String)
+            anchors[0].Kind == VectorStyleValueKind.String)
         {
             return TryGetAnchor(anchors[0].StringValue, out anchor);
         }
@@ -3728,11 +3728,11 @@ internal sealed class AzureTextStyleLayer(
     }
 
     internal static bool TryParseColor(
-        AzureStyleValue value,
+        VectorStyleValue value,
         out Vector4 color)
     {
         color = default;
-        if (value.Kind != AzureStyleValueKind.String ||
+        if (value.Kind != VectorStyleValueKind.String ||
             value.StringValue is not string text)
         {
             return false;
@@ -3852,7 +3852,7 @@ internal sealed class AzureTextStyleLayer(
     }
 }
 
-internal readonly record struct AzureTextStyle(
+internal readonly record struct VectorTextStyle(
     string Text,
     string FontStack,
     double Size,
@@ -3869,34 +3869,34 @@ internal readonly record struct AzureTextStyle(
     bool Optional,
     bool ViewportAligned);
 
-internal enum AzureSymbolPlacement
+internal enum VectorSymbolPlacementKind
 {
     Point,
     Line,
 }
 
-internal enum AzureStyleTextResult
+internal enum VectorStyleTextResult
 {
     Resolved,
     NoText,
     EvaluationFailure,
 }
 
-internal enum AzureStyleLineResult
+internal enum VectorStyleLineResult
 {
     Resolved,
     Hidden,
     EvaluationFailure,
 }
 
-internal enum AzureStyleFillResult
+internal enum VectorStyleFillResult
 {
     Resolved,
     Hidden,
     EvaluationFailure,
 }
 
-internal enum AzureStyleLayerParseResult
+internal enum VectorStyleLayerParseResult
 {
     Parsed,
     UnsupportedVectorSource,
@@ -3908,32 +3908,32 @@ internal enum AzureStyleLayerParseResult
     InvalidDefinition,
 }
 
-internal enum AzureStyleVisibilityResult
+internal enum VectorStyleVisibilityResult
 {
     Visible,
     Hidden,
     EvaluationFailure,
 }
 
-internal enum AzureStyleFilterResult
+internal enum VectorStyleFilterResult
 {
     Match,
     NoMatch,
     EvaluationFailure,
 }
 
-internal enum AzureStyleIconResult
+internal enum VectorStyleIconResult
 {
     Resolved,
     NoIcon,
     EvaluationFailure,
 }
 
-internal readonly record struct AzureStyleEvaluationContext(
+internal readonly record struct VectorStyleEvaluationContext(
     VectorTileFeature? Feature,
     double Zoom);
 
-internal enum AzureStyleExpressionOperator
+internal enum VectorStyleExpressionOperator
 {
     Literal,
     TokenString,
@@ -3962,41 +3962,41 @@ internal enum AzureStyleExpressionOperator
 }
 
 /// <summary>
-/// Small fail-closed evaluator for the expression forms used by Azure point-symbol layers.
+/// Small fail-closed evaluator for supported Style Spec expression forms.
 /// </summary>
-internal sealed class AzureStyleExpression
+internal sealed class VectorStyleExpression
 {
     private const int MaximumDepth = 32;
     private const int MaximumNodes = 4096;
     private const int MaximumArguments = 1024;
     private const int MaximumStringLength = 16 * 1024;
-    private readonly AzureStyleExpressionOperator _operator;
-    private readonly AzureStyleValue _literal;
+    private readonly VectorStyleExpressionOperator _operator;
+    private readonly VectorStyleValue _literal;
     private readonly string? _name;
-    private readonly AzureStyleExpression[] _arguments;
+    private readonly VectorStyleExpression[] _arguments;
     private readonly bool _containsZoom;
 
-    private AzureStyleExpression(
-        AzureStyleExpressionOperator expressionOperator,
-        AzureStyleValue literal,
+    private VectorStyleExpression(
+        VectorStyleExpressionOperator expressionOperator,
+        VectorStyleValue literal,
         string? name,
-        AzureStyleExpression[] arguments)
+        VectorStyleExpression[] arguments)
     {
         _operator = expressionOperator;
         _literal = literal;
         _name = name;
         _arguments = arguments;
         _containsZoom =
-            expressionOperator == AzureStyleExpressionOperator.Zoom ||
+            expressionOperator == VectorStyleExpressionOperator.Zoom ||
             arguments.Any(argument => argument._containsZoom);
     }
 
-    internal static AzureStyleExpression Literal(AzureStyleValue value) =>
-        new(AzureStyleExpressionOperator.Literal, value, null, []);
+    internal static VectorStyleExpression Literal(VectorStyleValue value) =>
+        new(VectorStyleExpressionOperator.Literal, value, null, []);
 
     internal static bool TryParse(
         JsonElement element,
-        out AzureStyleExpression expression)
+        out VectorStyleExpression expression)
     {
         int nodeCount = 0;
         return TryParse(element, 0, ref nodeCount, out expression);
@@ -4004,7 +4004,7 @@ internal sealed class AzureStyleExpression
 
     internal static bool TryParseFilter(
         JsonElement element,
-        out AzureStyleExpression expression)
+        out VectorStyleExpression expression)
     {
         int nodeCount = 0;
         return TryParseLegacyFilter(
@@ -4017,18 +4017,18 @@ internal sealed class AzureStyleExpression
 
     internal static bool TryParseStyleValue(
         JsonElement element,
-        out AzureStyleExpression expression)
+        out VectorStyleExpression expression)
     {
         return TryParseStyleValue(
             element,
-            AzureStyleValue.Null,
+            VectorStyleValue.Null,
             out expression);
     }
 
     internal static bool TryParseStyleValue(
         JsonElement element,
-        AzureStyleValue defaultValue,
-        out AzureStyleExpression expression)
+        VectorStyleValue defaultValue,
+        out VectorStyleExpression expression)
     {
         if (TryParse(element, out expression))
         {
@@ -4045,16 +4045,16 @@ internal sealed class AzureStyleExpression
 
     internal static bool TryParseTokenized(
         JsonElement element,
-        out AzureStyleExpression expression)
+        out VectorStyleExpression expression)
     {
         if (element.ValueKind == JsonValueKind.String &&
             element.GetString() is string text &&
             text.Contains('{') &&
             text.Contains('}'))
         {
-            expression = new AzureStyleExpression(
-                AzureStyleExpressionOperator.TokenString,
-                AzureStyleValue.FromString(text),
+            expression = new VectorStyleExpression(
+                VectorStyleExpressionOperator.TokenString,
+                VectorStyleValue.FromString(text),
                 null,
                 []);
             return true;
@@ -4064,12 +4064,12 @@ internal sealed class AzureStyleExpression
 
     internal static bool TryParseLiteralExpression(
         JsonElement element,
-        out AzureStyleExpression expression) =>
+        out VectorStyleExpression expression) =>
         TryParseLiteral(element, out expression);
 
     internal bool TryEvaluate(
-        AzureStyleEvaluationContext context,
-        out AzureStyleValue value) =>
+        VectorStyleEvaluationContext context,
+        out VectorStyleValue value) =>
         TryEvaluate(context, variables: null, out value);
 
     internal void CollectZoomStops(List<double> values)
@@ -4080,7 +4080,7 @@ internal sealed class AzureStyleExpression
         }
         switch (_operator)
         {
-            case AzureStyleExpressionOperator.Step:
+            case VectorStyleExpressionOperator.Step:
                 _arguments[0].CollectZoomStops(values);
                 if (_arguments[0]._containsZoom)
                 {
@@ -4094,8 +4094,8 @@ internal sealed class AzureStyleExpression
                     _arguments[index].CollectZoomStops(values);
                 }
                 break;
-            case AzureStyleExpressionOperator.InterpolateLinear:
-            case AzureStyleExpressionOperator.InterpolateExponential:
+            case VectorStyleExpressionOperator.InterpolateLinear:
+            case VectorStyleExpressionOperator.InterpolateExponential:
                 _arguments[0].CollectZoomStops(values);
                 if (_arguments[0]._containsZoom)
                 {
@@ -4109,8 +4109,8 @@ internal sealed class AzureStyleExpression
                     _arguments[index].CollectZoomStops(values);
                 }
                 break;
-            case AzureStyleExpressionOperator.Equal:
-                foreach (AzureStyleExpression argument in _arguments)
+            case VectorStyleExpressionOperator.Equal:
+                foreach (VectorStyleExpression argument in _arguments)
                 {
                     argument.CollectZoomStops(values);
                 }
@@ -4123,7 +4123,7 @@ internal sealed class AzureStyleExpression
                     _arguments[0].CollectLiteralNumbers(values);
                 }
                 break;
-            case AzureStyleExpressionOperator.Match:
+            case VectorStyleExpressionOperator.Match:
                 _arguments[0].CollectZoomStops(values);
                 if (_arguments[0]._containsZoom)
                 {
@@ -4139,7 +4139,7 @@ internal sealed class AzureStyleExpression
                 _arguments[^1].CollectZoomStops(values);
                 break;
             default:
-                foreach (AzureStyleExpression argument in _arguments)
+                foreach (VectorStyleExpression argument in _arguments)
                 {
                     argument.CollectZoomStops(values);
                 }
@@ -4149,7 +4149,7 @@ internal sealed class AzureStyleExpression
 
     private void CollectLiteralNumbers(List<double> values)
     {
-        if (_operator != AzureStyleExpressionOperator.Literal)
+        if (_operator != VectorStyleExpressionOperator.Literal)
         {
             return;
         }
@@ -4160,7 +4160,7 @@ internal sealed class AzureStyleExpression
         }
         if (_literal.ArrayValue is not null)
         {
-            foreach (AzureStyleValue item in _literal.ArrayValue)
+            foreach (VectorStyleValue item in _literal.ArrayValue)
             {
                 if (item.TryGetNumber(out number))
                 {
@@ -4174,7 +4174,7 @@ internal sealed class AzureStyleExpression
         JsonElement element,
         int depth,
         ref int nodeCount,
-        out AzureStyleExpression expression)
+        out VectorStyleExpression expression)
     {
         expression = null!;
         if (depth > MaximumDepth || ++nodeCount > MaximumNodes)
@@ -4208,7 +4208,7 @@ internal sealed class AzureStyleExpression
         {
             case "literal":
                 if (rawArguments.Length != 1 ||
-                    !TryParseLiteralValue(rawArguments[0], out AzureStyleValue literal))
+                    !TryParseLiteralValue(rawArguments[0], out VectorStyleValue literal))
                 {
                     return false;
                 }
@@ -4227,12 +4227,12 @@ internal sealed class AzureStyleExpression
                 {
                     return false;
                 }
-                expression = new AzureStyleExpression(
+                expression = new VectorStyleExpression(
                     operation switch
                     {
-                        "get" => AzureStyleExpressionOperator.Get,
-                        "has" => AzureStyleExpressionOperator.Has,
-                        _ => AzureStyleExpressionOperator.Var,
+                        "get" => VectorStyleExpressionOperator.Get,
+                        "has" => VectorStyleExpressionOperator.Has,
+                        _ => VectorStyleExpressionOperator.Var,
                     },
                     default,
                     name,
@@ -4244,10 +4244,10 @@ internal sealed class AzureStyleExpression
                 {
                     return false;
                 }
-                expression = new AzureStyleExpression(
+                expression = new VectorStyleExpression(
                     operation == "zoom"
-                        ? AzureStyleExpressionOperator.Zoom
-                        : AzureStyleExpressionOperator.GeometryType,
+                        ? VectorStyleExpressionOperator.Zoom
+                        : VectorStyleExpressionOperator.GeometryType,
                     default,
                     null,
                     []);
@@ -4277,17 +4277,17 @@ internal sealed class AzureStyleExpression
                     ref nodeCount,
                     out expression);
             default:
-                if (!TryGetOperator(operation, out AzureStyleExpressionOperator expressionOperator) ||
+                if (!TryGetOperator(operation, out VectorStyleExpressionOperator expressionOperator) ||
                     !HasValidArgumentCount(expressionOperator, rawArguments.Length) ||
                     !TryParseArguments(
                         rawArguments,
                         depth,
                         ref nodeCount,
-                        out AzureStyleExpression[] arguments))
+                        out VectorStyleExpression[] arguments))
                 {
                     return false;
                 }
-                expression = new AzureStyleExpression(
+                expression = new VectorStyleExpression(
                     expressionOperator,
                     default,
                     null,
@@ -4300,7 +4300,7 @@ internal sealed class AzureStyleExpression
         JsonElement element,
         int depth,
         ref int nodeCount,
-        out AzureStyleExpression expression)
+        out VectorStyleExpression expression)
     {
         expression = null!;
         if (element.ValueKind != JsonValueKind.Array ||
@@ -4325,8 +4325,8 @@ internal sealed class AzureStyleExpression
             {
                 return false;
             }
-            AzureStyleExpression[] arguments =
-                new AzureStyleExpression[items.Length - 1];
+            VectorStyleExpression[] arguments =
+                new VectorStyleExpression[items.Length - 1];
             for (int index = 1; index < items.Length; index++)
             {
                 if (!TryParseLegacyFilter(
@@ -4343,16 +4343,16 @@ internal sealed class AzureStyleExpression
                     return false;
                 }
             }
-            AzureStyleExpression logical = new(
+            VectorStyleExpression logical = new(
                 operation == "all"
-                    ? AzureStyleExpressionOperator.All
-                    : AzureStyleExpressionOperator.Any,
+                    ? VectorStyleExpressionOperator.All
+                    : VectorStyleExpressionOperator.Any,
                 default,
                 null,
                 arguments);
             expression = operation == "none"
-                ? new AzureStyleExpression(
-                    AzureStyleExpressionOperator.Not,
+                ? new VectorStyleExpression(
+                    VectorStyleExpressionOperator.Not,
                     default,
                     null,
                     [logical])
@@ -4365,14 +4365,14 @@ internal sealed class AzureStyleExpression
             if (items.Length != 2 ||
                 !TryCreateLegacyFilterAccessor(
                     items[1],
-                    AzureStyleExpressionOperator.Has,
-                    out AzureStyleExpression has))
+                    VectorStyleExpressionOperator.Has,
+                    out VectorStyleExpression has))
             {
                 return false;
             }
             expression = operation == "!has"
-                ? new AzureStyleExpression(
-                    AzureStyleExpressionOperator.Not,
+                ? new VectorStyleExpression(
+                    VectorStyleExpressionOperator.Not,
                     default,
                     null,
                     [has])
@@ -4385,20 +4385,20 @@ internal sealed class AzureStyleExpression
             if (items.Length != 3 ||
                 !TryCreateLegacyFilterAccessor(
                     items[1],
-                    AzureStyleExpressionOperator.Get,
-                    out AzureStyleExpression accessor) ||
-                !TryParseLiteralValue(items[2], out AzureStyleValue expected))
+                    VectorStyleExpressionOperator.Get,
+                    out VectorStyleExpression accessor) ||
+                !TryParseLiteralValue(items[2], out VectorStyleValue expected))
             {
                 return false;
             }
-            AzureStyleExpression equal = new(
-                AzureStyleExpressionOperator.Equal,
+            VectorStyleExpression equal = new(
+                VectorStyleExpressionOperator.Equal,
                 default,
                 null,
                 [accessor, Literal(expected)]);
             expression = operation == "!="
-                ? new AzureStyleExpression(
-                    AzureStyleExpressionOperator.Not,
+                ? new VectorStyleExpression(
+                    VectorStyleExpressionOperator.Not,
                     default,
                     null,
                     [equal])
@@ -4411,32 +4411,32 @@ internal sealed class AzureStyleExpression
             if (items.Length < 3 ||
                 !TryCreateLegacyFilterAccessor(
                     items[1],
-                    AzureStyleExpressionOperator.Get,
-                    out AzureStyleExpression accessor))
+                    VectorStyleExpressionOperator.Get,
+                    out VectorStyleExpression accessor))
             {
                 return false;
             }
-            AzureStyleExpression[] arguments =
-                new AzureStyleExpression[items.Length - 1];
+            VectorStyleExpression[] arguments =
+                new VectorStyleExpression[items.Length - 1];
             arguments[0] = accessor;
             for (int index = 2; index < items.Length; index++)
             {
                 if (!TryParseLiteralValue(
                         items[index],
-                        out AzureStyleValue candidate))
+                        out VectorStyleValue candidate))
                 {
                     return false;
                 }
                 arguments[index - 1] = Literal(candidate);
             }
-            AzureStyleExpression contains = new(
-                AzureStyleExpressionOperator.In,
+            VectorStyleExpression contains = new(
+                VectorStyleExpressionOperator.In,
                 default,
                 null,
                 arguments);
             expression = operation == "!in"
-                ? new AzureStyleExpression(
-                    AzureStyleExpressionOperator.Not,
+                ? new VectorStyleExpression(
+                    VectorStyleExpressionOperator.Not,
                     default,
                     null,
                     [contains])
@@ -4449,8 +4449,8 @@ internal sealed class AzureStyleExpression
 
     private static bool TryCreateLegacyFilterAccessor(
         JsonElement element,
-        AzureStyleExpressionOperator propertyOperator,
-        out AzureStyleExpression expression)
+        VectorStyleExpressionOperator propertyOperator,
+        out VectorStyleExpression expression)
     {
         expression = null!;
         if (element.ValueKind != JsonValueKind.String ||
@@ -4462,12 +4462,12 @@ internal sealed class AzureStyleExpression
         }
         if (name == "$type")
         {
-            if (propertyOperator != AzureStyleExpressionOperator.Get)
+            if (propertyOperator != VectorStyleExpressionOperator.Get)
             {
                 return false;
             }
-            expression = new AzureStyleExpression(
-                AzureStyleExpressionOperator.GeometryType,
+            expression = new VectorStyleExpression(
+                VectorStyleExpressionOperator.GeometryType,
                 default,
                 null,
                 []);
@@ -4477,7 +4477,7 @@ internal sealed class AzureStyleExpression
         {
             return false;
         }
-        expression = new AzureStyleExpression(
+        expression = new VectorStyleExpression(
             propertyOperator,
             default,
             name,
@@ -4489,8 +4489,8 @@ internal sealed class AzureStyleExpression
         JsonElement element,
         int depth,
         ref int nodeCount,
-        AzureStyleValue propertyDefaultValue,
-        out AzureStyleExpression expression)
+        VectorStyleValue propertyDefaultValue,
+        out VectorStyleExpression expression)
     {
         expression = null!;
         if (element.ValueKind != JsonValueKind.Object ||
@@ -4542,21 +4542,21 @@ internal sealed class AzureStyleExpression
             return false;
         }
 
-        AzureStyleExpression input = property is null
-            ? new AzureStyleExpression(
-                AzureStyleExpressionOperator.Zoom,
+        VectorStyleExpression input = property is null
+            ? new VectorStyleExpression(
+                VectorStyleExpressionOperator.Zoom,
                 default,
                 null,
                 [])
-            : new AzureStyleExpression(
-                AzureStyleExpressionOperator.Get,
+            : new VectorStyleExpression(
+                VectorStyleExpressionOperator.Get,
                 default,
                 property,
                 []);
-        AzureStyleExpression[] stopInputs =
-            new AzureStyleExpression[stops.Length];
-        AzureStyleExpression[] stopOutputs =
-            new AzureStyleExpression[stops.Length];
+        VectorStyleExpression[] stopInputs =
+            new VectorStyleExpression[stops.Length];
+        VectorStyleExpression[] stopOutputs =
+            new VectorStyleExpression[stops.Length];
         for (int index = 0; index < stops.Length; index++)
         {
             if (stops[index].ValueKind != JsonValueKind.Array)
@@ -4572,12 +4572,12 @@ internal sealed class AzureStyleExpression
             }
         }
         if (stopInputs.Any(stop =>
-                stop._literal.Kind == AzureStyleValueKind.Array))
+                stop._literal.Kind == VectorStyleValueKind.Array))
         {
             return false;
         }
 
-        AzureStyleExpression fallback;
+        VectorStyleExpression fallback;
         if (element.TryGetProperty(
                 "default",
                 out JsonElement defaultElement))
@@ -4594,11 +4594,11 @@ internal sealed class AzureStyleExpression
 
         bool categorical = functionType == "categorical" ||
             stopInputs.Any(stop =>
-                stop._literal.Kind != AzureStyleValueKind.Number);
+                stop._literal.Kind != VectorStyleValueKind.Number);
         if (categorical)
         {
-            AzureStyleExpression[] arguments =
-                new AzureStyleExpression[(stops.Length * 2) + 2];
+            VectorStyleExpression[] arguments =
+                new VectorStyleExpression[(stops.Length * 2) + 2];
             arguments[0] = input;
             for (int index = 0; index < stops.Length; index++)
             {
@@ -4606,20 +4606,20 @@ internal sealed class AzureStyleExpression
                 arguments[(index * 2) + 2] = stopOutputs[index];
             }
             arguments[^1] = fallback;
-            expression = new AzureStyleExpression(
-                AzureStyleExpressionOperator.Match,
+            expression = new VectorStyleExpression(
+                VectorStyleExpressionOperator.Match,
                 default,
                 null,
                 arguments);
             return true;
         }
 
-        AzureStyleExpression resolved;
+        VectorStyleExpression resolved;
         if (functionType == "interval" ||
             !CanInterpolateLegacyOutputs(stopOutputs))
         {
-            AzureStyleExpression[] arguments =
-                new AzureStyleExpression[stops.Length * 2];
+            VectorStyleExpression[] arguments =
+                new VectorStyleExpression[stops.Length * 2];
             arguments[0] = input;
             arguments[1] = stopOutputs[0];
             for (int index = 1; index < stops.Length; index++)
@@ -4627,35 +4627,35 @@ internal sealed class AzureStyleExpression
                 arguments[index * 2] = stopInputs[index];
                 arguments[(index * 2) + 1] = stopOutputs[index];
             }
-            resolved = new AzureStyleExpression(
-                AzureStyleExpressionOperator.Step,
+            resolved = new VectorStyleExpression(
+                VectorStyleExpressionOperator.Step,
                 default,
                 null,
                 arguments);
         }
         else
         {
-            AzureStyleExpression[] interpolateArguments =
-                new AzureStyleExpression[(stops.Length * 2) + 1];
+            VectorStyleExpression[] interpolateArguments =
+                new VectorStyleExpression[(stops.Length * 2) + 1];
             interpolateArguments[0] = input;
             for (int index = 0; index < stops.Length; index++)
             {
                 interpolateArguments[(index * 2) + 1] = stopInputs[index];
                 interpolateArguments[(index * 2) + 2] = stopOutputs[index];
             }
-            resolved = new AzureStyleExpression(
+            resolved = new VectorStyleExpression(
                 interpolationBase == 1
-                    ? AzureStyleExpressionOperator.InterpolateLinear
-                    : AzureStyleExpressionOperator.InterpolateExponential,
-                AzureStyleValue.FromNumber(interpolationBase),
+                    ? VectorStyleExpressionOperator.InterpolateLinear
+                    : VectorStyleExpressionOperator.InterpolateExponential,
+                VectorStyleValue.FromNumber(interpolationBase),
                 null,
                 interpolateArguments);
         }
 
         expression = property is null
             ? resolved
-            : new AzureStyleExpression(
-                AzureStyleExpressionOperator.Coalesce,
+            : new VectorStyleExpression(
+                VectorStyleExpressionOperator.Coalesce,
                 default,
                 null,
                 [resolved, fallback]);
@@ -4663,18 +4663,18 @@ internal sealed class AzureStyleExpression
     }
 
     private static bool CanInterpolateLegacyOutputs(
-        IReadOnlyList<AzureStyleExpression> outputs)
+        IReadOnlyList<VectorStyleExpression> outputs)
     {
-        foreach (AzureStyleExpression output in outputs)
+        foreach (VectorStyleExpression output in outputs)
         {
-            AzureStyleValue value = output._literal;
-            if (value.Kind == AzureStyleValueKind.Number ||
-                value.Kind == AzureStyleValueKind.Array)
+            VectorStyleValue value = output._literal;
+            if (value.Kind == VectorStyleValueKind.Number ||
+                value.Kind == VectorStyleValueKind.Array)
             {
                 continue;
             }
-            if (value.Kind != AzureStyleValueKind.String ||
-                !AzureTextStyleLayer.TryParseColor(
+            if (value.Kind != VectorStyleValueKind.String ||
+                !VectorTextStyleLayer.TryParseColor(
                     value,
                     out _))
             {
@@ -4688,7 +4688,7 @@ internal sealed class AzureStyleExpression
         JsonElement[] rawArguments,
         int depth,
         ref int nodeCount,
-        out AzureStyleExpression expression)
+        out VectorStyleExpression expression)
     {
         expression = null!;
         if (rawArguments.Length < 6 ||
@@ -4732,15 +4732,15 @@ internal sealed class AzureStyleExpression
                 expressionArguments,
                 depth,
                 ref nodeCount,
-                out AzureStyleExpression[] arguments))
+                out VectorStyleExpression[] arguments))
         {
             return false;
         }
-        expression = new AzureStyleExpression(
+        expression = new VectorStyleExpression(
             interpolationKind == "linear"
-                ? AzureStyleExpressionOperator.InterpolateLinear
-                : AzureStyleExpressionOperator.InterpolateExponential,
-            AzureStyleValue.FromNumber(interpolationBase),
+                ? VectorStyleExpressionOperator.InterpolateLinear
+                : VectorStyleExpressionOperator.InterpolateExponential,
+            VectorStyleValue.FromNumber(interpolationBase),
             null,
             arguments);
         return true;
@@ -4750,7 +4750,7 @@ internal sealed class AzureStyleExpression
         JsonElement[] rawArguments,
         int depth,
         ref int nodeCount,
-        out AzureStyleExpression expression)
+        out VectorStyleExpression expression)
     {
         expression = null!;
         if (rawArguments.Length < 4 || (rawArguments.Length & 1) != 0)
@@ -4758,8 +4758,8 @@ internal sealed class AzureStyleExpression
             return false;
         }
 
-        AzureStyleExpression[] arguments =
-            new AzureStyleExpression[rawArguments.Length];
+        VectorStyleExpression[] arguments =
+            new VectorStyleExpression[rawArguments.Length];
         if (!TryParse(
                 rawArguments[0],
                 depth + 1,
@@ -4789,8 +4789,8 @@ internal sealed class AzureStyleExpression
         {
             return false;
         }
-        expression = new AzureStyleExpression(
-            AzureStyleExpressionOperator.Match,
+        expression = new VectorStyleExpression(
+            VectorStyleExpressionOperator.Match,
             default,
             null,
             arguments);
@@ -4801,7 +4801,7 @@ internal sealed class AzureStyleExpression
         JsonElement[] rawArguments,
         int depth,
         ref int nodeCount,
-        out AzureStyleExpression expression)
+        out VectorStyleExpression expression)
     {
         expression = null!;
         if (rawArguments.Length < 3 || (rawArguments.Length & 1) == 0)
@@ -4809,7 +4809,7 @@ internal sealed class AzureStyleExpression
             return false;
         }
 
-        List<AzureStyleExpression> arguments = [];
+        List<VectorStyleExpression> arguments = [];
         for (int index = 0; index < rawArguments.Length - 1; index += 2)
         {
             if (rawArguments[index].ValueKind != JsonValueKind.String)
@@ -4821,12 +4821,12 @@ internal sealed class AzureStyleExpression
             {
                 return false;
             }
-            arguments.Add(Literal(AzureStyleValue.FromString(name)));
+            arguments.Add(Literal(VectorStyleValue.FromString(name)));
             if (!TryParse(
                     rawArguments[index + 1],
                     depth + 1,
                     ref nodeCount,
-                    out AzureStyleExpression value))
+                    out VectorStyleExpression value))
             {
                 return false;
             }
@@ -4836,13 +4836,13 @@ internal sealed class AzureStyleExpression
                 rawArguments[^1],
                 depth + 1,
                 ref nodeCount,
-                out AzureStyleExpression result))
+                out VectorStyleExpression result))
         {
             return false;
         }
         arguments.Add(result);
-        expression = new AzureStyleExpression(
-            AzureStyleExpressionOperator.Let,
+        expression = new VectorStyleExpression(
+            VectorStyleExpressionOperator.Let,
             default,
             null,
             arguments.ToArray());
@@ -4853,15 +4853,15 @@ internal sealed class AzureStyleExpression
         JsonElement[] rawArguments,
         int depth,
         ref int nodeCount,
-        out AzureStyleExpression expression)
+        out VectorStyleExpression expression)
     {
         expression = null!;
         if (rawArguments.Length < 2 || (rawArguments.Length & 1) != 0)
         {
             return false;
         }
-        AzureStyleExpression[] arguments =
-            new AzureStyleExpression[rawArguments.Length / 2];
+        VectorStyleExpression[] arguments =
+            new VectorStyleExpression[rawArguments.Length / 2];
         for (int source = 0, destination = 0;
             source < rawArguments.Length;
             source += 2, destination++)
@@ -4876,8 +4876,8 @@ internal sealed class AzureStyleExpression
                 return false;
             }
         }
-        expression = new AzureStyleExpression(
-            AzureStyleExpressionOperator.Format,
+        expression = new VectorStyleExpression(
+            VectorStyleExpressionOperator.Format,
             default,
             null,
             arguments);
@@ -4888,9 +4888,9 @@ internal sealed class AzureStyleExpression
         JsonElement[] rawArguments,
         int depth,
         ref int nodeCount,
-        out AzureStyleExpression[] arguments)
+        out VectorStyleExpression[] arguments)
     {
-        arguments = new AzureStyleExpression[rawArguments.Length];
+        arguments = new VectorStyleExpression[rawArguments.Length];
         for (int index = 0; index < rawArguments.Length; index++)
         {
             if (!TryParse(
@@ -4907,9 +4907,9 @@ internal sealed class AzureStyleExpression
 
     private static bool TryParseLiteral(
         JsonElement element,
-        out AzureStyleExpression expression)
+        out VectorStyleExpression expression)
     {
-        if (TryParseLiteralValue(element, out AzureStyleValue value))
+        if (TryParseLiteralValue(element, out VectorStyleValue value))
         {
             expression = Literal(value);
             return true;
@@ -4920,21 +4920,21 @@ internal sealed class AzureStyleExpression
 
     private static bool TryParseLiteralValue(
         JsonElement element,
-        out AzureStyleValue value)
+        out VectorStyleValue value)
     {
         switch (element.ValueKind)
         {
             case JsonValueKind.Null:
-                value = AzureStyleValue.Null;
+                value = VectorStyleValue.Null;
                 return true;
             case JsonValueKind.True:
             case JsonValueKind.False:
-                value = AzureStyleValue.FromBoolean(element.GetBoolean());
+                value = VectorStyleValue.FromBoolean(element.GetBoolean());
                 return true;
             case JsonValueKind.Number:
                 if (element.TryGetDouble(out double number) && double.IsFinite(number))
                 {
-                    value = AzureStyleValue.FromNumber(number);
+                    value = VectorStyleValue.FromNumber(number);
                     return true;
                 }
                 break;
@@ -4942,7 +4942,7 @@ internal sealed class AzureStyleExpression
                 string? text = element.GetString();
                 if (text is not null && text.Length <= MaximumStringLength)
                 {
-                    value = AzureStyleValue.FromString(text);
+                    value = VectorStyleValue.FromString(text);
                     return true;
                 }
                 break;
@@ -4952,7 +4952,7 @@ internal sealed class AzureStyleExpression
                 {
                     break;
                 }
-                AzureStyleValue[] items = new AzureStyleValue[elements.Length];
+                VectorStyleValue[] items = new VectorStyleValue[elements.Length];
                 for (int index = 0; index < elements.Length; index++)
                 {
                     if (!TryParseLiteralValue(elements[index], out items[index]))
@@ -4961,7 +4961,7 @@ internal sealed class AzureStyleExpression
                         return false;
                     }
                 }
-                value = AzureStyleValue.FromArray(items);
+                value = VectorStyleValue.FromArray(items);
                 return true;
         }
         value = default;
@@ -4970,23 +4970,23 @@ internal sealed class AzureStyleExpression
 
     private static bool TryGetOperator(
         string operation,
-        out AzureStyleExpressionOperator expressionOperator)
+        out VectorStyleExpressionOperator expressionOperator)
     {
         expressionOperator = operation switch
         {
-            "==" => AzureStyleExpressionOperator.Equal,
-            "!" => AzureStyleExpressionOperator.Not,
-            "all" => AzureStyleExpressionOperator.All,
-            "any" => AzureStyleExpressionOperator.Any,
-            "in" => AzureStyleExpressionOperator.In,
-            "case" => AzureStyleExpressionOperator.Case,
-            "coalesce" => AzureStyleExpressionOperator.Coalesce,
-            "concat" => AzureStyleExpressionOperator.Concat,
-            "match" => AzureStyleExpressionOperator.Match,
-            "step" => AzureStyleExpressionOperator.Step,
-            "to-string" => AzureStyleExpressionOperator.ToString,
-            "*" => AzureStyleExpressionOperator.Multiply,
-            "number" => AzureStyleExpressionOperator.Number,
+            "==" => VectorStyleExpressionOperator.Equal,
+            "!" => VectorStyleExpressionOperator.Not,
+            "all" => VectorStyleExpressionOperator.All,
+            "any" => VectorStyleExpressionOperator.Any,
+            "in" => VectorStyleExpressionOperator.In,
+            "case" => VectorStyleExpressionOperator.Case,
+            "coalesce" => VectorStyleExpressionOperator.Coalesce,
+            "concat" => VectorStyleExpressionOperator.Concat,
+            "match" => VectorStyleExpressionOperator.Match,
+            "step" => VectorStyleExpressionOperator.Step,
+            "to-string" => VectorStyleExpressionOperator.ToString,
+            "*" => VectorStyleExpressionOperator.Multiply,
+            "number" => VectorStyleExpressionOperator.Number,
             _ => default,
         };
         return operation is "==" or "!" or "all" or "any" or "in" or
@@ -4995,54 +4995,54 @@ internal sealed class AzureStyleExpression
     }
 
     private static bool HasValidArgumentCount(
-        AzureStyleExpressionOperator expressionOperator,
+        VectorStyleExpressionOperator expressionOperator,
         int count) =>
         expressionOperator switch
         {
-            AzureStyleExpressionOperator.Equal => count == 2,
-            AzureStyleExpressionOperator.Not => count == 1,
-            AzureStyleExpressionOperator.All or AzureStyleExpressionOperator.Any =>
+            VectorStyleExpressionOperator.Equal => count == 2,
+            VectorStyleExpressionOperator.Not => count == 1,
+            VectorStyleExpressionOperator.All or VectorStyleExpressionOperator.Any =>
                 count >= 1,
-            AzureStyleExpressionOperator.In => count >= 2,
-            AzureStyleExpressionOperator.Case => count >= 3 && (count & 1) == 1,
-            AzureStyleExpressionOperator.Coalesce or AzureStyleExpressionOperator.Concat =>
+            VectorStyleExpressionOperator.In => count >= 2,
+            VectorStyleExpressionOperator.Case => count >= 3 && (count & 1) == 1,
+            VectorStyleExpressionOperator.Coalesce or VectorStyleExpressionOperator.Concat =>
                 count >= 1,
-            AzureStyleExpressionOperator.Match => count >= 4 && (count & 1) == 0,
-            AzureStyleExpressionOperator.Step => count >= 4 && (count & 1) == 0,
-            AzureStyleExpressionOperator.ToString => count == 1,
-            AzureStyleExpressionOperator.Multiply => count >= 2,
-            AzureStyleExpressionOperator.Number => count >= 1,
+            VectorStyleExpressionOperator.Match => count >= 4 && (count & 1) == 0,
+            VectorStyleExpressionOperator.Step => count >= 4 && (count & 1) == 0,
+            VectorStyleExpressionOperator.ToString => count == 1,
+            VectorStyleExpressionOperator.Multiply => count >= 2,
+            VectorStyleExpressionOperator.Number => count >= 1,
             _ => false,
         };
 
     private bool TryEvaluate(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
         switch (_operator)
         {
-            case AzureStyleExpressionOperator.Literal:
+            case VectorStyleExpressionOperator.Literal:
                 value = _literal;
                 return true;
-            case AzureStyleExpressionOperator.TokenString:
+            case VectorStyleExpressionOperator.TokenString:
                 return TryEvaluateTokenString(context, out value);
-            case AzureStyleExpressionOperator.Get:
+            case VectorStyleExpressionOperator.Get:
                 if (context.Feature is not null &&
                     context.Feature.TryGetProperty(_name!, out VectorTileValue property))
                 {
-                    value = AzureStyleValue.FromVectorTileValue(property);
+                    value = VectorStyleValue.FromVectorTileValue(property);
                     return true;
                 }
-                value = AzureStyleValue.Null;
+                value = VectorStyleValue.Null;
                 return true;
-            case AzureStyleExpressionOperator.Has:
-                value = AzureStyleValue.FromBoolean(
+            case VectorStyleExpressionOperator.Has:
+                value = VectorStyleValue.FromBoolean(
                     context.Feature is not null &&
                     context.Feature.TryGetProperty(_name!, out _));
                 return true;
-            case AzureStyleExpressionOperator.GeometryType:
-                value = AzureStyleValue.FromString(
+            case VectorStyleExpressionOperator.GeometryType:
+                value = VectorStyleValue.FromString(
                     context.Feature?.GeometryType switch
                     {
                         VectorTileGeometryType.Point => "Point",
@@ -5054,48 +5054,48 @@ internal sealed class AzureStyleExpression
                         _ => string.Empty,
                     });
                 return context.Feature is not null;
-            case AzureStyleExpressionOperator.Zoom:
-                value = AzureStyleValue.FromNumber(context.Zoom);
+            case VectorStyleExpressionOperator.Zoom:
+                value = VectorStyleValue.FromNumber(context.Zoom);
                 return true;
-            case AzureStyleExpressionOperator.Var:
+            case VectorStyleExpressionOperator.Var:
                 if (variables is not null &&
                     variables.TryGetValue(_name!, out value))
                 {
                     return true;
                 }
-                value = AzureStyleValue.Null;
+                value = VectorStyleValue.Null;
                 return false;
-            case AzureStyleExpressionOperator.Equal:
+            case VectorStyleExpressionOperator.Equal:
                 return TryEvaluateEqual(context, variables, out value);
-            case AzureStyleExpressionOperator.Not:
+            case VectorStyleExpressionOperator.Not:
                 return TryEvaluateNot(context, variables, out value);
-            case AzureStyleExpressionOperator.All:
-            case AzureStyleExpressionOperator.Any:
+            case VectorStyleExpressionOperator.All:
+            case VectorStyleExpressionOperator.Any:
                 return TryEvaluateLogical(context, variables, out value);
-            case AzureStyleExpressionOperator.In:
+            case VectorStyleExpressionOperator.In:
                 return TryEvaluateIn(context, variables, out value);
-            case AzureStyleExpressionOperator.Case:
+            case VectorStyleExpressionOperator.Case:
                 return TryEvaluateCase(context, variables, out value);
-            case AzureStyleExpressionOperator.Coalesce:
+            case VectorStyleExpressionOperator.Coalesce:
                 return TryEvaluateCoalesce(context, variables, out value);
-            case AzureStyleExpressionOperator.Concat:
+            case VectorStyleExpressionOperator.Concat:
                 return TryEvaluateConcat(context, variables, out value);
-            case AzureStyleExpressionOperator.Format:
+            case VectorStyleExpressionOperator.Format:
                 return TryEvaluateConcat(context, variables, out value);
-            case AzureStyleExpressionOperator.Match:
+            case VectorStyleExpressionOperator.Match:
                 return TryEvaluateMatch(context, variables, out value);
-            case AzureStyleExpressionOperator.Step:
+            case VectorStyleExpressionOperator.Step:
                 return TryEvaluateStep(context, variables, out value);
-            case AzureStyleExpressionOperator.InterpolateLinear:
-            case AzureStyleExpressionOperator.InterpolateExponential:
+            case VectorStyleExpressionOperator.InterpolateLinear:
+            case VectorStyleExpressionOperator.InterpolateExponential:
                 return TryEvaluateInterpolate(context, variables, out value);
-            case AzureStyleExpressionOperator.Let:
+            case VectorStyleExpressionOperator.Let:
                 return TryEvaluateLet(context, variables, out value);
-            case AzureStyleExpressionOperator.ToString:
+            case VectorStyleExpressionOperator.ToString:
                 return TryEvaluateToString(context, variables, out value);
-            case AzureStyleExpressionOperator.Multiply:
+            case VectorStyleExpressionOperator.Multiply:
                 return TryEvaluateMultiply(context, variables, out value);
-            case AzureStyleExpressionOperator.Number:
+            case VectorStyleExpressionOperator.Number:
                 return TryEvaluateNumber(context, variables, out value);
             default:
                 value = default;
@@ -5104,24 +5104,24 @@ internal sealed class AzureStyleExpression
     }
 
     private bool TryEvaluateEqual(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
-        if (!TryEvaluateArgument(0, context, variables, out AzureStyleValue left) ||
-            !TryEvaluateArgument(1, context, variables, out AzureStyleValue right))
+        if (!TryEvaluateArgument(0, context, variables, out VectorStyleValue left) ||
+            !TryEvaluateArgument(1, context, variables, out VectorStyleValue right))
         {
             value = default;
             return false;
         }
 
-        value = AzureStyleValue.FromBoolean(left.EqualsValue(right));
+        value = VectorStyleValue.FromBoolean(left.EqualsValue(right));
         return true;
     }
 
     private bool TryEvaluateTokenString(
-        AzureStyleEvaluationContext context,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        out VectorStyleValue value)
     {
         string template = _literal.StringValue!;
         StringBuilder builder = new(template.Length);
@@ -5156,7 +5156,7 @@ internal sealed class AzureStyleExpression
                     out VectorTileValue property))
             {
                 builder.Append(
-                    AzureStyleValue.FromVectorTileValue(property)
+                    VectorStyleValue.FromVectorTileValue(property)
                         .ToInvariantString());
             }
             copiedThrough = close + 1;
@@ -5167,60 +5167,60 @@ internal sealed class AzureStyleExpression
             }
         }
 
-        value = AzureStyleValue.FromString(builder.ToString());
+        value = VectorStyleValue.FromString(builder.ToString());
         return true;
     }
 
     private bool TryEvaluateNot(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
-        if (!TryEvaluateArgument(0, context, variables, out AzureStyleValue operand) ||
-            operand.Kind != AzureStyleValueKind.Boolean)
+        if (!TryEvaluateArgument(0, context, variables, out VectorStyleValue operand) ||
+            operand.Kind != VectorStyleValueKind.Boolean)
         {
             value = default;
             return false;
         }
-        value = AzureStyleValue.FromBoolean(!operand.BooleanValue);
+        value = VectorStyleValue.FromBoolean(!operand.BooleanValue);
         return true;
     }
 
     private bool TryEvaluateLogical(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
-        bool all = _operator == AzureStyleExpressionOperator.All;
-        foreach (AzureStyleExpression argument in _arguments)
+        bool all = _operator == VectorStyleExpressionOperator.All;
+        foreach (VectorStyleExpression argument in _arguments)
         {
-            if (!argument.TryEvaluate(context, variables, out AzureStyleValue result) ||
-                result.Kind != AzureStyleValueKind.Boolean)
+            if (!argument.TryEvaluate(context, variables, out VectorStyleValue result) ||
+                result.Kind != VectorStyleValueKind.Boolean)
             {
                 value = default;
                 return false;
             }
             if (all && !result.BooleanValue)
             {
-                value = AzureStyleValue.FromBoolean(false);
+                value = VectorStyleValue.FromBoolean(false);
                 return true;
             }
             if (!all && result.BooleanValue)
             {
-                value = AzureStyleValue.FromBoolean(true);
+                value = VectorStyleValue.FromBoolean(true);
                 return true;
             }
         }
-        value = AzureStyleValue.FromBoolean(all);
+        value = VectorStyleValue.FromBoolean(all);
         return true;
     }
 
     private bool TryEvaluateIn(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
-        if (!TryEvaluateArgument(0, context, variables, out AzureStyleValue needle))
+        if (!TryEvaluateArgument(0, context, variables, out VectorStyleValue needle))
         {
             value = default;
             return false;
@@ -5232,12 +5232,12 @@ internal sealed class AzureStyleExpression
                     index,
                     context,
                     variables,
-                    out AzureStyleValue candidate))
+                    out VectorStyleValue candidate))
             {
                 value = default;
                 return false;
             }
-            if (candidate.Kind == AzureStyleValueKind.Array &&
+            if (candidate.Kind == VectorStyleValueKind.Array &&
                 candidate.ArrayValue is not null)
             {
                 found |= candidate.ArrayValue.Any(needle.EqualsValue);
@@ -5247,14 +5247,14 @@ internal sealed class AzureStyleExpression
                 found |= needle.EqualsValue(candidate);
             }
         }
-        value = AzureStyleValue.FromBoolean(found);
+        value = VectorStyleValue.FromBoolean(found);
         return true;
     }
 
     private bool TryEvaluateCase(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
         for (int index = 0; index < _arguments.Length - 1; index += 2)
         {
@@ -5262,8 +5262,8 @@ internal sealed class AzureStyleExpression
                     index,
                     context,
                     variables,
-                    out AzureStyleValue condition) ||
-                condition.Kind != AzureStyleValueKind.Boolean)
+                    out VectorStyleValue condition) ||
+                condition.Kind != VectorStyleValueKind.Boolean)
             {
                 value = default;
                 return false;
@@ -5277,35 +5277,35 @@ internal sealed class AzureStyleExpression
     }
 
     private bool TryEvaluateCoalesce(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
-        foreach (AzureStyleExpression argument in _arguments)
+        foreach (VectorStyleExpression argument in _arguments)
         {
-            if (!argument.TryEvaluate(context, variables, out AzureStyleValue candidate))
+            if (!argument.TryEvaluate(context, variables, out VectorStyleValue candidate))
             {
                 continue;
             }
-            if (candidate.Kind != AzureStyleValueKind.Null)
+            if (candidate.Kind != VectorStyleValueKind.Null)
             {
                 value = candidate;
                 return true;
             }
         }
-        value = AzureStyleValue.Null;
+        value = VectorStyleValue.Null;
         return true;
     }
 
     private bool TryEvaluateConcat(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
         StringBuilder builder = new();
-        foreach (AzureStyleExpression argument in _arguments)
+        foreach (VectorStyleExpression argument in _arguments)
         {
-            if (!argument.TryEvaluate(context, variables, out AzureStyleValue candidate))
+            if (!argument.TryEvaluate(context, variables, out VectorStyleValue candidate))
             {
                 value = default;
                 return false;
@@ -5317,30 +5317,30 @@ internal sealed class AzureStyleExpression
                 return false;
             }
         }
-        value = AzureStyleValue.FromString(builder.ToString());
+        value = VectorStyleValue.FromString(builder.ToString());
         return true;
     }
 
     private bool TryEvaluateToString(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
-        if (!TryEvaluateArgument(0, context, variables, out AzureStyleValue input))
+        if (!TryEvaluateArgument(0, context, variables, out VectorStyleValue input))
         {
             value = default;
             return false;
         }
         string? text = input.Kind switch
         {
-            AzureStyleValueKind.Null => string.Empty,
-            AzureStyleValueKind.Boolean =>
+            VectorStyleValueKind.Null => string.Empty,
+            VectorStyleValueKind.Boolean =>
                 input.BooleanValue ? "true" : "false",
-            AzureStyleValueKind.Number =>
+            VectorStyleValueKind.Number =>
                 input.NumberValue.ToString(
                     "G",
                     CultureInfo.InvariantCulture),
-            AzureStyleValueKind.String => input.StringValue,
+            VectorStyleValueKind.String => input.StringValue,
             _ => null,
         };
         if (text is null || text.Length > MaximumStringLength)
@@ -5348,22 +5348,22 @@ internal sealed class AzureStyleExpression
             value = default;
             return false;
         }
-        value = AzureStyleValue.FromString(text);
+        value = VectorStyleValue.FromString(text);
         return true;
     }
 
     private bool TryEvaluateMultiply(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
         double product = 1;
-        foreach (AzureStyleExpression argument in _arguments)
+        foreach (VectorStyleExpression argument in _arguments)
         {
             if (!argument.TryEvaluate(
                     context,
                     variables,
-                    out AzureStyleValue factor) ||
+                    out VectorStyleValue factor) ||
                 !factor.TryGetNumber(out double number))
             {
                 value = default;
@@ -5376,22 +5376,22 @@ internal sealed class AzureStyleExpression
                 return false;
             }
         }
-        value = AzureStyleValue.FromNumber(product);
+        value = VectorStyleValue.FromNumber(product);
         return true;
     }
 
     private bool TryEvaluateNumber(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
-        foreach (AzureStyleExpression argument in _arguments)
+        foreach (VectorStyleExpression argument in _arguments)
         {
             if (argument.TryEvaluate(
                     context,
                     variables,
-                    out AzureStyleValue candidate) &&
-                candidate.Kind == AzureStyleValueKind.Number)
+                    out VectorStyleValue candidate) &&
+                candidate.Kind == VectorStyleValueKind.Number)
             {
                 value = candidate;
                 return true;
@@ -5402,11 +5402,11 @@ internal sealed class AzureStyleExpression
     }
 
     private bool TryEvaluateMatch(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
-        if (!TryEvaluateArgument(0, context, variables, out AzureStyleValue input))
+        if (!TryEvaluateArgument(0, context, variables, out VectorStyleValue input))
         {
             value = default;
             return false;
@@ -5417,12 +5417,12 @@ internal sealed class AzureStyleExpression
                     index,
                     context,
                     variables,
-                    out AzureStyleValue label))
+                    out VectorStyleValue label))
             {
                 value = default;
                 return false;
             }
-            bool matches = label.Kind == AzureStyleValueKind.Array &&
+            bool matches = label.Kind == VectorStyleValueKind.Array &&
                 label.ArrayValue is not null
                 ? label.ArrayValue.Any(input.EqualsValue)
                 : input.EqualsValue(label);
@@ -5435,15 +5435,15 @@ internal sealed class AzureStyleExpression
     }
 
     private bool TryEvaluateStep(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
         if (!TryEvaluateArgument(
                 0,
                 context,
                 variables,
-                out AzureStyleValue inputValue) ||
+                out VectorStyleValue inputValue) ||
             !inputValue.TryGetNumber(out double input) ||
             !TryEvaluateArgument(1, context, variables, out value))
         {
@@ -5456,7 +5456,7 @@ internal sealed class AzureStyleExpression
                     index,
                     context,
                     variables,
-                    out AzureStyleValue stopValue) ||
+                    out VectorStyleValue stopValue) ||
                 !stopValue.TryGetNumber(out double stop))
             {
                 value = default;
@@ -5475,15 +5475,15 @@ internal sealed class AzureStyleExpression
     }
 
     private bool TryEvaluateInterpolate(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
         if (!TryEvaluateArgument(
                 0,
                 context,
                 variables,
-                out AzureStyleValue inputValue) ||
+                out VectorStyleValue inputValue) ||
             !inputValue.TryGetNumber(out double input))
         {
             value = default;
@@ -5494,9 +5494,9 @@ internal sealed class AzureStyleExpression
                 1,
                 context,
                 variables,
-                out AzureStyleValue firstStopValue) ||
+                out VectorStyleValue firstStopValue) ||
             !firstStopValue.TryGetNumber(out double firstStop) ||
-            !TryEvaluateArgument(2, context, variables, out AzureStyleValue firstOutput))
+            !TryEvaluateArgument(2, context, variables, out VectorStyleValue firstOutput))
         {
             value = default;
             return false;
@@ -5508,20 +5508,20 @@ internal sealed class AzureStyleExpression
         }
 
         double previousStop = firstStop;
-        AzureStyleValue previousOutput = firstOutput;
+        VectorStyleValue previousOutput = firstOutput;
         for (int index = 3; index < _arguments.Length; index += 2)
         {
             if (!TryEvaluateArgument(
                     index,
                     context,
                     variables,
-                    out AzureStyleValue stopValue) ||
+                    out VectorStyleValue stopValue) ||
                 !stopValue.TryGetNumber(out double stop) ||
                 !TryEvaluateArgument(
                     index + 1,
                     context,
                     variables,
-                    out AzureStyleValue output))
+                    out VectorStyleValue output))
             {
                 value = default;
                 return false;
@@ -5535,7 +5535,7 @@ internal sealed class AzureStyleExpression
             {
                 double amount = (input - previousStop) / (stop - previousStop);
                 if (_operator ==
-                    AzureStyleExpressionOperator.InterpolateExponential &&
+                    VectorStyleExpressionOperator.InterpolateExponential &&
                     _literal.TryGetNumber(out double interpolationBase) &&
                     interpolationBase != 1)
                 {
@@ -5547,7 +5547,7 @@ internal sealed class AzureStyleExpression
                             interpolationBase,
                             input - previousStop) - 1) / denominator;
                 }
-                return AzureStyleValue.TryInterpolate(
+                return VectorStyleValue.TryInterpolate(
                     previousOutput,
                     output,
                     amount,
@@ -5561,17 +5561,17 @@ internal sealed class AzureStyleExpression
     }
 
     private bool TryEvaluateLet(
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value)
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value)
     {
-        Dictionary<string, AzureStyleValue> local = variables is null
+        Dictionary<string, VectorStyleValue> local = variables is null
             ? new(StringComparer.Ordinal)
             : new(variables, StringComparer.Ordinal);
         for (int index = 0; index < _arguments.Length - 1; index += 2)
         {
             string name = _arguments[index]._literal.StringValue!;
-            if (!_arguments[index + 1].TryEvaluate(context, local, out AzureStyleValue item))
+            if (!_arguments[index + 1].TryEvaluate(context, local, out VectorStyleValue item))
             {
                 value = default;
                 return false;
@@ -5583,13 +5583,13 @@ internal sealed class AzureStyleExpression
 
     private bool TryEvaluateArgument(
         int index,
-        AzureStyleEvaluationContext context,
-        Dictionary<string, AzureStyleValue>? variables,
-        out AzureStyleValue value) =>
+        VectorStyleEvaluationContext context,
+        Dictionary<string, VectorStyleValue>? variables,
+        out VectorStyleValue value) =>
         _arguments[index].TryEvaluate(context, variables, out value);
 }
 
-internal enum AzureStyleValueKind
+internal enum VectorStyleValueKind
 {
     Null,
     Boolean,
@@ -5598,14 +5598,14 @@ internal enum AzureStyleValueKind
     Array,
 }
 
-internal readonly record struct AzureStyleValue
+internal readonly record struct VectorStyleValue
 {
-    private AzureStyleValue(
-        AzureStyleValueKind kind,
+    private VectorStyleValue(
+        VectorStyleValueKind kind,
         bool booleanValue,
         double numberValue,
         string? stringValue,
-        AzureStyleValue[]? arrayValue)
+        VectorStyleValue[]? arrayValue)
     {
         Kind = kind;
         BooleanValue = booleanValue;
@@ -5614,10 +5614,10 @@ internal readonly record struct AzureStyleValue
         ArrayValue = arrayValue;
     }
 
-    internal static AzureStyleValue Null { get; } =
-        new(AzureStyleValueKind.Null, false, 0, null, null);
+    internal static VectorStyleValue Null { get; } =
+        new(VectorStyleValueKind.Null, false, 0, null, null);
 
-    internal AzureStyleValueKind Kind { get; }
+    internal VectorStyleValueKind Kind { get; }
 
     internal bool BooleanValue { get; }
 
@@ -5625,21 +5625,21 @@ internal readonly record struct AzureStyleValue
 
     internal string? StringValue { get; }
 
-    internal AzureStyleValue[]? ArrayValue { get; }
+    internal VectorStyleValue[]? ArrayValue { get; }
 
-    internal static AzureStyleValue FromBoolean(bool value) =>
-        new(AzureStyleValueKind.Boolean, value, 0, null, null);
+    internal static VectorStyleValue FromBoolean(bool value) =>
+        new(VectorStyleValueKind.Boolean, value, 0, null, null);
 
-    internal static AzureStyleValue FromNumber(double value) =>
-        new(AzureStyleValueKind.Number, false, value, null, null);
+    internal static VectorStyleValue FromNumber(double value) =>
+        new(VectorStyleValueKind.Number, false, value, null, null);
 
-    internal static AzureStyleValue FromString(string value) =>
-        new(AzureStyleValueKind.String, false, 0, value, null);
+    internal static VectorStyleValue FromString(string value) =>
+        new(VectorStyleValueKind.String, false, 0, value, null);
 
-    internal static AzureStyleValue FromArray(AzureStyleValue[] value) =>
-        new(AzureStyleValueKind.Array, false, 0, null, value);
+    internal static VectorStyleValue FromArray(VectorStyleValue[] value) =>
+        new(VectorStyleValueKind.Array, false, 0, null, value);
 
-    internal static AzureStyleValue FromVectorTileValue(VectorTileValue value)
+    internal static VectorStyleValue FromVectorTileValue(VectorTileValue value)
     {
         if (value.TryGetNumber(out double number))
         {
@@ -5656,13 +5656,13 @@ internal readonly record struct AzureStyleValue
     internal bool TryGetNumber(out double value)
     {
         value = NumberValue;
-        return Kind == AzureStyleValueKind.Number;
+        return Kind == VectorStyleValueKind.Number;
     }
 
-    internal bool EqualsValue(AzureStyleValue other)
+    internal bool EqualsValue(VectorStyleValue other)
     {
-        if (Kind == AzureStyleValueKind.Number &&
-            other.Kind == AzureStyleValueKind.Number)
+        if (Kind == VectorStyleValueKind.Number &&
+            other.Kind == VectorStyleValueKind.Number)
         {
             return NumberValue.Equals(other.NumberValue);
         }
@@ -5672,11 +5672,11 @@ internal readonly record struct AzureStyleValue
         }
         return Kind switch
         {
-            AzureStyleValueKind.Null => true,
-            AzureStyleValueKind.Boolean => BooleanValue == other.BooleanValue,
-            AzureStyleValueKind.String =>
+            VectorStyleValueKind.Null => true,
+            VectorStyleValueKind.Boolean => BooleanValue == other.BooleanValue,
+            VectorStyleValueKind.String =>
                 string.Equals(StringValue, other.StringValue, StringComparison.Ordinal),
-            AzureStyleValueKind.Array =>
+            VectorStyleValueKind.Array =>
                 ArrayValue is not null &&
                 other.ArrayValue is not null &&
                 ArrayValue.Length == other.ArrayValue.Length &&
@@ -5688,19 +5688,19 @@ internal readonly record struct AzureStyleValue
 
     internal string ToInvariantString() => Kind switch
     {
-        AzureStyleValueKind.Null => string.Empty,
-        AzureStyleValueKind.Boolean => BooleanValue ? "true" : "false",
-        AzureStyleValueKind.Number =>
+        VectorStyleValueKind.Null => string.Empty,
+        VectorStyleValueKind.Boolean => BooleanValue ? "true" : "false",
+        VectorStyleValueKind.Number =>
             NumberValue.ToString("G17", CultureInfo.InvariantCulture),
-        AzureStyleValueKind.String => StringValue ?? string.Empty,
+        VectorStyleValueKind.String => StringValue ?? string.Empty,
         _ => string.Empty,
     };
 
     internal static bool TryInterpolate(
-        AzureStyleValue from,
-        AzureStyleValue to,
+        VectorStyleValue from,
+        VectorStyleValue to,
         double amount,
-        out AzureStyleValue value)
+        out VectorStyleValue value)
     {
         amount = Math.Clamp(amount, 0, 1);
         if (from.TryGetNumber(out double fromNumber) &&
@@ -5709,10 +5709,10 @@ internal readonly record struct AzureStyleValue
             value = FromNumber(fromNumber + ((toNumber - fromNumber) * amount));
             return true;
         }
-        if (from.Kind == AzureStyleValueKind.String &&
-            to.Kind == AzureStyleValueKind.String &&
-            AzureTextStyleLayer.TryParseColor(from, out Vector4 fromColor) &&
-            AzureTextStyleLayer.TryParseColor(to, out Vector4 toColor))
+        if (from.Kind == VectorStyleValueKind.String &&
+            to.Kind == VectorStyleValueKind.String &&
+            VectorTextStyleLayer.TryParseColor(from, out Vector4 fromColor) &&
+            VectorTextStyleLayer.TryParseColor(to, out Vector4 toColor))
         {
             value = FromString(ToColorString(Vector4.Lerp(
                 fromColor,
@@ -5720,13 +5720,13 @@ internal readonly record struct AzureStyleValue
                 (float)amount)));
             return true;
         }
-        if (from.Kind == AzureStyleValueKind.Array &&
-            to.Kind == AzureStyleValueKind.Array &&
+        if (from.Kind == VectorStyleValueKind.Array &&
+            to.Kind == VectorStyleValueKind.Array &&
             from.ArrayValue is not null &&
             to.ArrayValue is not null &&
             from.ArrayValue.Length == to.ArrayValue.Length)
         {
-            AzureStyleValue[] items = new AzureStyleValue[from.ArrayValue.Length];
+            VectorStyleValue[] items = new VectorStyleValue[from.ArrayValue.Length];
             for (int index = 0; index < items.Length; index++)
             {
                 if (!TryInterpolate(
@@ -5765,7 +5765,7 @@ internal readonly record struct AzureStyleValue
 /// <summary>
 /// Owns one decoded premultiplied sprite atlas and lazily cropped, bounded icon buffers.
 /// </summary>
-internal sealed class AzureSpriteAtlas
+internal sealed class VectorSpriteAtlas
 {
     private const int MaximumEntries = 16_384;
     private const long MaximumCroppedBytes = 32 * 1024 * 1024;
@@ -5773,7 +5773,7 @@ internal sealed class AzureSpriteAtlas
     private const int MaximumSpriteNameLength = 1024;
     private readonly object _sync = new();
     private readonly string _styleSlug;
-    private readonly Dictionary<string, AzureSpriteEntry> _entries;
+    private readonly Dictionary<string, VectorSpriteEntry> _entries;
     private readonly byte[] _pixels;
     private readonly uint _width;
     private readonly uint _height;
@@ -5782,9 +5782,9 @@ internal sealed class AzureSpriteAtlas
     private readonly Dictionary<long, string> _textureNames = [];
     private long _croppedBytes;
 
-    internal AzureSpriteAtlas(
+    internal VectorSpriteAtlas(
         string styleSlug,
-        Dictionary<string, AzureSpriteEntry> entries,
+        Dictionary<string, VectorSpriteEntry> entries,
         byte[] pixels,
         uint width,
         uint height)
@@ -5792,9 +5792,9 @@ internal sealed class AzureSpriteAtlas
         if (!MapRenderer.IsValidPixelBuffer(pixels, width, height))
         {
             throw new InvalidDataException(
-                "The Azure sprite atlas pixel buffer does not match its dimensions.");
+                "The sprite atlas pixel buffer does not match its dimensions.");
         }
-        foreach (AzureSpriteEntry entry in entries.Values)
+        foreach (VectorSpriteEntry entry in entries.Values)
         {
             if (entry.X > width ||
                 entry.Y > height ||
@@ -5802,7 +5802,7 @@ internal sealed class AzureSpriteAtlas
                 entry.Height > height - entry.Y)
             {
                 throw new InvalidDataException(
-                    "The Azure sprite index contains an out-of-range rectangle.");
+                    "The sprite index contains an out-of-range rectangle.");
             }
         }
         _styleSlug = styleSlug;
@@ -5814,7 +5814,7 @@ internal sealed class AzureSpriteAtlas
 
     internal int EntryCount => _entries.Count;
 
-    internal static Dictionary<string, AzureSpriteEntry> ParseIndex(
+    internal static Dictionary<string, VectorSpriteEntry> ParseIndex(
         ReadOnlyMemory<byte> json)
     {
         using JsonDocument document = JsonDocument.Parse(
@@ -5826,17 +5826,17 @@ internal sealed class AzureSpriteAtlas
         if (document.RootElement.ValueKind != JsonValueKind.Object)
         {
             throw new InvalidDataException(
-                "The Azure sprite index is not a JSON object.");
+                "The sprite index is not a JSON object.");
         }
 
-        Dictionary<string, AzureSpriteEntry> entries =
+        Dictionary<string, VectorSpriteEntry> entries =
             new(StringComparer.Ordinal);
         foreach (JsonProperty property in document.RootElement.EnumerateObject())
         {
             if (entries.Count >= MaximumEntries)
             {
                 throw new InvalidDataException(
-                    "The Azure sprite index contains too many entries.");
+                    "The sprite index contains too many entries.");
             }
             if (string.IsNullOrEmpty(property.Name) ||
                 property.Name.Length > MaximumSpriteNameLength ||
@@ -5856,7 +5856,7 @@ internal sealed class AzureSpriteAtlas
                 pixelRatio > 16)
             {
                 throw new InvalidDataException(
-                    "The Azure sprite index contains an invalid entry.");
+                    "The sprite index contains an invalid entry.");
             }
             bool visible = true;
             if (property.Value.TryGetProperty(
@@ -5867,13 +5867,13 @@ internal sealed class AzureSpriteAtlas
                     (JsonValueKind.True or JsonValueKind.False))
                 {
                     throw new InvalidDataException(
-                        "The Azure sprite index contains an invalid visibility value.");
+                        "The sprite index contains an invalid visibility value.");
                 }
                 visible = visibleElement.GetBoolean();
             }
             if (!entries.TryAdd(
                     property.Name,
-                    new AzureSpriteEntry(
+                    new VectorSpriteEntry(
                         x,
                         y,
                         width,
@@ -5882,7 +5882,7 @@ internal sealed class AzureSpriteAtlas
                         visible)))
             {
                 throw new InvalidDataException(
-                    "The Azure sprite index contains a duplicate entry.");
+                    "The sprite index contains a duplicate entry.");
             }
         }
         return entries;
@@ -5896,52 +5896,52 @@ internal sealed class AzureSpriteAtlas
         return BinaryPrimitives.ReadInt64LittleEndian(hash) | long.MinValue;
     }
 
-    internal AzureSpriteLookupResult TryGetTexture(
+    internal VectorSpriteLookupResult TryGetTexture(
         string spriteName,
         out VectorSpriteTextureData? texture,
-        out AzureSpriteEntry entry)
+        out VectorSpriteEntry entry)
     {
         lock (_sync)
         {
             if (!_entries.TryGetValue(spriteName, out entry))
             {
                 texture = null;
-                return AzureSpriteLookupResult.Missing;
+                return VectorSpriteLookupResult.Missing;
             }
             if (!entry.Visible)
             {
                 texture = null;
-                return AzureSpriteLookupResult.Hidden;
+                return VectorSpriteLookupResult.Hidden;
             }
             if (!_textures.TryGetValue(spriteName, out texture))
             {
-                return AzureSpriteLookupResult.NotPrepared;
+                return VectorSpriteLookupResult.NotPrepared;
             }
-            return AzureSpriteLookupResult.Found;
+            return VectorSpriteLookupResult.Found;
         }
     }
 
-    internal AzureSpriteLookupResult TryGetOrCreateTexture(
+    internal VectorSpriteLookupResult TryGetOrCreateTexture(
         string spriteName,
         CancellationToken cancellationToken,
         out VectorSpriteTextureData? texture,
-        out AzureSpriteEntry entry)
+        out VectorSpriteEntry entry)
     {
         lock (_sync)
         {
             if (!_entries.TryGetValue(spriteName, out entry))
             {
                 texture = null;
-                return AzureSpriteLookupResult.Missing;
+                return VectorSpriteLookupResult.Missing;
             }
             if (!entry.Visible)
             {
                 texture = null;
-                return AzureSpriteLookupResult.Hidden;
+                return VectorSpriteLookupResult.Hidden;
             }
             if (_textures.TryGetValue(spriteName, out texture))
             {
-                return AzureSpriteLookupResult.Found;
+                return VectorSpriteLookupResult.Found;
             }
 
             long byteCount = checked((long)entry.Width * entry.Height * 4);
@@ -5949,7 +5949,7 @@ internal sealed class AzureSpriteAtlas
                 byteCount > MaximumCroppedBytes - _croppedBytes)
             {
                 throw new InvalidDataException(
-                    "The Azure sprite crop cache exceeds its supported limit.");
+                    "The sprite crop cache exceeds its supported limit.");
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -5976,7 +5976,7 @@ internal sealed class AzureSpriteAtlas
                 !string.Equals(existingName, spriteName, StringComparison.Ordinal))
             {
                 throw new InvalidDataException(
-                    "The Azure sprite texture identity is not unique.");
+                    "The sprite texture identity is not unique.");
             }
             texture = new VectorSpriteTextureData(
                 textureId,
@@ -5986,7 +5986,7 @@ internal sealed class AzureSpriteAtlas
             _textures.Add(spriteName, texture);
             _textureNames[textureId] = spriteName;
             _croppedBytes += byteCount;
-            return AzureSpriteLookupResult.Found;
+            return VectorSpriteLookupResult.Found;
         }
     }
 
@@ -6008,7 +6008,7 @@ internal sealed class AzureSpriteAtlas
     }
 }
 
-internal readonly record struct AzureSpriteEntry(
+internal readonly record struct VectorSpriteEntry(
     uint X,
     uint Y,
     uint Width,
@@ -6016,7 +6016,7 @@ internal readonly record struct AzureSpriteEntry(
     double PixelRatio,
     bool Visible);
 
-internal enum AzureSpriteLookupResult
+internal enum VectorSpriteLookupResult
 {
     Found,
     Missing,

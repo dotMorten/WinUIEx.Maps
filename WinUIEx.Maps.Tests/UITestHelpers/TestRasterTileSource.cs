@@ -31,7 +31,7 @@ internal sealed class TestRasterTileSource
         _tiles = tiles.ToDictionary(
             pair => pair.Key,
             pair => pair.Value with { Pixels = pair.Value.Pixels.ToArray() });
-        StyleAssets = AzureVectorStyleAssets.CreateForTest(
+        StyleAssets = VectorStyleAssets.CreateForTest(
             MapStyle.Road,
             Encoding.UTF8.GetBytes("""{"version":8,"layers":[]}"""),
             Encoding.UTF8.GetBytes("{}"),
@@ -56,7 +56,7 @@ internal sealed class TestRasterTileSource
 
     internal RasterSourceKind SourceKind { get; }
 
-    internal AzureVectorStyleAssets StyleAssets { get; }
+    internal VectorStyleAssets StyleAssets { get; }
 
     internal VectorTileFeatureCollection HybridFeatures { get; }
 

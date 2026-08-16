@@ -5,7 +5,7 @@ using WinUIEx.Maps.Rendering;
 namespace WinUIEx.Maps.Tests;
 
 [TestClass]
-public sealed class AzureGlyphRangeDecoderTests
+public sealed class VectorGlyphRangeDecoderTests
 {
     [TestMethod]
     public void DecodesMapboxGlyphMetricsAndBitmap()
@@ -22,11 +22,11 @@ public sealed class AzureGlyphRangeDecoderTests
                 3,
                 4));
 
-        AzureGlyphRange range = AzureGlyphRangeDecoder.Decode(
+        VectorGlyphRange range = VectorGlyphRangeDecoder.Decode(
             encoded,
             "Roboto-Regular",
             0);
-        AzureGlyph glyph = range.Glyphs[65];
+        VectorGlyph glyph = range.Glyphs[65];
 
         Assert.AreEqual(-1, glyph.Left);
         Assert.AreEqual(3, glyph.Top);
@@ -43,7 +43,7 @@ public sealed class AzureGlyphRangeDecoderTests
             Glyph(65, [1, 2, 3], 2, 2, 0, 2, 4));
 
         Assert.ThrowsExactly<InvalidDataException>(() =>
-            AzureGlyphRangeDecoder.Decode(encoded, "Roboto-Regular", 0));
+            VectorGlyphRangeDecoder.Decode(encoded, "Roboto-Regular", 0));
     }
 
     [TestMethod]
@@ -54,7 +54,7 @@ public sealed class AzureGlyphRangeDecoderTests
             "0-255",
             Glyph(32, [], 0, 0, 0, 0, 6));
 
-        AzureGlyph glyph = AzureGlyphRangeDecoder.Decode(
+        VectorGlyph glyph = VectorGlyphRangeDecoder.Decode(
             encoded,
             "Roboto-Regular",
             0).Glyphs[32];
@@ -67,14 +67,14 @@ public sealed class AzureGlyphRangeDecoderTests
     [TestMethod]
     public void GlyphTextureIdentityIncludesFontAndCodePoint()
     {
-        long first = AzureGlyphAtlas.CreateTextureId("road", "Roboto-Regular", 65);
+        long first = VectorGlyphAtlas.CreateTextureId("road", "Roboto-Regular", 65);
 
         Assert.AreNotEqual(
             first,
-            AzureGlyphAtlas.CreateTextureId("road", "Roboto-Medium", 65));
+            VectorGlyphAtlas.CreateTextureId("road", "Roboto-Medium", 65));
         Assert.AreNotEqual(
             first,
-            AzureGlyphAtlas.CreateTextureId("road", "Roboto-Regular", 66));
+            VectorGlyphAtlas.CreateTextureId("road", "Roboto-Regular", 66));
     }
 
     private static byte[] FontStack(

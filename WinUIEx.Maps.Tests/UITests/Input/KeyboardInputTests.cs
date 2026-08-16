@@ -338,7 +338,7 @@ public sealed class KeyboardInputTests
 
     private static TestVectorTileSource CreateAccessibleVectorSource(TileId tile)
     {
-        AzureVectorStyleAssets assets = AzureVectorStyleAssets.CreateForTest(
+        VectorStyleAssets assets = VectorStyleAssets.CreateForTest(
             MapStyle.BlankAccessible,
             Encoding.UTF8.GetBytes(
                 """

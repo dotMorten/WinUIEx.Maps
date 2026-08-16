@@ -27,7 +27,7 @@ internal readonly record struct DecodedRasterTile(
 internal readonly record struct DecodedVectorTile(
     TileId Id,
     VectorTileFeatureCollection Features,
-    AzureVectorStyleAssets StyleAssets,
+    VectorStyleAssets StyleAssets,
     VectorSpriteTextureData[] SpriteTextures,
     DecodedRasterTile? Background,
     double DownloadMilliseconds,
@@ -40,7 +40,7 @@ internal readonly record struct DecodedVectorTile(
 internal readonly record struct VectorTileData(
     RasterTileKey Key,
     VectorTileFeatureCollection Features,
-    AzureVectorStyleAssets StyleAssets,
+    VectorStyleAssets StyleAssets,
     VectorSpriteTextureData[] SpriteTextures,
     RasterTileData? Background,
     long Generation,

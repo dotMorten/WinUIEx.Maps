@@ -11,7 +11,7 @@ internal sealed class TestVectorTileSource
     internal TestVectorTileSource(
         TileId tileId,
         byte[] tile,
-        AzureVectorStyleAssets styleAssets)
+        VectorStyleAssets styleAssets)
     {
         ArgumentNullException.ThrowIfNull(tile);
         ArgumentNullException.ThrowIfNull(styleAssets);
@@ -22,7 +22,7 @@ internal sealed class TestVectorTileSource
 
     internal TileId TileId { get; }
 
-    internal AzureVectorStyleAssets StyleAssets { get; }
+    internal VectorStyleAssets StyleAssets { get; }
 
     internal BasicGeoposition TileCenter
     {
@@ -51,7 +51,7 @@ internal sealed class TestVectorTileSource
         new(
             tileId,
             tile,
-            AzureVectorStyleAssets.CreateForTest(
+            VectorStyleAssets.CreateForTest(
                 MapStyle.Road,
                 Encoding.UTF8.GetBytes(styleJson),
                 Encoding.UTF8.GetBytes(spriteJson),
@@ -68,12 +68,12 @@ internal sealed class TestVectorTileSource
         foreach (IGrouping<int, TestGlyph> range in glyphs.GroupBy(
             glyph => glyph.Character / 256 * 256))
         {
-            StyleAssets.GlyphAtlas.AddRangeForTest(new AzureGlyphRange(
+            StyleAssets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
                 fontStack,
                 range.Key,
                 range.ToDictionary(
                     glyph => (int)glyph.Character,
-                    glyph => glyph.ToAzureGlyph())));
+                    glyph => glyph.ToVectorGlyph())));
         }
     }
 
@@ -104,8 +104,8 @@ internal readonly record struct TestGlyph(
         uint height = 8,
         uint advance = 7)
     {
-        int textureWidth = checked((int)width + ((int)AzureGlyph.SdfBuffer * 2));
-        int textureHeight = checked((int)height + ((int)AzureGlyph.SdfBuffer * 2));
+        int textureWidth = checked((int)width + ((int)VectorGlyph.SdfBuffer * 2));
+        int textureHeight = checked((int)height + ((int)VectorGlyph.SdfBuffer * 2));
         return new TestGlyph(
             character,
             width,
@@ -119,7 +119,7 @@ internal readonly record struct TestGlyph(
             .ToArray());
     }
 
-    internal AzureGlyph ToAzureGlyph() =>
+    internal VectorGlyph ToVectorGlyph() =>
         new(Character, Bitmap.ToArray(), Width, Height, Left, Top, Advance);
 }
 

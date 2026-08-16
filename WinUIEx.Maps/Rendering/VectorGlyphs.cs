@@ -17,7 +17,7 @@ internal sealed class AzureGlyphProvider : IVectorGlyphProvider
     private readonly MapStyle _style;
     private readonly string _styleSlug;
     private readonly string _token;
-    private readonly Dictionary<AzureGlyphRangeKey, Task<AzureGlyphRange>> _ranges = [];
+    private readonly Dictionary<VectorGlyphRangeKey, Task<VectorGlyphRange>> _ranges = [];
 
     internal AzureGlyphProvider(MapStyle style, string token)
     {
@@ -26,13 +26,13 @@ internal sealed class AzureGlyphProvider : IVectorGlyphProvider
         _token = token;
     }
 
-    internal async Task<AzureGlyphRange> GetRangeAsync(
+    internal async Task<VectorGlyphRange> GetRangeAsync(
         string fontStack,
         int rangeStart,
         CancellationToken cancellationToken)
     {
-        AzureGlyphRangeKey key = new(fontStack, rangeStart);
-        Task<AzureGlyphRange> task;
+        VectorGlyphRangeKey key = new(fontStack, rangeStart);
+        Task<VectorGlyphRange> task;
         lock (_sync)
         {
             if (_ranges.TryGetValue(key, out task!))
@@ -63,7 +63,7 @@ internal sealed class AzureGlyphProvider : IVectorGlyphProvider
                 {
                     if (_ranges.TryGetValue(
                             key,
-                            out Task<AzureGlyphRange>? current) &&
+                            out Task<VectorGlyphRange>? current) &&
                         ReferenceEquals(current, task))
                     {
                         _ranges.Remove(key);
@@ -73,14 +73,14 @@ internal sealed class AzureGlyphProvider : IVectorGlyphProvider
         }
     }
 
-    Task<AzureGlyphRange> IVectorGlyphProvider.GetRangeAsync(
+    Task<VectorGlyphRange> IVectorGlyphProvider.GetRangeAsync(
         string fontStack,
         int rangeStart,
         CancellationToken cancellationToken) =>
         GetRangeAsync(fontStack, rangeStart, cancellationToken);
 
-    private async Task<AzureGlyphRange> LoadRangeAsync(
-        AzureGlyphRangeKey key,
+    private async Task<VectorGlyphRange> LoadRangeAsync(
+        VectorGlyphRangeKey key,
         CancellationToken cancellationToken)
     {
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -110,10 +110,10 @@ internal sealed class AzureGlyphProvider : IVectorGlyphProvider
                 exception.GetType().Name,
                 System.Diagnostics.Stopwatch.GetElapsedTime(started)
                     .TotalMilliseconds);
-            return new AzureGlyphRange(
+            return new VectorGlyphRange(
                 key.FontStack,
                 key.RangeStart,
-                new Dictionary<int, AzureGlyph>());
+                new Dictionary<int, VectorGlyph>());
         }
         catch (AzureMapsRequestException exception)
         {
@@ -121,7 +121,7 @@ internal sealed class AzureGlyphProvider : IVectorGlyphProvider
                 "AzureMapsGlyphRangeRequestException";
             throw;
         }
-        AzureGlyphRange range = AzureGlyphRangeDecoder.Decode(
+        VectorGlyphRange range = VectorGlyphRangeDecoder.Decode(
             encoded,
             key.FontStack,
             key.RangeStart,
@@ -135,14 +135,14 @@ internal sealed class AzureGlyphProvider : IVectorGlyphProvider
     }
 }
 
-internal readonly record struct AzureGlyphRangeKey(string FontStack, int RangeStart);
+internal readonly record struct VectorGlyphRangeKey(string FontStack, int RangeStart);
 
-internal sealed record AzureGlyphRange(
+internal sealed record VectorGlyphRange(
     string FontStack,
     int RangeStart,
-    IReadOnlyDictionary<int, AzureGlyph> Glyphs);
+    IReadOnlyDictionary<int, VectorGlyph> Glyphs);
 
-internal sealed record AzureGlyph(
+internal sealed record VectorGlyph(
     int Id,
     byte[] Bitmap,
     uint Width,
@@ -161,9 +161,9 @@ internal sealed record AzureGlyph(
 }
 
 /// <summary>
-/// Decodes the Mapbox fontstack/glyph protobuf schema returned by Azure styling.
+/// Decodes the Mapbox fontstack/glyph protobuf schema used by Style Spec glyph endpoints.
 /// </summary>
-internal static class AzureGlyphRangeDecoder
+internal static class VectorGlyphRangeDecoder
 {
     private const int MaximumGlyphs = 256;
     private const int MaximumGlyphDimension = 128;
@@ -172,14 +172,14 @@ internal static class AzureGlyphRangeDecoder
     private static readonly UTF8Encoding StrictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
-    internal static AzureGlyphRange Decode(
+    internal static VectorGlyphRange Decode(
         ReadOnlySpan<byte> encoded,
         string expectedFontStack,
         int expectedRangeStart,
         CancellationToken cancellationToken = default)
     {
         GlyphProtobufReader root = new(encoded);
-        AzureGlyphRange? result = null;
+        VectorGlyphRange? result = null;
         while (root.TryReadField(out int fieldNumber, out int wireType))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -188,7 +188,7 @@ internal static class AzureGlyphRangeDecoder
                 if (result is not null)
                 {
                     throw new InvalidDataException(
-                        "The Azure glyph response contains multiple font stacks.");
+                        "The glyph response contains multiple font stacks.");
                 }
                 result = DecodeFontStack(
                     root.ReadLengthDelimited(),
@@ -202,10 +202,10 @@ internal static class AzureGlyphRangeDecoder
             }
         }
         return result ?? throw new InvalidDataException(
-            "The Azure glyph response contains no font stack.");
+            "The glyph response contains no font stack.");
     }
 
-    private static AzureGlyphRange DecodeFontStack(
+    private static VectorGlyphRange DecodeFontStack(
         ReadOnlySpan<byte> encoded,
         string expectedFontStack,
         int expectedRangeStart,
@@ -213,7 +213,7 @@ internal static class AzureGlyphRangeDecoder
     {
         string? name = null;
         string? range = null;
-        Dictionary<int, AzureGlyph> glyphs = [];
+        Dictionary<int, VectorGlyph> glyphs = [];
         GlyphProtobufReader reader = new(encoded);
         while (reader.TryReadField(out int fieldNumber, out int wireType))
         {
@@ -236,13 +236,13 @@ internal static class AzureGlyphRangeDecoder
                     if (glyphs.Count >= MaximumGlyphs)
                     {
                         throw new InvalidDataException(
-                            "The Azure glyph range contains too many glyphs.");
+                            "The glyph range contains too many glyphs.");
                     }
-                    AzureGlyph glyph = DecodeGlyph(reader.ReadLengthDelimited());
+                    VectorGlyph glyph = DecodeGlyph(reader.ReadLengthDelimited());
                     if (!glyphs.TryAdd(glyph.Id, glyph))
                     {
                         throw new InvalidDataException(
-                            "The Azure glyph range contains a duplicate glyph.");
+                            "The glyph range contains a duplicate glyph.");
                     }
                     break;
                 default:
@@ -259,12 +259,12 @@ internal static class AzureGlyphRangeDecoder
             !string.Equals(range, expectedRange, StringComparison.Ordinal))
         {
             throw new InvalidDataException(
-                "The Azure glyph response does not match the requested font range.");
+                "The glyph response does not match the requested font range.");
         }
-        return new AzureGlyphRange(expectedFontStack, expectedRangeStart, glyphs);
+        return new VectorGlyphRange(expectedFontStack, expectedRangeStart, glyphs);
     }
 
-    private static AzureGlyph DecodeGlyph(ReadOnlySpan<byte> encoded)
+    private static VectorGlyph DecodeGlyph(ReadOnlySpan<byte> encoded)
     {
         int? id = null;
         byte[] bitmap = [];
@@ -313,13 +313,13 @@ internal static class AzureGlyphRangeDecoder
             bitmap.Length != (width == 0 && height == 0
                 ? 0
                 : checked((int)(
-                    (width.Value + (AzureGlyph.SdfBuffer * 2)) *
-                    (height.Value + (AzureGlyph.SdfBuffer * 2))))))
+                    (width.Value + (VectorGlyph.SdfBuffer * 2)) *
+                    (height.Value + (VectorGlyph.SdfBuffer * 2))))))
         {
             throw new InvalidDataException(
-                "The Azure glyph response contains an invalid glyph.");
+                "The glyph response contains an invalid glyph.");
         }
-        return new AzureGlyph(
+        return new VectorGlyph(
             id.Value,
             bitmap,
             width.Value,
@@ -344,7 +344,7 @@ internal static class AzureGlyphRangeDecoder
         if (encoded.Length > maximumBytes)
         {
             throw new InvalidDataException(
-                $"The Azure glyph {description} exceeds its supported limit.");
+                $"The glyph {description} exceeds its supported limit.");
         }
         try
         {
@@ -353,7 +353,7 @@ internal static class AzureGlyphRangeDecoder
         catch (DecoderFallbackException exception)
         {
             throw new InvalidDataException(
-                $"The Azure glyph {description} is not valid UTF-8.",
+                $"The glyph {description} is not valid UTF-8.",
                 exception);
         }
     }
@@ -379,7 +379,7 @@ internal static class AzureGlyphRangeDecoder
             if (fieldNumber == 0)
             {
                 throw new InvalidDataException(
-                    "The Azure glyph response contains an invalid protobuf field.");
+                    "The glyph response contains an invalid protobuf field.");
             }
             return true;
         }
@@ -392,13 +392,13 @@ internal static class AzureGlyphRangeDecoder
                 if (_offset >= _buffer.Length)
                 {
                     throw new InvalidDataException(
-                        "The Azure glyph response ended inside a varint.");
+                        "The glyph response ended inside a varint.");
                 }
                 byte current = _buffer[_offset++];
                 if (shift == 63 && current > 1)
                 {
                     throw new InvalidDataException(
-                        "The Azure glyph response contains an oversized varint.");
+                        "The glyph response contains an oversized varint.");
                 }
                 value |= (ulong)(current & 0x7f) << shift;
                 if ((current & 0x80) == 0)
@@ -407,7 +407,7 @@ internal static class AzureGlyphRangeDecoder
                 }
             }
             throw new InvalidDataException(
-                "The Azure glyph response contains an oversized varint.");
+                "The glyph response contains an oversized varint.");
         }
 
         internal ReadOnlySpan<byte> ReadLengthDelimited()
@@ -416,7 +416,7 @@ internal static class AzureGlyphRangeDecoder
             if (length > int.MaxValue || length > (ulong)(_buffer.Length - _offset))
             {
                 throw new InvalidDataException(
-                    "The Azure glyph response contains an invalid field length.");
+                    "The glyph response contains an invalid field length.");
             }
             ReadOnlySpan<byte> value = _buffer.Slice(_offset, (int)length);
             _offset += (int)length;
@@ -441,7 +441,7 @@ internal static class AzureGlyphRangeDecoder
                     break;
                 default:
                     throw new InvalidDataException(
-                        "The Azure glyph response uses an unsupported protobuf wire type.");
+                        "The glyph response uses an unsupported protobuf wire type.");
             }
         }
 
@@ -450,7 +450,7 @@ internal static class AzureGlyphRangeDecoder
             if (count > _buffer.Length - _offset)
             {
                 throw new InvalidDataException(
-                    "The Azure glyph response ended inside a fixed-width field.");
+                    "The glyph response ended inside a fixed-width field.");
             }
             _offset += count;
         }
@@ -459,7 +459,7 @@ internal static class AzureGlyphRangeDecoder
 
 internal interface IVectorGlyphProvider
 {
-    Task<AzureGlyphRange> GetRangeAsync(
+    Task<VectorGlyphRange> GetRangeAsync(
         string fontStack,
         int rangeStart,
         CancellationToken cancellationToken);
@@ -468,42 +468,42 @@ internal interface IVectorGlyphProvider
 /// <summary>
 /// Retains decoded glyph metrics and lazily generated grayscale GPU texture buffers.
 /// </summary>
-internal sealed class AzureGlyphAtlas
+internal sealed class VectorGlyphAtlas
 {
     private const int MaximumGlyphTextures = 16_384;
     private const long MaximumGlyphTextureBytes = 64 * 1024 * 1024;
     private readonly object _sync = new();
     private readonly string _styleSlug;
     private readonly IVectorGlyphProvider? _provider;
-    private readonly Dictionary<AzureGlyphRangeKey, AzureGlyphRange> _ranges = [];
-    private readonly Dictionary<AzureGlyphKey, VectorSpriteTextureData> _textures = [];
+    private readonly Dictionary<VectorGlyphRangeKey, VectorGlyphRange> _ranges = [];
+    private readonly Dictionary<VectorGlyphKey, VectorSpriteTextureData> _textures = [];
     private long _textureBytes;
 
-    internal AzureGlyphAtlas(string styleSlug, IVectorGlyphProvider? provider)
+    internal VectorGlyphAtlas(string styleSlug, IVectorGlyphProvider? provider)
     {
         _styleSlug = styleSlug;
         _provider = provider;
     }
 
-    internal void AddRangeForTest(AzureGlyphRange range)
+    internal void AddRangeForTest(VectorGlyphRange range)
     {
         lock (_sync)
         {
-            _ranges[new AzureGlyphRangeKey(range.FontStack, range.RangeStart)] = range;
+            _ranges[new VectorGlyphRangeKey(range.FontStack, range.RangeStart)] = range;
         }
     }
 
     internal async Task PrepareAsync(
-        IReadOnlyCollection<AzureGlyphKey> keys,
+        IReadOnlyCollection<VectorGlyphKey> keys,
         CancellationToken cancellationToken)
     {
-        AzureGlyphRangeKey[] missing;
+        VectorGlyphRangeKey[] missing;
         lock (_sync)
         {
             missing =
             [
                 .. keys
-                    .Select(key => new AzureGlyphRangeKey(
+                    .Select(key => new VectorGlyphRangeKey(
                         key.FontStack,
                         key.CodePoint & ~255))
                     .Where(key => !_ranges.ContainsKey(key))
@@ -515,36 +515,36 @@ internal sealed class AzureGlyphAtlas
             throw new InvalidOperationException(
                 "No vector glyph provider is available for the requested font range.");
         }
-        AzureGlyphRange[] loaded = await Task.WhenAll(
+        VectorGlyphRange[] loaded = await Task.WhenAll(
             missing.Select(key => _provider!.GetRangeAsync(
                 key.FontStack,
                 key.RangeStart,
                 cancellationToken))).ConfigureAwait(false);
         lock (_sync)
         {
-            foreach (AzureGlyphRange range in loaded)
+            foreach (VectorGlyphRange range in loaded)
             {
                 _ranges.TryAdd(
-                    new AzureGlyphRangeKey(range.FontStack, range.RangeStart),
+                    new VectorGlyphRangeKey(range.FontStack, range.RangeStart),
                     range);
             }
         }
     }
 
     internal bool TryGetOrCreateTexture(
-        AzureGlyphKey key,
-        out AzureGlyph glyph,
+        VectorGlyphKey key,
+        out VectorGlyph glyph,
         out VectorSpriteTextureData? texture)
     {
         lock (_sync)
         {
             glyph = null!;
-            AzureGlyphRangeKey rangeKey =
+            VectorGlyphRangeKey rangeKey =
                 new(key.FontStack, key.CodePoint & ~255);
-            if (!_ranges.TryGetValue(rangeKey, out AzureGlyphRange? range) ||
+            if (!_ranges.TryGetValue(rangeKey, out VectorGlyphRange? range) ||
                 !range.Glyphs.TryGetValue(
                     key.CodePoint,
-                    out AzureGlyph? foundGlyph))
+                    out VectorGlyph? foundGlyph))
             {
                 texture = null;
                 return false;
@@ -565,7 +565,7 @@ internal sealed class AzureGlyphAtlas
                 byteCount > MaximumGlyphTextureBytes - _textureBytes)
             {
                 throw new InvalidDataException(
-                    "The Azure glyph texture cache exceeds its supported limit.");
+                    "The glyph texture cache exceeds its supported limit.");
             }
             byte[] pixels = new byte[checked((int)byteCount)];
             for (int index = 0; index < glyph.Bitmap.Length; index++)
@@ -605,4 +605,4 @@ internal sealed class AzureGlyphAtlas
     }
 }
 
-internal readonly record struct AzureGlyphKey(string FontStack, int CodePoint);
+internal readonly record struct VectorGlyphKey(string FontStack, int CodePoint);

@@ -1592,7 +1592,7 @@ internal sealed partial class MapRenderer
 
     private sealed class VectorTileCacheEntry(
         VectorTileFeatureCollection features,
-        AzureVectorStyleAssets styleAssets,
+        VectorStyleAssets styleAssets,
         int style)
     {
         private double _resolvedZoom = double.NaN;
