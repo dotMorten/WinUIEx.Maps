@@ -37,10 +37,12 @@ internal static class VectorStyleCompatibility
                     "symbol-placement",
                     "symbol-spacing",
                     "symbol-sort-key",
+                    "symbol-avoid-edges",
                     "icon-image",
                     "icon-size",
                     "icon-offset",
                     "icon-anchor",
+                    "icon-padding",
                     "icon-rotate",
                     "icon-rotation-alignment",
                     "icon-text-fit",
@@ -51,6 +53,12 @@ internal static class VectorStyleCompatibility
                     "text-field",
                     "text-font",
                     "text-size",
+                    "text-max-width",
+                    "text-line-height",
+                    "text-justify",
+                    "text-padding",
+                    "text-keep-upright",
+                    "text-max-angle",
                     "text-offset",
                     "text-anchor",
                     "text-radial-offset",
@@ -79,6 +87,9 @@ internal static class VectorStyleCompatibility
                     "fill-opacity",
                     "fill-outline-color",
                     "fill-pattern",
+                    "fill-translate",
+                    "fill-translate-anchor",
+                    "fill-antialias",
                 ],
                 ["line"] =
                 [
@@ -99,6 +110,8 @@ internal static class VectorStyleCompatibility
                     "text-color",
                     "text-halo-color",
                     "text-halo-width",
+                    "text-halo-blur",
+                    "text-opacity",
                 ],
             };
 
@@ -120,19 +133,6 @@ internal static class VectorStyleCompatibility
     private static readonly HashSet<string> KnownProperties =
     [
         "background-pattern",
-        "fill-antialias",
-        "fill-translate",
-        "fill-translate-anchor",
-        "icon-padding",
-        "symbol-avoid-edges",
-        "text-halo-blur",
-        "text-justify",
-        "text-keep-upright",
-        "text-line-height",
-        "text-max-angle",
-        "text-max-width",
-        "text-opacity",
-        "text-padding",
     ];
 
     internal static IReadOnlyList<VectorStyleCompatibilityIssue> Analyze(

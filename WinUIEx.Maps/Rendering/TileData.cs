@@ -121,7 +121,11 @@ internal readonly record struct VectorTileSymbol(
     bool Optional = false,
     VectorIconTextFit TextFit = VectorIconTextFit.None,
     bool ViewportAligned = false,
-    Vector4 TextFitPadding = default);
+    Vector4 TextFitPadding = default,
+    double CollisionPadding = 2,
+    bool AvoidEdges = false,
+    bool KeepUpright = true,
+    double MaximumAngle = Math.PI / 4);
 
 /// <summary>
 /// Describes one projected vector symbol rectangle ready for texture batching.
@@ -148,7 +152,9 @@ internal readonly record struct VectorSymbolPlacement(
     bool AllowOverlap = false,
     bool IgnorePlacement = false,
     bool Optional = false,
-    long CollisionFamily = -1);
+    long CollisionFamily = -1,
+    double CollisionPadding = 2,
+    bool AvoidEdges = false);
 
 /// <summary>
 /// Carries resolved point symbols and privacy-safe aggregate failures for one display zoom.
@@ -181,7 +187,8 @@ internal enum VectorSymbolKind
 internal readonly record struct VectorTextPaint(
     Vector4 Color,
     Vector4 HaloColor,
-    double HaloOffset);
+    double HaloOffset,
+    double HaloBlur = 0);
 
 internal readonly record struct VectorIconPaint(
     Vector4 Color,
@@ -254,9 +261,19 @@ internal readonly record struct VectorFillStyle(
     long PatternTextureId = 0,
     double PatternWidth = 0,
     double PatternHeight = 0,
-    double Opacity = 1)
+    double Opacity = 1,
+    double TranslateX = 0,
+    double TranslateY = 0,
+    VectorTranslateAnchor TranslateAnchor = VectorTranslateAnchor.Map,
+    bool Antialias = true)
 {
     internal bool HasPattern => PatternTextureId != 0;
+}
+
+internal enum VectorTranslateAnchor
+{
+    Map,
+    Viewport,
 }
 
 /// <summary>

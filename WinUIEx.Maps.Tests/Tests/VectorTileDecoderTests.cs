@@ -600,6 +600,183 @@ public sealed class VectorTileDecoderTests
     }
 
     [TestMethod]
+    public void LineTextHonorsKeepUprightAndMaximumAngle()
+    {
+        VisibleTile tile = new(
+            new TileId(2, 1, 1),
+            1,
+            100,
+            50,
+            256);
+        VectorTilePoint[] reversedPath =
+        [
+            new VectorTilePoint(0.9, 0.5),
+            new VectorTilePoint(0.1, 0.5),
+        ];
+        VectorSymbolPlacement reversed = Assert.ContainsSingle(
+            MapRenderer.ProjectVectorSymbols(
+                [new VectorTileSymbol(
+                    3,
+                    0,
+                    0,
+                    -1,
+                    20,
+                    10,
+                    0,
+                    0,
+                    VectorSymbolKind.Text,
+                    LinePoints: reversedPath,
+                    LineSpacing: 500,
+                    KeepUpright: false)],
+                tile,
+                640,
+                480,
+                0,
+                0));
+        VectorTilePoint[] sharpPath =
+        [
+            new VectorTilePoint(0.1, 0.2),
+            new VectorTilePoint(0.5, 0.2),
+            new VectorTilePoint(0.5, 0.8),
+        ];
+        VectorTileSymbol[] permissive = CreateLineGlyphs(sharpPath)
+            .Select(symbol => symbol with
+            {
+                MaximumAngle = Math.PI,
+            })
+            .ToArray();
+
+        Assert.AreEqual(Math.PI, Math.Abs(reversed.Rotation), 0.000001);
+        Assert.IsNotEmpty(MapRenderer.ProjectVectorSymbols(
+            permissive,
+            tile,
+            640,
+            480,
+            0,
+            0));
+    }
+
+    [TestMethod]
+    public void SymbolsCanAvoidTileEdges()
+    {
+        VisibleTile tile = new(
+            new TileId(2, 1, 1),
+            1,
+            100,
+            50,
+            256);
+        VectorTileSymbol crossing = new(
+            3,
+            0.01,
+            0.5,
+            -1,
+            20,
+            10,
+            0,
+            0);
+
+        Assert.ContainsSingle(MapRenderer.ProjectVectorSymbols(
+            [crossing],
+            tile,
+            640,
+            480,
+            0,
+            0));
+        Assert.IsEmpty(MapRenderer.ProjectVectorSymbols(
+            [crossing with { AvoidEdges = true }],
+            tile,
+            640,
+            480,
+            0,
+            0));
+    }
+
+    [TestMethod]
+    public void CollisionUsesPerSymbolPadding()
+    {
+        MapRenderer.LabelCollisionResult withoutPadding =
+            MapRenderer.ResolveLabelCollisions(
+            [
+                new(
+                    2, -1, 0, 0, 10, 10,
+                    CollisionGroup: 1,
+                    CollisionPadding: 0),
+                new(
+                    2, -2, 12, 0, 10, 10,
+                    CollisionGroup: 2,
+                    CollisionPadding: 0),
+            ]);
+        MapRenderer.LabelCollisionResult withPadding =
+            MapRenderer.ResolveLabelCollisions(
+            [
+                new(
+                    2, -1, 0, 0, 10, 10,
+                    CollisionGroup: 1,
+                    CollisionPadding: 2),
+                new(
+                    2, -2, 12, 0, 10, 10,
+                    CollisionGroup: 2,
+                    CollisionPadding: 2),
+            ]);
+
+        Assert.AreEqual(0, withoutPadding.SuppressedLabelCount);
+        Assert.AreEqual(1, withPadding.SuppressedLabelCount);
+    }
+
+    [TestMethod]
+    public void FillTranslationHonorsMapAndViewportAnchors()
+    {
+        VisibleTile tile = new(
+            new TileId(2, 1, 1),
+            1,
+            100,
+            50,
+            256);
+        VectorTilePoint[] triangle =
+        [
+            new VectorTilePoint(0.5, 0.5),
+            new VectorTilePoint(0.6, 0.5),
+            new VectorTilePoint(0.5, 0.6),
+        ];
+        MapScreenPoint original = MapRenderer.ProjectVectorPolygonTriangles(
+            triangle,
+            tile,
+            640,
+            480,
+            90,
+            0)[0];
+        MapScreenPoint mapTranslated =
+            MapRenderer.ProjectVectorPolygonTriangles(
+                triangle,
+                tile,
+                640,
+                480,
+                90,
+                0,
+                new VectorFillStyle(
+                    Vector4.One,
+                    TranslateX: 10,
+                    TranslateAnchor: VectorTranslateAnchor.Map))[0];
+        MapScreenPoint viewportTranslated =
+            MapRenderer.ProjectVectorPolygonTriangles(
+                triangle,
+                tile,
+                640,
+                480,
+                90,
+                0,
+                new VectorFillStyle(
+                    Vector4.One,
+                    TranslateX: 10,
+                    TranslateAnchor: VectorTranslateAnchor.Viewport))[0];
+
+        Assert.AreEqual(original.X, mapTranslated.X, 0.000001);
+        Assert.AreEqual(original.Y - 10, mapTranslated.Y, 0.000001);
+        Assert.AreEqual(original.X + 10, viewportTranslated.X, 0.000001);
+        Assert.AreEqual(original.Y, viewportTranslated.Y, 0.000001);
+    }
+
+    [TestMethod]
     public void VectorLinesProjectAndExpandWithRoundCaps()
     {
         VisibleTile tile = new(

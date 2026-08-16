@@ -147,9 +147,10 @@ float4 main(PixelInput input) : SV_TARGET
         0.75f - smoothing,
         0.75f + smoothing,
         distance);
+    float haloSmoothing = smoothing + Opacity.z;
     float haloCoverage = smoothstep(
-        0.75f - Opacity.y - smoothing,
-        0.75f - Opacity.y + smoothing,
+        0.75f - Opacity.y - haloSmoothing,
+        0.75f - Opacity.y + haloSmoothing,
         distance);
     float4 fill = Rotation * fillCoverage;
     float4 halo = Pitch * haloCoverage * (1.0f - fillCoverage);

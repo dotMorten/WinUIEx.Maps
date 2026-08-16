@@ -346,6 +346,8 @@ public sealed class VectorStyleTests
                 out _,
                 out _,
                 out _,
+                out _,
+                out _,
                 out _));
     }
 
@@ -1807,6 +1809,223 @@ public sealed class VectorStyleTests
     }
 
     [TestMethod]
+    public void ArcGisLayoutAndPaintPropertiesResolve()
+    {
+        VectorStyle style = VectorStyle.ParseCustom(
+            Encoding.UTF8.GetBytes(
+                """
+                {
+                  "version": 8,
+                  "layers": [
+                    {
+                      "type": "symbol",
+                      "source-layer": "road",
+                      "layout": {
+                        "icon-image": "shield",
+                        "icon-padding": 7,
+                        "symbol-avoid-edges": true
+                      }
+                    },
+                    {
+                      "type": "symbol",
+                      "source-layer": "road",
+                      "layout": {
+                        "text-field": "{name}",
+                        "text-font": ["TestFont"],
+                        "text-size": 10,
+                        "text-max-width": 8,
+                        "text-line-height": 1.4,
+                        "text-justify": "right",
+                        "text-padding": 6,
+                        "text-keep-upright": false,
+                        "text-max-angle": 30,
+                        "symbol-avoid-edges": true
+                      },
+                      "paint": {
+                        "text-color": "#ff0000",
+                        "text-halo-color": "#0000ff",
+                        "text-halo-width": 2,
+                        "text-halo-blur": 3,
+                        "text-opacity": 0.5
+                      }
+                    },
+                    {
+                      "type": "fill",
+                      "source-layer": "building",
+                      "paint": {
+                        "fill-color": "#00ff00",
+                        "fill-translate": {
+                          "stops": [[0, "0 0"], [10, "6 4"]]
+                        },
+                        "fill-translate-anchor": "viewport",
+                        "fill-antialias": false
+                      }
+                    }
+                  ]
+                }
+                """));
+        VectorTileFeature feature = CreateFeatures(
+            new VectorTileProperty(
+                "name",
+                VectorTileValue.FromString("I-405"))).Features[0];
+        VectorStyleEvaluationContext context = new(feature, 5);
+
+        Assert.AreEqual(
+            VectorStyleIconResult.Resolved,
+            style.IconLayers[0].EvaluateIcon(
+                context,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out double iconPadding,
+                out bool iconAvoidEdges,
+                out _,
+                out _,
+                out _,
+                out _));
+        Assert.AreEqual(7, iconPadding);
+        Assert.IsTrue(iconAvoidEdges);
+
+        Assert.AreEqual(
+            VectorStyleTextResult.Resolved,
+            style.TextLayers[0].EvaluateText(
+                context,
+                out VectorTextStyle text));
+        Assert.AreEqual(8, text.MaximumWidth);
+        Assert.AreEqual(1.4, text.LineHeight);
+        Assert.AreEqual("right", text.Justify);
+        Assert.AreEqual(6, text.CollisionPadding);
+        Assert.IsFalse(text.KeepUpright);
+        Assert.AreEqual(Math.PI / 6, text.MaximumAngle, 0.000001);
+        Assert.IsTrue(text.AvoidEdges);
+        Assert.AreEqual(2, text.Paint.HaloOffset);
+        Assert.AreEqual(3, text.Paint.HaloBlur);
+        Assert.AreEqual(0.5, text.Paint.Color.W, 0.000001);
+        Assert.AreEqual(0.5, text.Paint.HaloColor.W, 0.000001);
+
+        Assert.AreEqual(
+            VectorStyleFillResult.Resolved,
+            style.FillLayers[0].EvaluateFill(
+                context,
+                out VectorFillStyle fill,
+                out _));
+        Assert.AreEqual(3, fill.TranslateX);
+        Assert.AreEqual(2, fill.TranslateY);
+        Assert.AreEqual(
+            VectorTranslateAnchor.Viewport,
+            fill.TranslateAnchor);
+        Assert.IsFalse(fill.Antialias);
+        Assert.IsNull(fill.OutlineColor);
+    }
+
+    [TestMethod]
+    public void FillAntialiasDefaultsOutlineToFillColor()
+    {
+        VectorStyle style = VectorStyle.ParseCustom(
+            Encoding.UTF8.GetBytes(
+                """
+                {
+                  "version": 8,
+                  "layers": [{
+                    "type": "fill",
+                    "source-layer": "building",
+                    "paint": {
+                      "fill-color": "#00ff00",
+                      "fill-opacity": 0.5
+                    }
+                  }]
+                }
+                """));
+        VectorTileFeature feature = CreateFeatures().Features[0];
+
+        Assert.AreEqual(
+            VectorStyleFillResult.Resolved,
+            style.FillLayers[0].EvaluateFill(
+                new VectorStyleEvaluationContext(feature, 10),
+                out VectorFillStyle fill,
+                out _));
+        Assert.IsTrue(fill.Antialias);
+        Assert.AreEqual(fill.Color, fill.OutlineColor);
+    }
+
+    [TestMethod]
+    public void TextMaximumWidthLineHeightAndJustifyShapeMultipleLines()
+    {
+        VectorStyleAssets assets = CreateAssets(
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "symbol",
+                "source-layer": "poi",
+                "layout": {
+                  "text-field": "AA A",
+                  "text-font": ["TestFont"],
+                  "text-size": 10,
+                  "text-max-width": 0.7,
+                  "text-line-height": 2,
+                  "text-justify": "right",
+                  "text-padding": 9,
+                  "text-keep-upright": false,
+                  "text-max-angle": 30,
+                  "symbol-avoid-edges": true
+                }
+              }]
+            }
+            """,
+            "{}",
+            PixelBytes(0),
+            1,
+            1);
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
+            "TestFont",
+            0,
+            new Dictionary<int, VectorGlyph>
+            {
+                ['A'] = new(
+                    'A',
+                    GlyphBitmap(8, 128),
+                    6,
+                    8,
+                    0,
+                    8,
+                    7),
+            }));
+
+        VectorTileSymbol[] glyphs = assets.ResolveSymbols(
+            CreateFeatures(),
+            10).Symbols.Where(symbol =>
+                symbol.Kind == VectorSymbolKind.Text).ToArray();
+
+        Assert.HasCount(3, glyphs);
+        double[] rows = glyphs.Select(glyph => glyph.OffsetY)
+            .Distinct()
+            .Order()
+            .ToArray();
+        Assert.HasCount(2, rows);
+        Assert.AreEqual(20, rows[1] - rows[0], 0.000001);
+        double firstRight = glyphs.Where(glyph => glyph.OffsetY == rows[0])
+            .Max(glyph => glyph.OffsetX + (glyph.Width / 2));
+        double secondRight = glyphs.Where(glyph => glyph.OffsetY == rows[1])
+            .Max(glyph => glyph.OffsetX + (glyph.Width / 2));
+        Assert.AreEqual(firstRight, secondRight, 0.000001);
+        Assert.IsTrue(glyphs.All(glyph =>
+            glyph.CollisionPadding == 9 &&
+            glyph.AvoidEdges &&
+            !glyph.KeepUpright &&
+            Math.Abs(glyph.MaximumAngle - (Math.PI / 6)) < 0.000001));
+    }
+
+    [TestMethod]
     public void CompatibilityReportCountsUnsupportedConstructsWithoutStyleData()
     {
         IReadOnlyList<VectorStyleCompatibilityIssue> issues =
@@ -1864,26 +2083,6 @@ public sealed class VectorStyleTests
                 new VectorStyleCompatibilityIssue(
                     VectorStyleCompatibilityIssueKind.UnsupportedLayoutProperty,
                     "other",
-                    1),
-                new VectorStyleCompatibilityIssue(
-                    VectorStyleCompatibilityIssueKind.UnsupportedLayoutProperty,
-                    "symbol-avoid-edges",
-                    1),
-                new VectorStyleCompatibilityIssue(
-                    VectorStyleCompatibilityIssueKind.UnsupportedLayoutProperty,
-                    "text-max-width",
-                    1),
-                new VectorStyleCompatibilityIssue(
-                    VectorStyleCompatibilityIssueKind.UnsupportedPaintProperty,
-                    "fill-antialias",
-                    1),
-                new VectorStyleCompatibilityIssue(
-                    VectorStyleCompatibilityIssueKind.UnsupportedPaintProperty,
-                    "fill-translate",
-                    1),
-                new VectorStyleCompatibilityIssue(
-                    VectorStyleCompatibilityIssueKind.UnsupportedPaintProperty,
-                    "text-halo-blur",
                     1),
             },
             issues);

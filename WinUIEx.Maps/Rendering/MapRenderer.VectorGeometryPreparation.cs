@@ -384,13 +384,17 @@ internal sealed partial class MapRenderer
                             input.Heading,
                             0,
                             VectorGeometryCachePadding,
+                            polygon.Style.TranslateX,
+                            polygon.Style.TranslateY,
+                            polygon.Style.TranslateAnchor,
                             buffer);
                     if (triangleCount != 0)
                     {
                         prepared.PolygonResult.DrawablePolygonCount++;
                         prepared.PolygonResult.TriangleCount += triangleCount;
                     }
-                    if (polygon.Style.OutlineColor is Vector4 outlineColor &&
+                    if (polygon.Style.Antialias &&
+                        polygon.Style.OutlineColor is Vector4 outlineColor &&
                         outlineColor.W > 0)
                     {
                         VectorPolygonBatchKey outlineKey = new(
@@ -412,14 +416,21 @@ internal sealed partial class MapRenderer
                                     ring.Points.Length);
                             try
                             {
-                                ProjectVectorLine(
-                                    ring.Points,
-                                    tile.Tile,
-                                    input.ViewportWidth,
-                                    input.ViewportHeight,
-                                    input.Heading,
-                                    0,
-                                    projected.AsSpan(0, ring.Points.Length));
+                                for (int index = 0;
+                                    index < ring.Points.Length;
+                                    index++)
+                                {
+                                    projected[index] = ProjectVectorPoint(
+                                        ring.Points[index],
+                                        tile.Tile,
+                                        input.ViewportWidth,
+                                        input.ViewportHeight,
+                                        input.Heading,
+                                        0,
+                                        polygon.Style.TranslateX,
+                                        polygon.Style.TranslateY,
+                                        polygon.Style.TranslateAnchor);
+                                }
                                 prepared.PolygonResult.OutlineTriangleCount +=
                                     AppendVectorLineTriangles(
                                         projected.AsSpan(

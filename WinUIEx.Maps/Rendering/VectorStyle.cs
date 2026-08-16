@@ -1091,10 +1091,16 @@ internal sealed class VectorStyleAssets
                 text.Paint.HaloOffset / (8 * scale),
                 0,
                 0.5),
+            HaloBlur = Math.Clamp(
+                text.Paint.HaloBlur / (8 * scale),
+                0,
+                0.5),
         };
-        string[] lines = text.Text.Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace('\r', '\n')
-            .Split('\n');
+        string[] lines = WrapText(
+            text.Text.Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Replace('\r', '\n'),
+            text,
+            scale);
         List<(VectorGlyph Glyph, VectorSpriteTextureData Texture, double X)>[] shaped =
             new List<(VectorGlyph, VectorSpriteTextureData, double)>[lines.Length];
         double[] widths = new double[lines.Length];
@@ -1143,7 +1149,7 @@ internal sealed class VectorStyleAssets
             }
         }
 
-        double lineHeight = text.Size * 1.2;
+        double lineHeight = text.Size * text.LineHeight;
         double totalHeight = Math.Max(lineHeight, lines.Length * lineHeight);
         GetTextAnchorShift(
             text.Anchor,
@@ -1154,9 +1160,21 @@ internal sealed class VectorStyleAssets
             out double anchorY);
         double baseX = anchorX + (text.OffsetX * text.Size);
         double baseY = anchorY + (text.OffsetY * text.Size);
+        string justify = text.Justify == "auto"
+            ? text.Anchor.Contains("left", StringComparison.Ordinal)
+                ? "left"
+                : text.Anchor.Contains("right", StringComparison.Ordinal)
+                    ? "right"
+                    : "center"
+            : text.Justify;
         for (int lineIndex = 0; lineIndex < shaped.Length; lineIndex++)
         {
-            double lineX = baseX + ((maximumWidth - widths[lineIndex]) / 2);
+            double lineX = justify switch
+            {
+                "left" => baseX,
+                "right" => baseX + maximumWidth - widths[lineIndex],
+                _ => baseX + ((maximumWidth - widths[lineIndex]) / 2),
+            };
             double baseline = baseY +
                 (lineIndex * lineHeight) +
                 (lineHeight / 2) +
@@ -1187,10 +1205,79 @@ internal sealed class VectorStyleAssets
                     SortKey: text.SortKey,
                     AllowOverlap: text.AllowOverlap,
                     IgnorePlacement: text.IgnorePlacement,
-                    Optional: text.Optional));
+                    Optional: text.Optional,
+                    CollisionPadding: text.CollisionPadding,
+                    AvoidEdges: text.AvoidEdges,
+                    KeepUpright: text.KeepUpright,
+                    MaximumAngle: text.MaximumAngle));
                 counts.ResolvedGlyphCount++;
             }
         }
+    }
+
+    private string[] WrapText(
+        string text,
+        VectorTextStyle style,
+        double scale)
+    {
+        if (style.MaximumWidth <= 0)
+        {
+            return text.Split('\n');
+        }
+
+        double maximumWidth = style.MaximumWidth * style.Size;
+        List<string> lines = [];
+        foreach (string paragraph in text.Split('\n'))
+        {
+            string[] words = paragraph.Split(
+                ' ',
+                StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length == 0)
+            {
+                lines.Add(string.Empty);
+                continue;
+            }
+
+            StringBuilder current = new(words[0]);
+            for (int index = 1; index < words.Length; index++)
+            {
+                string candidate = $"{current} {words[index]}";
+                if (MeasureTextWidth(candidate, style, scale) <= maximumWidth)
+                {
+                    current.Append(' ').Append(words[index]);
+                }
+                else
+                {
+                    lines.Add(current.ToString());
+                    current.Clear();
+                    current.Append(words[index]);
+                }
+            }
+            lines.Add(current.ToString());
+        }
+        return lines.ToArray();
+    }
+
+    private double MeasureTextWidth(
+        string text,
+        VectorTextStyle style,
+        double scale)
+    {
+        double width = 0;
+        foreach (Rune rune in text.EnumerateRunes())
+        {
+            if (rune.Value > char.MaxValue ||
+                !_glyphAtlas.TryGetOrCreateTexture(
+                    new VectorGlyphKey(style.FontStack, rune.Value),
+                    out VectorGlyph glyph,
+                    out _))
+            {
+                continue;
+            }
+            width += (glyph.Advance * scale) +
+                (style.LetterSpacing * style.Size);
+        }
+        return width;
     }
 
     private static void GetTextAnchorShift(
@@ -1278,6 +1365,8 @@ internal sealed class VectorStyleAssets
                         out VectorIconPaint iconPaint,
                         out VectorIconTextFit textFit,
                         out Vector4 textFitPadding,
+                        out double collisionPadding,
+                        out bool avoidEdges,
                         out double sortKey,
                         out bool allowOverlap,
                         out bool ignorePlacement,
@@ -1361,7 +1450,9 @@ internal sealed class VectorStyleAssets
                             IgnorePlacement: ignorePlacement,
                             Optional: optional,
                             TextFit: textFit,
-                            TextFitPadding: textFitPadding));
+                            TextFitPadding: textFitPadding,
+                            CollisionPadding: collisionPadding,
+                            AvoidEdges: avoidEdges));
                     }
                 }
                 else
@@ -1392,7 +1483,9 @@ internal sealed class VectorStyleAssets
                             IgnorePlacement: ignorePlacement,
                             Optional: optional,
                             TextFit: textFit,
-                            TextFitPadding: textFitPadding));
+                            TextFitPadding: textFitPadding,
+                            CollisionPadding: collisionPadding,
+                            AvoidEdges: avoidEdges));
                     }
                 }
             }
@@ -1828,6 +1921,16 @@ internal sealed class VectorStyle
                 out VectorStyleExpression iconTextFitPadding) ||
             !TryParseOptionalExpression(
                 layout,
+                "icon-padding",
+                VectorStyleValue.FromNumber(2),
+                out VectorStyleExpression iconPadding) ||
+            !TryParseOptionalExpression(
+                layout,
+                "symbol-avoid-edges",
+                VectorStyleValue.FromBoolean(false),
+                out VectorStyleExpression symbolAvoidEdges) ||
+            !TryParseOptionalExpression(
+                layout,
                 "symbol-sort-key",
                 VectorStyleValue.FromNumber(0),
                 out VectorStyleExpression symbolSortKey) ||
@@ -1913,6 +2016,8 @@ internal sealed class VectorStyle
             iconRotationAlignment,
             iconTextFit,
             iconTextFitPadding,
+            iconPadding,
+            symbolAvoidEdges,
             symbolSortKey,
             iconAllowOverlap,
             iconIgnorePlacement,
@@ -1975,6 +2080,41 @@ internal sealed class VectorStyle
                 "text-size",
                 VectorStyleValue.FromNumber(16),
                 out VectorStyleExpression textSize) ||
+            !TryParseOptionalExpression(
+                layout,
+                "text-max-width",
+                VectorStyleValue.FromNumber(10),
+                out VectorStyleExpression textMaxWidth) ||
+            !TryParseOptionalExpression(
+                layout,
+                "text-line-height",
+                VectorStyleValue.FromNumber(1.2),
+                out VectorStyleExpression textLineHeight) ||
+            !TryParseOptionalExpression(
+                layout,
+                "text-justify",
+                VectorStyleValue.FromString("auto"),
+                out VectorStyleExpression textJustify) ||
+            !TryParseOptionalExpression(
+                layout,
+                "text-padding",
+                VectorStyleValue.FromNumber(2),
+                out VectorStyleExpression textPadding) ||
+            !TryParseOptionalExpression(
+                layout,
+                "text-keep-upright",
+                VectorStyleValue.FromBoolean(true),
+                out VectorStyleExpression textKeepUpright) ||
+            !TryParseOptionalExpression(
+                layout,
+                "text-max-angle",
+                VectorStyleValue.FromNumber(45),
+                out VectorStyleExpression textMaxAngle) ||
+            !TryParseOptionalExpression(
+                layout,
+                "symbol-avoid-edges",
+                VectorStyleValue.FromBoolean(false),
+                out VectorStyleExpression symbolAvoidEdges) ||
             !TryParseOptionalExpression(
                 layout,
                 "text-offset",
@@ -2067,7 +2207,17 @@ internal sealed class VectorStyle
                 hasPaint ? paint : default,
                 "text-halo-width",
                 VectorStyleValue.FromNumber(0),
-                out VectorStyleExpression textHaloWidth))
+                out VectorStyleExpression textHaloWidth) ||
+            !TryParseOptionalExpression(
+                hasPaint ? paint : default,
+                "text-halo-blur",
+                VectorStyleValue.FromNumber(0),
+                out VectorStyleExpression textHaloBlur) ||
+            !TryParseOptionalExpression(
+                hasPaint ? paint : default,
+                "text-opacity",
+                VectorStyleValue.FromNumber(1),
+                out VectorStyleExpression textOpacity))
         {
             return VectorStyleLayerParseResult.UnsupportedExpression;
         }
@@ -2104,6 +2254,13 @@ internal sealed class VectorStyle
             textFieldExpression,
             textFont,
             textSize,
+            textMaxWidth,
+            textLineHeight,
+            textJustify,
+            textPadding,
+            textKeepUpright,
+            textMaxAngle,
+            symbolAvoidEdges,
             textOffset,
             textAnchor,
             textVariableAnchor,
@@ -2114,6 +2271,8 @@ internal sealed class VectorStyle
             textColor,
             textHaloColor,
             textHaloWidth,
+            textHaloBlur,
+            textOpacity,
             symbolSortKey,
             textAllowOverlap,
             textIgnorePlacement,
@@ -2208,7 +2367,23 @@ internal sealed class VectorStyle
                 paint,
                 "fill-pattern",
                 VectorStyleValue.Null,
-                out VectorStyleExpression fillPattern))
+                out VectorStyleExpression fillPattern) ||
+            !TryParseOptionalExpression(
+                paint,
+                "fill-translate",
+                VectorStyleValue.FromArray(
+                    [VectorStyleValue.FromNumber(0), VectorStyleValue.FromNumber(0)]),
+                out VectorStyleExpression fillTranslate) ||
+            !TryParseOptionalExpression(
+                paint,
+                "fill-translate-anchor",
+                VectorStyleValue.FromString("map"),
+                out VectorStyleExpression fillTranslateAnchor) ||
+            !TryParseOptionalExpression(
+                paint,
+                "fill-antialias",
+                VectorStyleValue.FromBoolean(true),
+                out VectorStyleExpression fillAntialias))
         {
             return VectorStyleLayerParseResult.UnsupportedExpression;
         }
@@ -2243,7 +2418,10 @@ internal sealed class VectorStyle
             fillColor,
             fillOpacity,
             fillOutlineColor,
-            fillPattern);
+            fillPattern,
+            fillTranslate,
+            fillTranslateAnchor,
+            fillAntialias);
         return VectorStyleLayerParseResult.Parsed;
     }
 
@@ -2625,6 +2803,8 @@ internal sealed class VectorIconStyleLayer(
     VectorStyleExpression iconRotationAlignment,
     VectorStyleExpression iconTextFit,
     VectorStyleExpression iconTextFitPadding,
+    VectorStyleExpression iconPadding,
+    VectorStyleExpression symbolAvoidEdges,
     VectorStyleExpression symbolSortKey,
     VectorStyleExpression iconAllowOverlap,
     VectorStyleExpression iconIgnorePlacement,
@@ -2682,6 +2862,8 @@ internal sealed class VectorIconStyleLayer(
         out VectorIconPaint paint,
         out VectorIconTextFit textFit,
         out Vector4 textFitPadding,
+        out double collisionPadding,
+        out bool avoidEdges,
         out double sortKey,
         out bool allowOverlap,
         out bool ignorePlacement,
@@ -2699,6 +2881,8 @@ internal sealed class VectorIconStyleLayer(
         paint = VectorIconPaint.Default;
         textFit = VectorIconTextFit.None;
         textFitPadding = default;
+        collisionPadding = 0;
+        avoidEdges = false;
         sortKey = 0;
         allowOverlap = false;
         ignorePlacement = false;
@@ -2754,6 +2938,15 @@ internal sealed class VectorIconStyleLayer(
                 context,
                 out VectorStyleValue paddingValue) ||
             !TryGetTextFitPadding(paddingValue, out textFitPadding) ||
+            !iconPadding.TryEvaluate(
+                context,
+                out VectorStyleValue collisionPaddingValue) ||
+            !collisionPaddingValue.TryGetNumber(out collisionPadding) ||
+            !double.IsFinite(collisionPadding) ||
+            !TryEvaluateBoolean(
+                symbolAvoidEdges,
+                context,
+                out avoidEdges) ||
             !symbolSortKey.TryEvaluate(context, out VectorStyleValue sortValue) ||
             !sortValue.TryGetNumber(out sortKey) ||
             !double.IsFinite(sortKey) ||
@@ -2784,6 +2977,10 @@ internal sealed class VectorIconStyleLayer(
         if (paint.Color.W <= 0)
         {
             return VectorStyleIconResult.NoIcon;
+        }
+        if (collisionPadding is < 0 or > 256)
+        {
+            return VectorStyleIconResult.EvaluationFailure;
         }
         return VectorStyleIconResult.Resolved;
     }
@@ -2923,6 +3120,8 @@ internal sealed class VectorIconStyleLayer(
         iconRotate.CollectZoomStops(stops);
         iconTextFit.CollectZoomStops(stops);
         iconTextFitPadding.CollectZoomStops(stops);
+        iconPadding.CollectZoomStops(stops);
+        symbolAvoidEdges.CollectZoomStops(stops);
         symbolSortKey.CollectZoomStops(stops);
         iconAllowOverlap.CollectZoomStops(stops);
         iconIgnorePlacement.CollectZoomStops(stops);
@@ -2995,7 +3194,10 @@ internal sealed class VectorFillStyleLayer(
     VectorStyleExpression fillColor,
     VectorStyleExpression fillOpacity,
     VectorStyleExpression fillOutlineColor,
-    VectorStyleExpression fillPattern)
+    VectorStyleExpression fillPattern,
+    VectorStyleExpression fillTranslate,
+    VectorStyleExpression fillTranslateAnchor,
+    VectorStyleExpression fillAntialias)
 {
     internal int Order { get; } = order;
 
@@ -3050,7 +3252,29 @@ internal sealed class VectorFillStyleLayer(
                 outlineValue,
                 out Vector4? outlineColor) ||
             !fillPattern.TryEvaluate(context, out VectorStyleValue patternValue) ||
-            !TryResolvePattern(patternValue, out patternName))
+            !TryResolvePattern(patternValue, out patternName) ||
+            !fillTranslate.TryEvaluate(
+                context,
+                out VectorStyleValue translateValue) ||
+            !VectorTextStyleLayer.TryGetPair(
+                translateValue,
+                out double translateX,
+                out double translateY) ||
+            !fillTranslateAnchor.TryEvaluate(
+                context,
+                out VectorStyleValue translateAnchorValue) ||
+            !TryGetTranslateAnchor(
+                translateAnchorValue,
+                out VectorTranslateAnchor translateAnchor) ||
+            !fillAntialias.TryEvaluate(
+                context,
+                out VectorStyleValue antialiasValue) ||
+            antialiasValue.Kind != VectorStyleValueKind.Boolean)
+        {
+            return VectorStyleFillResult.EvaluationFailure;
+        }
+        if (Math.Abs(translateX) > 4096 ||
+            Math.Abs(translateY) > 4096)
         {
             return VectorStyleFillResult.EvaluationFailure;
         }
@@ -3067,10 +3291,18 @@ internal sealed class VectorFillStyleLayer(
         {
             outlineColor = outline * (float)opacity;
         }
+        else if (patternName is null && antialiasValue.BooleanValue)
+        {
+            outlineColor = color;
+        }
         result = new VectorFillStyle(
             patternName is null ? color : Vector4.Zero,
             outlineColor,
-            Opacity: opacity);
+            Opacity: opacity,
+            TranslateX: translateX,
+            TranslateY: translateY,
+            TranslateAnchor: translateAnchor,
+            Antialias: antialiasValue.BooleanValue);
         return VectorStyleFillResult.Resolved;
     }
 
@@ -3084,6 +3316,9 @@ internal sealed class VectorFillStyleLayer(
         fillOpacity.CollectZoomStops(stops);
         fillOutlineColor.CollectZoomStops(stops);
         fillPattern.CollectZoomStops(stops);
+        fillTranslate.CollectZoomStops(stops);
+        fillTranslateAnchor.CollectZoomStops(stops);
+        fillAntialias.CollectZoomStops(stops);
     }
 
     private static bool TryResolveOptionalColor(
@@ -3119,6 +3354,20 @@ internal sealed class VectorFillStyleLayer(
         }
         patternName = value.StringValue;
         return true;
+    }
+
+    private static bool TryGetTranslateAnchor(
+        VectorStyleValue value,
+        out VectorTranslateAnchor anchor)
+    {
+        anchor = value.StringValue switch
+        {
+            "map" => VectorTranslateAnchor.Map,
+            "viewport" => VectorTranslateAnchor.Viewport,
+            _ => (VectorTranslateAnchor)(-1),
+        };
+        return value.Kind == VectorStyleValueKind.String &&
+            (int)anchor >= 0;
     }
 }
 
@@ -3387,6 +3636,13 @@ internal sealed class VectorTextStyleLayer(
     VectorStyleExpression textField,
     VectorStyleExpression textFont,
     VectorStyleExpression textSize,
+    VectorStyleExpression textMaxWidth,
+    VectorStyleExpression textLineHeight,
+    VectorStyleExpression textJustify,
+    VectorStyleExpression textPadding,
+    VectorStyleExpression textKeepUpright,
+    VectorStyleExpression textMaxAngle,
+    VectorStyleExpression symbolAvoidEdges,
     VectorStyleExpression textOffset,
     VectorStyleExpression textAnchor,
     VectorStyleExpression textVariableAnchor,
@@ -3397,6 +3653,8 @@ internal sealed class VectorTextStyleLayer(
     VectorStyleExpression textColor,
     VectorStyleExpression textHaloColor,
     VectorStyleExpression textHaloWidth,
+    VectorStyleExpression textHaloBlur,
+    VectorStyleExpression textOpacity,
     VectorStyleExpression symbolSortKey,
     VectorStyleExpression textAllowOverlap,
     VectorStyleExpression textIgnorePlacement,
@@ -3458,6 +3716,39 @@ internal sealed class VectorTextStyleLayer(
             !textSize.TryEvaluate(context, out VectorStyleValue sizeValue) ||
             !sizeValue.TryGetNumber(out double size) ||
             !double.IsFinite(size) ||
+            !textMaxWidth.TryEvaluate(
+                context,
+                out VectorStyleValue maxWidthValue) ||
+            !maxWidthValue.TryGetNumber(out double maxWidth) ||
+            !double.IsFinite(maxWidth) ||
+            !textLineHeight.TryEvaluate(
+                context,
+                out VectorStyleValue lineHeightValue) ||
+            !lineHeightValue.TryGetNumber(out double lineHeight) ||
+            !double.IsFinite(lineHeight) ||
+            !textJustify.TryEvaluate(
+                context,
+                out VectorStyleValue justifyValue) ||
+            justifyValue.Kind != VectorStyleValueKind.String ||
+            !TryGetJustify(justifyValue.StringValue, out string justify) ||
+            !textPadding.TryEvaluate(
+                context,
+                out VectorStyleValue paddingValue) ||
+            !paddingValue.TryGetNumber(out double padding) ||
+            !double.IsFinite(padding) ||
+            !TryEvaluateBoolean(
+                textKeepUpright,
+                context,
+                out bool keepUpright) ||
+            !textMaxAngle.TryEvaluate(
+                context,
+                out VectorStyleValue maximumAngleValue) ||
+            !maximumAngleValue.TryGetNumber(out double maximumAngle) ||
+            !double.IsFinite(maximumAngle) ||
+            !TryEvaluateBoolean(
+                symbolAvoidEdges,
+                context,
+                out bool avoidEdges) ||
             !textOffset.TryEvaluate(context, out VectorStyleValue offsetValue) ||
             !TryGetPair(offsetValue, out double offsetX, out double offsetY) ||
             !textAnchor.TryEvaluate(context, out VectorStyleValue anchorValue) ||
@@ -3489,6 +3780,12 @@ internal sealed class VectorTextStyleLayer(
             !textHaloWidth.TryEvaluate(context, out VectorStyleValue haloWidthValue) ||
             !haloWidthValue.TryGetNumber(out double haloWidth) ||
             !double.IsFinite(haloWidth) ||
+            !textHaloBlur.TryEvaluate(context, out VectorStyleValue haloBlurValue) ||
+            !haloBlurValue.TryGetNumber(out double haloBlur) ||
+            !double.IsFinite(haloBlur) ||
+            !textOpacity.TryEvaluate(context, out VectorStyleValue opacityValue) ||
+            !opacityValue.TryGetNumber(out double opacity) ||
+            !double.IsFinite(opacity) ||
             !symbolSpacing.TryEvaluate(context, out VectorStyleValue spacingValue) ||
             !spacingValue.TryGetNumber(out double spacing) ||
             !double.IsFinite(spacing) ||
@@ -3508,7 +3805,15 @@ internal sealed class VectorTextStyleLayer(
         {
             return VectorStyleTextResult.EvaluationFailure;
         }
-        if (size <= 0 || size > 256 || haloWidth < 0 || haloWidth > 32)
+        if (size <= 0 ||
+            size > 256 ||
+            maxWidth is < 0 or > 1024 ||
+            lineHeight is <= 0 or > 10 ||
+            padding is < 0 or > 256 ||
+            maximumAngle is < 0 or > 180 ||
+            haloWidth is < 0 or > 32 ||
+            haloBlur is < 0 or > 32 ||
+            opacity is < 0 or > 1)
         {
             return VectorStyleTextResult.NoText;
         }
@@ -3531,16 +3836,25 @@ internal sealed class VectorTextStyleLayer(
         {
             return VectorStyleTextResult.EvaluationFailure;
         }
+        color *= (float)opacity;
+        haloColor *= (float)opacity;
         result = new VectorTextStyle(
             text,
             fontStack,
             size,
+            maxWidth,
+            lineHeight,
+            justify,
+            padding,
+            keepUpright,
+            maximumAngle * Math.PI / 180,
+            avoidEdges,
             offsetX,
             offsetY,
             anchor,
             radialOffset,
             letterSpacing,
-            new VectorTextPaint(color, haloColor, haloWidth),
+            new VectorTextPaint(color, haloColor, haloWidth, haloBlur),
             spacing,
             sortKey,
             allowOverlap,
@@ -3609,6 +3923,13 @@ internal sealed class VectorTextStyleLayer(
         textField.CollectZoomStops(stops);
         textFont.CollectZoomStops(stops);
         textSize.CollectZoomStops(stops);
+        textMaxWidth.CollectZoomStops(stops);
+        textLineHeight.CollectZoomStops(stops);
+        textJustify.CollectZoomStops(stops);
+        textPadding.CollectZoomStops(stops);
+        textKeepUpright.CollectZoomStops(stops);
+        textMaxAngle.CollectZoomStops(stops);
+        symbolAvoidEdges.CollectZoomStops(stops);
         textOffset.CollectZoomStops(stops);
         textAnchor.CollectZoomStops(stops);
         textVariableAnchor.CollectZoomStops(stops);
@@ -3619,6 +3940,8 @@ internal sealed class VectorTextStyleLayer(
         textColor.CollectZoomStops(stops);
         textHaloColor.CollectZoomStops(stops);
         textHaloWidth.CollectZoomStops(stops);
+        textHaloBlur.CollectZoomStops(stops);
+        textOpacity.CollectZoomStops(stops);
         symbolSortKey.CollectZoomStops(stops);
         textAllowOverlap.CollectZoomStops(stops);
         textIgnorePlacement.CollectZoomStops(stops);
@@ -3678,7 +4001,7 @@ internal sealed class VectorTextStyleLayer(
         return false;
     }
 
-    private static bool TryGetPair(
+    internal static bool TryGetPair(
         VectorStyleValue value,
         out double x,
         out double y)
@@ -3692,8 +4015,43 @@ internal sealed class VectorTextStyleLayer(
         {
             return true;
         }
+        if (value.Kind == VectorStyleValueKind.String &&
+            value.StringValue is string text)
+        {
+            string[] components = text.Split(
+                ' ',
+                StringSplitOptions.RemoveEmptyEntries |
+                StringSplitOptions.TrimEntries);
+            if (components.Length == 2 &&
+                double.TryParse(
+                    components[0],
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out x) &&
+                double.TryParse(
+                    components[1],
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out y) &&
+                double.IsFinite(x) &&
+                double.IsFinite(y))
+            {
+                return true;
+            }
+        }
         x = 0;
         y = 0;
+        return false;
+    }
+
+    private static bool TryGetJustify(string? value, out string justify)
+    {
+        if (value is "auto" or "left" or "center" or "right")
+        {
+            justify = value;
+            return true;
+        }
+        justify = string.Empty;
         return false;
     }
 
@@ -3856,6 +4214,13 @@ internal readonly record struct VectorTextStyle(
     string Text,
     string FontStack,
     double Size,
+    double MaximumWidth,
+    double LineHeight,
+    string Justify,
+    double CollisionPadding,
+    bool KeepUpright,
+    double MaximumAngle,
+    bool AvoidEdges,
     double OffsetX,
     double OffsetY,
     string Anchor,
@@ -4674,9 +5039,13 @@ internal sealed class VectorStyleExpression
                 continue;
             }
             if (value.Kind != VectorStyleValueKind.String ||
-                !VectorTextStyleLayer.TryParseColor(
+                (!VectorTextStyleLayer.TryParseColor(
                     value,
-                    out _))
+                    out _) &&
+                 !VectorTextStyleLayer.TryGetPair(
+                    value,
+                    out _,
+                    out _)))
             {
                 return false;
             }
@@ -5718,6 +6087,21 @@ internal readonly record struct VectorStyleValue
                 fromColor,
                 toColor,
                 (float)amount)));
+            return true;
+        }
+        if (from.Kind == VectorStyleValueKind.String &&
+            to.Kind == VectorStyleValueKind.String &&
+            VectorTextStyleLayer.TryGetPair(
+                from,
+                out double fromX,
+                out double fromY) &&
+            VectorTextStyleLayer.TryGetPair(
+                to,
+                out double toX,
+                out double toY))
+        {
+            value = FromString(FormattableString.Invariant(
+                $"{fromX + ((toX - fromX) * amount):G17} {fromY + ((toY - fromY) * amount):G17}"));
             return true;
         }
         if (from.Kind == VectorStyleValueKind.Array &&

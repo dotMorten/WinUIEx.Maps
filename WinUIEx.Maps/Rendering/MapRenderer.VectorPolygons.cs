@@ -548,6 +548,9 @@ internal sealed partial class MapRenderer
                     _displayPitch == 0 ? VectorGeometryCachePadding : 0,
                     polygon.Style.PatternWidth,
                     polygon.Style.PatternHeight,
+                    polygon.Style.TranslateX,
+                    polygon.Style.TranslateY,
+                    polygon.Style.TranslateAnchor,
                     patternBuffer);
             }
             else
@@ -569,6 +572,9 @@ internal sealed partial class MapRenderer
                     _displayHeading,
                     _displayPitch,
                     _displayPitch == 0 ? VectorGeometryCachePadding : 0,
+                    polygon.Style.TranslateX,
+                    polygon.Style.TranslateY,
+                    polygon.Style.TranslateAnchor,
                     fillBuffer);
             }
             int outlineTriangleCount = AppendVectorPolygonOutline(
@@ -600,7 +606,8 @@ internal sealed partial class MapRenderer
         Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
         List<VectorPolygonBatchKey> batchOrder)
     {
-        if (polygon.Style.OutlineColor is not Vector4 outlineColor ||
+        if (!polygon.Style.Antialias ||
+            polygon.Style.OutlineColor is not Vector4 outlineColor ||
             outlineColor.W <= 0)
         {
             return 0;
@@ -627,6 +634,9 @@ internal sealed partial class MapRenderer
             _displayPitch,
             _displayPitch == 0 ? VectorGeometryCachePadding : 0,
             outlineStyle,
+            polygon.Style.TranslateX,
+            polygon.Style.TranslateY,
+            polygon.Style.TranslateAnchor,
             buffer);
     }
 
@@ -652,6 +662,9 @@ internal sealed partial class MapRenderer
                 1,
                 VectorLineCap.Butt,
                 VectorLineJoin.Miter),
+            0,
+            0,
+            VectorTranslateAnchor.Map,
             triangles);
         return triangles.ToArray();
     }
@@ -665,6 +678,9 @@ internal sealed partial class MapRenderer
         double pitch,
         double viewportPadding,
         VectorLineStyle outlineStyle,
+        double translateX,
+        double translateY,
+        VectorTranslateAnchor translateAnchor,
         PooledGeometryBuffer buffer)
     {
         int triangleCount = 0;
@@ -674,14 +690,19 @@ internal sealed partial class MapRenderer
                 ArrayPool<MapScreenPoint>.Shared.Rent(ring.Points.Length);
             try
             {
-                ProjectVectorLine(
-                    ring.Points,
-                    tile,
-                    viewportWidth,
-                    viewportHeight,
-                    heading,
-                    pitch,
-                    projected.AsSpan(0, ring.Points.Length));
+                for (int index = 0; index < ring.Points.Length; index++)
+                {
+                    projected[index] = ProjectVectorPoint(
+                        ring.Points[index],
+                        tile,
+                        viewportWidth,
+                        viewportHeight,
+                        heading,
+                        pitch,
+                        translateX,
+                        translateY,
+                        translateAnchor);
+                }
                 triangleCount += AppendVectorLineTriangles(
                     projected.AsSpan(0, ring.Points.Length),
                     outlineStyle,
@@ -736,7 +757,24 @@ internal sealed partial class MapRenderer
         double viewportWidth,
         double viewportHeight,
         double heading,
-        double pitch)
+        double pitch) =>
+        ProjectVectorPolygonTriangles(
+            triangles,
+            tile,
+            viewportWidth,
+            viewportHeight,
+            heading,
+            pitch,
+            default);
+
+    internal static MapScreenPoint[] ProjectVectorPolygonTriangles(
+        IReadOnlyList<VectorTilePoint> triangles,
+        VisibleTile tile,
+        double viewportWidth,
+        double viewportHeight,
+        double heading,
+        double pitch,
+        VectorFillStyle style)
     {
         if (triangles.Count < 3)
         {
@@ -751,6 +789,9 @@ internal sealed partial class MapRenderer
             heading,
             pitch,
             0,
+            style.TranslateX,
+            style.TranslateY,
+            style.TranslateAnchor,
             projected);
         return projected.ToArray();
     }
@@ -763,6 +804,9 @@ internal sealed partial class MapRenderer
         double heading,
         double pitch,
         double viewportPadding,
+        double translateX,
+        double translateY,
+        VectorTranslateAnchor translateAnchor,
         PooledGeometryBuffer visible)
     {
         int initialCount = visible.Count;
@@ -774,21 +818,30 @@ internal sealed partial class MapRenderer
                 viewportWidth,
                 viewportHeight,
                 heading,
-                pitch);
+                pitch,
+                translateX,
+                translateY,
+                translateAnchor);
             MapScreenPoint second = ProjectVectorPoint(
                 triangles[index + 1],
                 tile,
                 viewportWidth,
                 viewportHeight,
                 heading,
-                pitch);
+                pitch,
+                translateX,
+                translateY,
+                translateAnchor);
             MapScreenPoint third = ProjectVectorPoint(
                 triangles[index + 2],
                 tile,
                 viewportWidth,
                 viewportHeight,
                 heading,
-                pitch);
+                pitch,
+                translateX,
+                translateY,
+                translateAnchor);
             double left = Math.Min(first.X, Math.Min(second.X, third.X));
             double top = Math.Min(first.Y, Math.Min(second.Y, third.Y));
             double right = Math.Max(first.X, Math.Max(second.X, third.X));
@@ -817,6 +870,9 @@ internal sealed partial class MapRenderer
         double viewportPadding,
         double patternWidth,
         double patternHeight,
+        double translateX,
+        double translateY,
+        VectorTranslateAnchor translateAnchor,
         List<TileVertex> visible)
     {
         int initialCount = visible.Count;
@@ -837,21 +893,30 @@ internal sealed partial class MapRenderer
                 viewportWidth,
                 viewportHeight,
                 heading,
-                pitch);
+                pitch,
+                translateX,
+                translateY,
+                translateAnchor);
             MapScreenPoint second = ProjectVectorPoint(
                 secondSource,
                 tile,
                 viewportWidth,
                 viewportHeight,
                 heading,
-                pitch);
+                pitch,
+                translateX,
+                translateY,
+                translateAnchor);
             MapScreenPoint third = ProjectVectorPoint(
                 thirdSource,
                 tile,
                 viewportWidth,
                 viewportHeight,
                 heading,
-                pitch);
+                pitch,
+                translateX,
+                translateY,
+                translateAnchor);
             double left = Math.Min(first.X, Math.Min(second.X, third.X));
             double top = Math.Min(first.Y, Math.Min(second.Y, third.Y));
             double right = Math.Max(first.X, Math.Max(second.X, third.X));

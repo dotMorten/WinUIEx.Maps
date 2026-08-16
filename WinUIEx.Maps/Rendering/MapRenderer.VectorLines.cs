@@ -913,9 +913,35 @@ internal sealed partial class MapRenderer
         double viewportHeight,
         double heading,
         double pitch)
+        => ProjectVectorPoint(
+            point,
+            tile,
+            viewportWidth,
+            viewportHeight,
+            heading,
+            pitch,
+            0,
+            0,
+            VectorTranslateAnchor.Map);
+
+    private static MapScreenPoint ProjectVectorPoint(
+        VectorTilePoint point,
+        VisibleTile tile,
+        double viewportWidth,
+        double viewportHeight,
+        double heading,
+        double pitch,
+        double translateX,
+        double translateY,
+        VectorTranslateAnchor translateAnchor)
     {
         double x = tile.Left + (point.X * tile.Size) - (viewportWidth / 2);
         double y = tile.Top + (point.Y * tile.Size) - (viewportHeight / 2);
+        if (translateAnchor == VectorTranslateAnchor.Map)
+        {
+            x += translateX;
+            y += translateY;
+        }
         MapCamera.TransformViewportOffset(
             x,
             y,
@@ -924,6 +950,11 @@ internal sealed partial class MapRenderer
             viewportHeight,
             out x,
             out y);
+        if (translateAnchor == VectorTranslateAnchor.Viewport)
+        {
+            x += translateX;
+            y += translateY;
+        }
         return new MapScreenPoint(
             x + (viewportWidth / 2),
             y + (viewportHeight / 2));

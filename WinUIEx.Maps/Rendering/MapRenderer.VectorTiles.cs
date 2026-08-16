@@ -548,7 +548,7 @@ internal sealed partial class MapRenderer
                     new Vector4(
                         (float)(opacity * batch.Opacity),
                         (float)batch.Paint.HaloOffset,
-                        0,
+                        (float)batch.Paint.HaloBlur,
                         0))
                 : new TileConstants(
                     new Vector4(1, 1, 0, 0),
@@ -811,7 +811,9 @@ internal sealed partial class MapRenderer
                 SortKey: symbol.SortKey,
                 AllowOverlap: symbol.AllowOverlap,
                 IgnorePlacement: symbol.IgnorePlacement,
-                Optional: symbol.Optional);
+                Optional: symbol.Optional,
+                CollisionPadding: symbol.CollisionPadding,
+                AvoidEdges: symbol.AvoidEdges);
             GetVectorSymbolBounds(
                 placement,
                 out double boundsLeft,
@@ -822,6 +824,17 @@ internal sealed partial class MapRenderer
                 boundsBottom <= 0 ||
                 boundsLeft >= viewportWidth ||
                 boundsTop >= viewportHeight)
+            {
+                return;
+            }
+            if (placement.AvoidEdges &&
+                !IsPlacementWithinTile(
+                    placement,
+                    tile,
+                    viewportWidth,
+                    viewportHeight,
+                    heading,
+                    pitch))
             {
                 return;
             }
@@ -898,7 +911,15 @@ internal sealed partial class MapRenderer
             {
                 continue;
             }
-            bool reverse = !continuousPlacement && centerTangent.X < 0;
+            VectorTileSymbol? textSymbol = symbols
+                .Where(symbol => symbol.Kind == VectorSymbolKind.Text)
+                .Cast<VectorTileSymbol?>()
+                .FirstOrDefault();
+            bool reverse = !continuousPlacement &&
+                (textSymbol?.KeepUpright ?? true) &&
+                centerTangent.X < 0;
+            double maximumAngle =
+                textSymbol?.MaximumAngle ?? Math.PI / 4;
             double centerRotation = Math.Atan2(
                 centerTangent.Y,
                 centerTangent.X);
@@ -953,9 +974,9 @@ internal sealed partial class MapRenderer
                     relativeRotation);
                 if (previousRotation is double previous &&
                     Math.Abs(NormalizeRadians(pathRotation - previous)) >
-                        Math.PI / 4 ||
+                        maximumAngle ||
                     maximumRelativeRotation - minimumRelativeRotation >
-                        Math.PI / 4)
+                        maximumAngle)
                 {
                     valid = false;
                     break;
@@ -1020,6 +1041,8 @@ internal sealed partial class MapRenderer
                     AllowOverlap: symbol.AllowOverlap,
                     IgnorePlacement: symbol.IgnorePlacement,
                     Optional: symbol.Optional,
+                    CollisionPadding: symbol.CollisionPadding,
+                    AvoidEdges: symbol.AvoidEdges,
                     IsContinuousLinePlacement:
                         symbol.ContinuousLinePlacement);
                 GetVectorSymbolBounds(
@@ -1038,11 +1061,104 @@ internal sealed partial class MapRenderer
                 }
                 candidate.Add(placement);
             }
-            if (valid)
+            if (valid &&
+                (!candidate.Any(placement => placement.AvoidEdges) ||
+                 candidate.All(placement => IsPlacementWithinTile(
+                     placement,
+                     tile,
+                     viewportWidth,
+                     viewportHeight,
+                     heading,
+                     pitch))))
             {
                 projected.AddRange(candidate);
             }
         }
+    }
+
+    private static bool IsPlacementWithinTile(
+        VectorSymbolPlacement placement,
+        VisibleTile tile,
+        double viewportWidth,
+        double viewportHeight,
+        double heading,
+        double pitch)
+    {
+        GetVectorSymbolBounds(
+            placement,
+            out double left,
+            out double top,
+            out double right,
+            out double bottom);
+        MapScreenPoint[] tileCorners =
+        [
+            ProjectVectorPoint(
+                new VectorTilePoint(0, 0),
+                tile,
+                viewportWidth,
+                viewportHeight,
+                heading,
+                pitch),
+            ProjectVectorPoint(
+                new VectorTilePoint(1, 0),
+                tile,
+                viewportWidth,
+                viewportHeight,
+                heading,
+                pitch),
+            ProjectVectorPoint(
+                new VectorTilePoint(1, 1),
+                tile,
+                viewportWidth,
+                viewportHeight,
+                heading,
+                pitch),
+            ProjectVectorPoint(
+                new VectorTilePoint(0, 1),
+                tile,
+                viewportWidth,
+                viewportHeight,
+                heading,
+                pitch),
+        ];
+        return IsPointInsideConvexPolygon(
+                new MapScreenPoint(left, top),
+                tileCorners) &&
+            IsPointInsideConvexPolygon(
+                new MapScreenPoint(right, top),
+                tileCorners) &&
+            IsPointInsideConvexPolygon(
+                new MapScreenPoint(right, bottom),
+                tileCorners) &&
+            IsPointInsideConvexPolygon(
+                new MapScreenPoint(left, bottom),
+                tileCorners);
+    }
+
+    private static bool IsPointInsideConvexPolygon(
+        MapScreenPoint point,
+        IReadOnlyList<MapScreenPoint> polygon)
+    {
+        double? sign = null;
+        for (int index = 0; index < polygon.Count; index++)
+        {
+            MapScreenPoint first = polygon[index];
+            MapScreenPoint second = polygon[(index + 1) % polygon.Count];
+            double cross =
+                ((second.X - first.X) * (point.Y - first.Y)) -
+                ((second.Y - first.Y) * (point.X - first.X));
+            if (Math.Abs(cross) <= 1e-7)
+            {
+                continue;
+            }
+            double current = Math.Sign(cross);
+            if (sign is double expected && current != expected)
+            {
+                return false;
+            }
+            sign = current;
+        }
+        return true;
     }
 
     private static bool TryGetSmoothedPathPosition(
@@ -1173,7 +1289,6 @@ internal sealed partial class MapRenderer
     internal static LabelCollisionResult ResolveLabelCollisions(
         IEnumerable<VectorSymbolPlacement> placements)
     {
-        const double collisionPadding = 2;
         const double gridCellSize = 64;
         Dictionary<long, LabelCollisionCandidate> candidates = [];
         int sequence = 0;
@@ -1221,6 +1336,9 @@ internal sealed partial class MapRenderer
                 candidate.Bottom = Math.Max(candidate.Bottom, bottom);
             }
             candidate.SortKey = Math.Min(candidate.SortKey, placement.SortKey);
+            candidate.CollisionPadding = Math.Max(
+                candidate.CollisionPadding,
+                placement.CollisionPadding);
             candidate.AllowOverlap &= placement.AllowOverlap;
             candidate.IgnorePlacement &= placement.IgnorePlacement;
             if (placement.Kind == VectorSymbolKind.Text)
@@ -1238,10 +1356,10 @@ internal sealed partial class MapRenderer
             .ThenBy(candidate => candidate.Sequence))
         {
             LabelCollisionRectangle bounds = new(
-                candidate.Left - collisionPadding,
-                candidate.Top - collisionPadding,
-                candidate.Right + collisionPadding,
-                candidate.Bottom + collisionPadding,
+                candidate.Left - candidate.CollisionPadding,
+                candidate.Top - candidate.CollisionPadding,
+                candidate.Right + candidate.CollisionPadding,
+                candidate.Bottom + candidate.CollisionPadding,
                 candidate.CollisionFamily);
             int firstCellX = (int)Math.Floor(bounds.Left / gridCellSize);
             int lastCellX = (int)Math.Floor(bounds.Right / gridCellSize);
@@ -1723,6 +1841,7 @@ internal sealed partial class MapRenderer
         internal double Top { get; set; } = top;
         internal double Right { get; set; } = right;
         internal double Bottom { get; set; } = bottom;
+        internal double CollisionPadding { get; set; }
         internal int GlyphCount { get; set; }
         internal bool AllowOverlap { get; set; } = true;
         internal bool IgnorePlacement { get; set; } = true;
