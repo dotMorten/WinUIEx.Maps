@@ -22,7 +22,7 @@ internal static class MapCamera
     internal const double MaximumLatitude = 85.05112878;
     internal const double MaximumPitch = 60;
     internal const int MaximumTileZoom = 22;
-    private const double TileSize = 256;
+    internal const double TileSize = 256;
 
     /// <summary>
     /// Creates a camera scene using the integral floor of the display zoom for tile

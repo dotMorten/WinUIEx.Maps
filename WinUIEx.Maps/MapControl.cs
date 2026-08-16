@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using WinUIEx.Maps.Rendering;
 using WinUIEx.Maps.Rendering.Diagnostics;
+using WinUIEx.Maps.Automation.Peers;
 using System.Collections.Specialized;
 using Windows.Devices.Geolocation;
 using Windows.Foundation;
@@ -133,6 +134,8 @@ public sealed partial class MapControl : Control
     private readonly List<MapElementsLayer> _publishedElementLayers = [];
     private MapElementInputEventKind _elementInputHandlers;
     private bool _areElementChangesQueued;
+    private MapControlAutomationPeer? _automationPeer;
+    private int _automationCameraUpdateQueued;
 
     internal int TrackedElementReferenceCount => _elementCounts.Values.Sum();
 
@@ -230,7 +233,7 @@ public sealed partial class MapControl : Control
 
     /// <inheritdoc />
     protected override AutomationPeer OnCreateAutomationPeer() =>
-        new MapControlAutomationPeer(this);
+        _automationPeer ??= new MapControlAutomationPeer(this);
 
     /// <summary>
     /// Initializes a map control with an empty public layer collection, the road map style,
@@ -287,12 +290,6 @@ public sealed partial class MapControl : Control
             new RightTappedEventHandler(OnMapElementRightTapped),
             handledEventsToo: true);
         MapControlEventSource.Log.ControlCreated();
-    }
-
-    internal sealed class MapControlAutomationPeer(MapControl owner) :
-        FrameworkElementAutomationPeer(owner)
-    {
-        protected override string GetClassNameCore() => nameof(MapControl);
     }
 
     /// <summary>

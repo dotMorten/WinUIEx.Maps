@@ -414,12 +414,91 @@ public sealed partial class MapControl
         margin.Right >= 0 &&
         margin.Bottom >= 0;
 
-    private void OnRendererDisplayedCameraChanged(MapScene scene) =>
+    private void OnRendererDisplayedCameraChanged(MapScene scene)
+    {
         TryCompleteViewChange(
             new MapCenter(scene.Longitude, scene.Latitude),
             scene.Zoom,
             scene.Heading,
             scene.Pitch);
+        QueueAutomationCameraUpdate();
+    }
+
+    private void QueueAutomationCameraUpdate()
+    {
+        if (_automationPeer is null ||
+            Interlocked.Exchange(ref _automationCameraUpdateQueued, 1) != 0)
+        {
+            return;
+        }
+
+        if (!DispatcherQueue.TryEnqueue(() =>
+            {
+                Interlocked.Exchange(ref _automationCameraUpdateQueued, 0);
+                _automationPeer?.NotifyDisplayedCameraChanged();
+            }))
+        {
+            Interlocked.Exchange(ref _automationCameraUpdateQueued, 0);
+        }
+    }
+
+    internal void SetAutomationView(
+        BasicGeoposition center,
+        double zoom,
+        double heading)
+    {
+        EnsureUiThread();
+        MapScene target = MapCamera.CreateScene(
+            center.Longitude,
+            center.Latitude,
+            zoom,
+            Math.Max(1, _panel?.ActualWidth ?? ActualWidth),
+            Math.Max(1, _panel?.ActualHeight ?? ActualHeight),
+            heading,
+            Pitch);
+        CancelPendingViewChange();
+        _suppressCameraUpdate = true;
+        try
+        {
+            Center = new Geopoint(new BasicGeoposition
+            {
+                Longitude = target.Longitude,
+                Latitude = target.Latitude,
+                Altitude = center.Altitude,
+            });
+            ZoomLevel = target.Zoom;
+            Heading = target.Heading;
+        }
+        finally
+        {
+            _suppressCameraUpdate = false;
+        }
+        UpdateCameraTarget(forceImmediate: true);
+    }
+
+    internal void MoveAutomationView(double horizontalAmount, double verticalAmount)
+    {
+        BasicGeoposition position = Center?.Position ?? new BasicGeoposition();
+        double viewportHeight = _panel?.ActualHeight ?? ActualHeight;
+        MapCenter target = MapCamera.PanByPixels(
+            position.Longitude,
+            position.Latitude,
+            ZoomLevel,
+            horizontalAmount,
+            verticalAmount,
+            Heading,
+            Pitch,
+            viewportHeight);
+        SetAutomationView(
+            new BasicGeoposition
+            {
+                Longitude = target.Longitude,
+                Latitude = target.Latitude,
+                Altitude = position.Altitude,
+            },
+            ZoomLevel,
+            Heading);
+    }
 
     private void TryCompleteViewChange(
         MapCenter center,
