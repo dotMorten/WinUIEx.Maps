@@ -17,6 +17,15 @@ Install the `WinUIEx.Maps` NuGet package, then add a map control:
 Azure Maps styles require an Azure Maps token. `MapStyle.Blank` can be used with
 custom HTTP(S) tile layers without an Azure token.
 
+## Documentation
+
+- [Documentation learning path](https://github.com/dotMorten/WinUIEx.Maps/blob/main/docs/README.md)
+- [Getting started](https://github.com/dotMorten/WinUIEx.Maps/blob/main/docs/getting-started.md)
+- [Map elements and interaction](https://github.com/dotMorten/WinUIEx.Maps/blob/main/docs/map-elements-and-interaction.md)
+- [Custom raster tiles](https://github.com/dotMorten/WinUIEx.Maps/blob/main/docs/custom-raster-tiles.md)
+- [Custom vector tiles](https://github.com/dotMorten/WinUIEx.Maps/blob/main/docs/custom-vector-tiles.md)
+- [Configuration and accessibility](https://github.com/dotMorten/WinUIEx.Maps/blob/main/docs/configuration-and-accessibility.md)
+
 ## Licensing
 
 WinUIEx.Maps uses a dual source-available license:
