@@ -20,7 +20,6 @@ internal sealed partial class MapRenderer
         ulong fallbackMask)
     {
         if (fallbackMask != 0 ||
-            _displayPitch != 0 ||
             _zoomAnimation.IsActive ||
             _headingAnimation.IsActive ||
             _pitchAnimation.IsActive ||
@@ -39,6 +38,7 @@ internal sealed partial class MapRenderer
             _deviceEpoch,
             _displayZoom,
             _displayHeading,
+            _displayPitch,
             _viewportWidth,
             _viewportHeight);
         lock (_vectorGeometryPreparationSync)
@@ -163,6 +163,7 @@ internal sealed partial class MapRenderer
             _displayLatitude,
             _displayZoom,
             _displayHeading,
+            _displayPitch,
             _viewportWidth,
             _viewportHeight,
             state.VectorStyleAssets?.ResolveBackgrounds(_displayZoom) ??
@@ -220,6 +221,7 @@ internal sealed partial class MapRenderer
                     _deviceEpoch,
                     _displayZoom,
                     _displayHeading,
+                    _displayPitch,
                     _viewportWidth,
                     _viewportHeight))
             {
@@ -249,6 +251,7 @@ internal sealed partial class MapRenderer
                     prepared.Latitude,
                     prepared.Zoom,
                     prepared.Heading,
+                    prepared.Pitch,
                     prepared.ViewportWidth,
                     prepared.ViewportHeight,
                     lineBatches,
@@ -268,6 +271,7 @@ internal sealed partial class MapRenderer
                             prepared.Latitude,
                             prepared.Zoom,
                             prepared.Heading,
+                            prepared.Pitch,
                             prepared.ViewportWidth,
                             prepared.ViewportHeight,
                             polygonBatches,
@@ -395,7 +399,7 @@ internal sealed partial class MapRenderer
                             input.ViewportWidth,
                             input.ViewportHeight,
                             input.Heading,
-                            0,
+                            input.Pitch,
                             VectorGeometryCachePadding,
                             polygon.Style.TranslateX,
                             polygon.Style.TranslateY,
@@ -439,7 +443,7 @@ internal sealed partial class MapRenderer
                                         input.ViewportWidth,
                                         input.ViewportHeight,
                                         input.Heading,
-                                        0,
+                                        input.Pitch,
                                         polygon.Style.TranslateX,
                                         polygon.Style.TranslateY,
                                         polygon.Style.TranslateAnchor);
@@ -489,7 +493,7 @@ internal sealed partial class MapRenderer
                             input.ViewportWidth,
                             input.ViewportHeight,
                             input.Heading,
-                            0,
+                            input.Pitch,
                             projected.AsSpan(0, line.Points.Length));
                         triangleCount = AppendStyledVectorLineTriangles(
                             projected.AsSpan(0, line.Points.Length),
@@ -592,6 +596,7 @@ internal sealed partial class MapRenderer
         double Latitude,
         double Zoom,
         double Heading,
+        double Pitch,
         double ViewportWidth,
         double ViewportHeight,
         VectorBackgroundResolution Backgrounds,
@@ -617,6 +622,7 @@ internal sealed partial class MapRenderer
         int DeviceEpoch,
         double Zoom,
         double Heading,
+        double Pitch,
         double ViewportWidth,
         double ViewportHeight)
     {
@@ -627,6 +633,7 @@ internal sealed partial class MapRenderer
             int deviceEpoch,
             double zoom,
             double heading,
+            double pitch,
             double viewportWidth,
             double viewportHeight) =>
             RuntimeId == layer.RuntimeId &&
@@ -638,6 +645,7 @@ internal sealed partial class MapRenderer
             DeviceEpoch == deviceEpoch &&
             Zoom == zoom &&
             Heading == heading &&
+            Pitch == pitch &&
             ViewportWidth == viewportWidth &&
             ViewportHeight == viewportHeight;
     }
@@ -660,6 +668,7 @@ internal sealed partial class MapRenderer
             Latitude = input.Latitude;
             Zoom = input.Zoom;
             Heading = input.Heading;
+            Pitch = input.Pitch;
             ViewportWidth = input.ViewportWidth;
             ViewportHeight = input.ViewportHeight;
             IncludedTiles = input.IncludedTiles;
@@ -674,6 +683,8 @@ internal sealed partial class MapRenderer
         internal double Zoom { get; }
 
         internal double Heading { get; }
+
+        internal double Pitch { get; }
 
         internal double ViewportWidth { get; }
 

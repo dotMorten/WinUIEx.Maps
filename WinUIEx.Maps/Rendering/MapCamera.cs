@@ -690,6 +690,75 @@ internal static class MapCamera
     }
 }
 
+internal readonly record struct MapViewportProjectiveTransform(
+    System.Numerics.Vector4 X,
+    System.Numerics.Vector4 Y)
+{
+    internal bool IsFinite =>
+        IsFiniteVector(X) &&
+        IsFiniteVector(Y);
+
+    internal static MapViewportProjectiveTransform CreateTranslation(
+        double offsetX,
+        double offsetY) =>
+        new(
+            new System.Numerics.Vector4(1, 0, (float)offsetX, 0),
+            new System.Numerics.Vector4(0, 1, (float)offsetY, 0));
+
+    internal static MapViewportProjectiveTransform CreatePan(
+        double offsetX,
+        double offsetY,
+        double pitch,
+        double viewportHeight)
+    {
+        double radians = MapCamera.NormalizePitch(pitch) * Math.PI / 180;
+        if (radians == 0)
+        {
+            return CreateTranslation(offsetX, offsetY);
+        }
+
+        double cosine = Math.Cos(radians);
+        double sine = Math.Sin(radians);
+        double distance = MapCamera.GetPerspectiveDistance(viewportHeight);
+        double denominator = distance - (offsetY * sine);
+        if (Math.Abs(cosine) < 1e-7 ||
+            Math.Abs(denominator) < 1e-7)
+        {
+            return default;
+        }
+
+        return new MapViewportProjectiveTransform(
+            new System.Numerics.Vector4(
+                (float)(distance / denominator),
+                (float)(offsetX * sine / (cosine * denominator)),
+                (float)(offsetX * distance / denominator),
+                0),
+            new System.Numerics.Vector4(
+                0,
+                (float)((distance + (offsetY * sine)) / denominator),
+                (float)(offsetY * cosine * distance / denominator),
+                (float)(-offsetY * sine * sine /
+                    (cosine * distance * denominator))));
+    }
+
+    internal MapScreenPoint Transform(MapScreenPoint point)
+    {
+        double denominator =
+            (X.W * point.X) +
+            (Y.W * point.Y) +
+            1;
+        return new MapScreenPoint(
+            ((X.X * point.X) + (X.Y * point.Y) + X.Z) / denominator,
+            ((Y.X * point.X) + (Y.Y * point.Y) + Y.Z) / denominator);
+    }
+
+    private static bool IsFiniteVector(System.Numerics.Vector4 value) =>
+        float.IsFinite(value.X) &&
+        float.IsFinite(value.Y) &&
+        float.IsFinite(value.Z) &&
+        float.IsFinite(value.W);
+}
+
 /// <summary>
 /// Represents a geographic camera or anchor location in longitude and latitude degrees.
 /// </summary>

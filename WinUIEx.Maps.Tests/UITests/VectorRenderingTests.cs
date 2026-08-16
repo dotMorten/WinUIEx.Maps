@@ -11,6 +11,92 @@ namespace WinUIEx.Maps.Tests.UITests;
 public sealed class VectorRenderingTests
 {
     [TestMethod]
+    public Task PitchedPanReusesRetainedVectorGeometry() =>
+        MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            using RenderingEventListener listener = new(
+                "VectorGeometryFrameCacheSummary");
+            TileId tileId = new(4, 8, 8);
+            byte[] tile = new MapboxVectorTileBuilder()
+                .AddPolygon(
+                    "land",
+                    [[
+                        new TestTilePoint(800, 800),
+                        new TestTilePoint(3296, 800),
+                        new TestTilePoint(3296, 3296),
+                        new TestTilePoint(800, 3296),
+                    ]])
+                .AddLine(
+                    "roads",
+                    [new(600, 2048), new(3496, 2048)])
+                .Build();
+            TestVectorTileSource source = TestVectorTileSource.Create(
+                tileId,
+                tile,
+                """
+                {
+                  "version": 8,
+                  "layers": [
+                    {
+                      "type": "fill",
+                      "source-layer": "land",
+                      "paint": { "fill-color": "#00ff00" }
+                    },
+                    {
+                      "type": "line",
+                      "source-layer": "roads",
+                      "paint": {
+                        "line-color": "#ff0000",
+                        "line-width": 4
+                      }
+                    }
+                  ]
+                }
+                """,
+                "{}",
+                [0, 0, 0, 0],
+                1,
+                1);
+            BasicGeoposition center = source.TileCenter;
+            map.MapStyle = MapStyle.Blank;
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(center),
+                tileId.Zoom,
+                null,
+                60,
+                MapAnimationKind.None));
+            map.Layers.Add(new TestVectorTileLayer(
+                source,
+                TimeSpan.Zero));
+            using CancellationTokenSource timeout =
+                new(TimeSpan.FromSeconds(5));
+            _ = await map.CaptureRenderedFrameAsync(timeout.Token);
+            int initialEventCount = listener.Events(
+                "VectorGeometryFrameCacheSummary").Length;
+
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(new BasicGeoposition
+                {
+                    Longitude = center.Longitude + 0.5,
+                    Latitude = center.Latitude,
+                }),
+                tileId.Zoom,
+                null,
+                60,
+                MapAnimationKind.None));
+            _ = await map.CaptureRenderedFrameAsync(timeout.Token);
+
+            CapturedRenderingEvent[] panEvents = listener.Events(
+                "VectorGeometryFrameCacheSummary")[initialEventCount..];
+            Assert.IsTrue(panEvents.Any(captured =>
+                Convert.ToInt32(captured.Payload[1]) == 1 &&
+                Convert.ToInt32(captured.Payload[2]) == 1));
+            Assert.IsTrue(panEvents.Any(captured =>
+                Convert.ToInt32(captured.Payload[1]) == 2 &&
+                Convert.ToInt32(captured.Payload[2]) == 1));
+        });
+
+    [TestMethod]
     public Task BackgroundCoversViewportWhileNextZoomTilesArePending() =>
         MapControlTestHost.LoadUIAsync(
             () => new SwapChainPanel { Width = 640, Height = 480 },
@@ -583,6 +669,70 @@ public sealed class VectorRenderingTests
         });
 
     [TestMethod]
+    public Task FittedShieldIconsRenderBehindEveryGlyphBatch() =>
+        MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            TileId tileId = new(4, 8, 8);
+            const string labels = "ABCDEFGHIJKLMNOPQR";
+            MapboxVectorTileBuilder builder = new();
+            for (int index = 0; index < labels.Length; index++)
+            {
+                int column = index % 6;
+                int row = index / 6;
+                builder.AddPoint(
+                    "markers",
+                    420 + (column * 650),
+                    850 + (row * 1200),
+                    new Dictionary<string, object>
+                    {
+                        ["label"] = labels[index].ToString(),
+                    });
+            }
+            TestVectorTileSource source = CreateShieldSource(
+                tileId,
+                builder.Build(),
+                """
+                {
+                  "version": 8,
+                  "layers": [{
+                    "type": "symbol",
+                    "source-layer": "markers",
+                    "layout": {
+                      "icon-image": "shield",
+                      "icon-text-fit": "both",
+                      "text-field": ["get", "label"],
+                      "text-font": ["TestFont"],
+                      "text-size": 12
+                    },
+                    "paint": {
+                      "text-color": "#000000"
+                    }
+                  }]
+                }
+                """,
+                labels.ToCharArray());
+
+            MapRenderFrame frame = await RenderAsync(map, source);
+            ConnectedComponent[] shields = FindColor(
+                frame,
+                255,
+                0,
+                0,
+                minimumPixelCount: 100);
+            ConnectedComponent[] glyphs = FindColor(
+                frame,
+                0,
+                0,
+                0,
+                minimumPixelCount: 10,
+                tolerance: 24);
+
+            Assert.AreEqual(labels.Length, shields.Length);
+            Assert.IsTrue(shields.All(shield =>
+                glyphs.Any(glyph => shield.Bounds.Contains(glyph.Bounds))));
+        });
+
+    [TestMethod]
     public Task LineShieldsRenderEveryNumericRouteLabel() =>
         MapControlTestHost.LoadMapControlAsync(async map =>
         {
@@ -854,6 +1004,74 @@ public sealed class VectorRenderingTests
                 0,
                 0,
                 minimumPixelCount: 20));
+        });
+
+    [TestMethod]
+    public Task RepeatedGlyphTexturesBatchAcrossCollisionSafeLabels() =>
+        MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            using RenderingEventListener listener =
+                new("VectorLabelRenderBatch");
+            TileId tileId = new(4, 8, 8);
+            byte[] tile = new MapboxVectorTileBuilder()
+                .AddPoint(
+                    "markers",
+                    1024,
+                    1024,
+                    new Dictionary<string, object> { ["label"] = "AB" })
+                .AddPoint(
+                    "markers",
+                    3072,
+                    1024,
+                    new Dictionary<string, object> { ["label"] = "BA" })
+                .AddPoint(
+                    "markers",
+                    1024,
+                    3072,
+                    new Dictionary<string, object> { ["label"] = "BA" })
+                .AddPoint(
+                    "markers",
+                    3072,
+                    3072,
+                    new Dictionary<string, object> { ["label"] = "AB" })
+                .Build();
+            TestVectorTileSource source = TestVectorTileSource.Create(
+                tileId,
+                tile,
+                """
+                {
+                  "version": 8,
+                  "layers": [{
+                    "type": "symbol",
+                    "source-layer": "markers",
+                    "layout": {
+                      "text-field": ["get", "label"],
+                      "text-font": ["TestFont"],
+                      "text-size": 18
+                    },
+                    "paint": {
+                      "text-color": "#ff00ff"
+                    }
+                  }]
+                }
+                """,
+                "{}",
+                [0, 0, 0, 0],
+                1,
+                1);
+            source.AddGlyphs(
+                "TestFont",
+                TestGlyph.Solid('A'),
+                TestGlyph.Solid('B'));
+
+            await RenderAsync(map, source);
+
+            CapturedRenderingEvent batch = listener
+                .Events("VectorLabelRenderBatch")
+                .Last(captured =>
+                    Convert.ToInt32(captured.Payload[2]) >= 8);
+            Assert.AreEqual(2, Convert.ToInt32(batch.Payload[5]));
+            Assert.AreEqual(2, Convert.ToInt32(batch.Payload[6]));
         });
 
     [TestMethod]

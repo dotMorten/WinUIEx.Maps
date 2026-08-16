@@ -6,6 +6,12 @@
     <Platform Solution="Debug|Any CPU" Project="x64" />
   </Project>
   <Project Path="WinUIEx.Maps/WinUIEx.Maps.csproj" />
+  <Project Path="WinUIEx.Maps.Benchmarks/WinUIEx.Maps.Benchmarks.csproj">
+    <Platform Solution="*|ARM64" Project="ARM64" />
+    <Platform Solution="*|x64" Project="x64" />
+    <Platform Solution="Debug|Any CPU" Project="ARM64" />
+    <Platform Solution="Release|Any CPU" Project="ARM64" />
+  </Project>
   <Configurations>
     <Platform Name="Any CPU" />
     <Platform Name="ARM64" />

@@ -163,7 +163,8 @@ cbuffer GeometryConstants : register(b0)
 {
     float4 Transform;
     float4 Color;
-    float4 Padding;
+    float4 ProjectiveX;
+    float4 ProjectiveY;
 };
 """;
 
@@ -181,10 +182,18 @@ struct PixelInput
 
 PixelInput main(VertexInput input)
 {
+    float2 centered = input.Position - Transform.zw;
+    float denominator =
+        ProjectiveX.w * centered.x +
+        ProjectiveY.w * centered.y +
+        1.0f;
+    float2 projected = float2(
+        dot(ProjectiveX.xyz, float3(centered, 1.0f)),
+        dot(ProjectiveY.xyz, float3(centered, 1.0f))) / denominator;
     PixelInput output;
     output.Position = float4(
-        input.Position.x * Transform.x + Transform.z,
-        input.Position.y * Transform.y + Transform.w,
+        projected.x * Transform.x,
+        projected.y * Transform.y,
         0.0f,
         1.0f);
     return output;

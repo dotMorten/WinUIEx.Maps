@@ -864,7 +864,7 @@ public sealed partial class MapControl
 
 internal sealed class TouchRotationState
 {
-    internal const double ActivationThreshold = 10;
+    internal const double ActivationThreshold = 5;
     internal const double SnapThreshold = 10;
     private double _appliedRotation;
 

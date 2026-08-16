@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using WinUIEx.Maps.Rendering;
 using WinUIEx.Maps.Tests.Input;
 using WinUIEx.Maps.Tests.UITestHelpers;
 using Windows.Devices.Geolocation;
@@ -205,6 +206,36 @@ public sealed class MapControlLifecycleTests
     }
 
     [TestMethod]
+    public async Task RepeatedSymbolMapsReleaseRendererWorkingMemory()
+    {
+        WeakReference<MapControl>[] warmup =
+            await CreateAndUnloadSymbolMapsAsync(2);
+        await CollectMapsAsync(warmup);
+        long baselineBytes = GC.GetTotalMemory(forceFullCollection: true);
+        long baselinePrivateBytes = GetPrivateMemorySize();
+
+        WeakReference<MapControl>[] maps =
+            await CreateAndUnloadSymbolMapsAsync(6);
+        await CollectMapsAsync(maps);
+        long retainedBytes =
+            GC.GetTotalMemory(forceFullCollection: true) - baselineBytes;
+        long retainedPrivateBytes =
+            GetPrivateMemorySize() - baselinePrivateBytes;
+
+        Assert.IsTrue(
+            maps.All(map => !map.TryGetTarget(out _)),
+            "Every unloaded symbol MapControl should be eligible for collection.");
+        Assert.IsLessThanOrEqualTo(
+            16L * 1024 * 1024,
+            retainedBytes,
+            $"Repeated symbol maps retained {retainedBytes:N0} managed bytes.");
+        Assert.IsLessThanOrEqualTo(
+            128L * 1024 * 1024,
+            retainedPrivateBytes,
+            $"Repeated symbol maps retained {retainedPrivateBytes:N0} private bytes.");
+    }
+
+    [TestMethod]
     public async Task RepeatedRoadMapsAreCollectedWithoutSignificantMemoryGrowth()
     {
         WeakReference<MapControl>[] warmup =
@@ -249,6 +280,92 @@ public sealed class MapControlLifecycleTests
                 }
             });
         return maps.ToArray();
+    }
+
+    private static async Task<WeakReference<MapControl>[]>
+        CreateAndUnloadSymbolMapsAsync(int count)
+    {
+        List<WeakReference<MapControl>> maps = [];
+        await MapControlTestHost.LoadUIAsync(
+            () => new Grid(),
+            async root =>
+            {
+                Grid host = (Grid)root;
+                for (int index = 0; index < count; index++)
+                {
+                    maps.Add(await CreateAndUnloadSymbolMapAsync(host));
+                }
+            });
+        return maps.ToArray();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task<WeakReference<MapControl>>
+        CreateAndUnloadSymbolMapAsync(Grid host)
+    {
+        TileId tileId = new(4, 8, 8);
+        MapboxVectorTileBuilder tileBuilder = new();
+        for (int index = 0; index < 64; index++)
+        {
+            int column = index % 8;
+            int row = index / 8;
+            tileBuilder.AddPoint(
+                "markers",
+                256 + (column * 512),
+                256 + (row * 512),
+                new Dictionary<string, object>
+                {
+                    ["label"] = index % 2 == 0 ? "AB" : "BA",
+                });
+        }
+        TestVectorTileSource source = TestVectorTileSource.Create(
+            tileId,
+            tileBuilder.Build(),
+            """
+            {
+              "version": 8,
+              "layers": [{
+                "type": "symbol",
+                "source-layer": "markers",
+                "layout": {
+                  "text-field": ["get", "label"],
+                  "text-font": ["TestFont"],
+                  "text-size": 18
+                }
+              }]
+            }
+            """,
+            "{}",
+            [0, 0, 0, 0],
+            1,
+            1);
+        source.AddGlyphs(
+            "TestFont",
+            TestGlyph.Solid('A'),
+            TestGlyph.Solid('B'));
+        MapControl map = new()
+        {
+            Width = 640,
+            Height = 480,
+            MapStyle = MapStyle.Blank,
+        };
+        BasicGeoposition center = source.TileCenter;
+        Assert.IsTrue(await map.TrySetViewAsync(
+            new Geopoint(center),
+            tileId.Zoom,
+            null,
+            null,
+            MapAnimationKind.None));
+        map.Layers.Add(new TestVectorTileLayer(source));
+
+        await AddAsync(host, map);
+        using (CancellationTokenSource timeout =
+            new(TimeSpan.FromSeconds(5)))
+        {
+            await map.CaptureRenderedFrameAsync(timeout.Token);
+        }
+        await RemoveAsync(host, map);
+        return new WeakReference<MapControl>(map);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

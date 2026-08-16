@@ -27,25 +27,27 @@ internal sealed partial class MapRenderer
         }
 
         ulong fallbackMask = GetFallbackZoomMask(state);
-        if (_displayPitch == 0 &&
-            _vectorLineFrameCache is { } cached &&
+        if (_vectorLineFrameCache is { } cached &&
             cached.MatchesConfiguration(
                 layer,
                 state,
                 fallbackMask,
                 _displayZoom,
                 _displayHeading,
+                _displayPitch,
                 _viewportWidth,
                 _viewportHeight) &&
-            TryGetVectorPanOffset(
+            TryGetVectorPanTransform(
                 cached.Longitude,
                 cached.Latitude,
                 _displayLongitude,
                 _displayLatitude,
                 _displayZoom,
                 _displayHeading,
+                _displayPitch,
                 _viewportWidth,
                 _viewportHeight,
+                out MapViewportProjectiveTransform panTransform,
                 out double offsetX,
                 out double offsetY) &&
             Math.Abs(offsetX) <= VectorGeometryCachePanLimit &&
@@ -91,8 +93,7 @@ internal sealed partial class MapRenderer
                             cached,
                             pendingBatches,
                             pendingOrder,
-                            offsetX,
-                            offsetY,
+                            panTransform,
                             ref pendingResult);
                         result.Add(pendingResult);
                     }
@@ -105,8 +106,7 @@ internal sealed partial class MapRenderer
                                 batch.Buffer,
                                 batch.Key.Color,
                                 premultiplied: true,
-                                offsetX,
-                                offsetY);
+                                panTransform);
                         }
                     }
                     TraceVectorLineResult(layer, result);
@@ -181,7 +181,6 @@ internal sealed partial class MapRenderer
             int vertexCount = batches.Values.Sum(buffer => buffer.Count);
             long retainedByteSize = 0;
             bool shouldRetain = !activeFade &&
-                _displayPitch == 0 &&
                 !_zoomAnimation.IsActive &&
                 !_headingAnimation.IsActive &&
                 !_pitchAnimation.IsActive;
@@ -203,6 +202,7 @@ internal sealed partial class MapRenderer
                     _displayLatitude,
                     _displayZoom,
                     _displayHeading,
+                    _displayPitch,
                     _viewportWidth,
                     _viewportHeight,
                     cachedBatches,
@@ -273,8 +273,7 @@ internal sealed partial class MapRenderer
         VectorLineFrameCache cached,
         IReadOnlyDictionary<VectorLineBatchKey, PooledGeometryBuffer> pending,
         IReadOnlyList<VectorLineBatchKey> pendingOrder,
-        double offsetX,
-        double offsetY,
+        MapViewportProjectiveTransform panTransform,
         ref VectorLineRenderResult pendingResult)
     {
         int cachedIndex = 0;
@@ -294,8 +293,7 @@ internal sealed partial class MapRenderer
                     batch.Buffer,
                     batch.Key.Color,
                     premultiplied: true,
-                    offsetX,
-                    offsetY);
+                    panTransform);
             }
             else
             {
@@ -585,7 +583,7 @@ internal sealed partial class MapRenderer
                     opacity,
                     _viewportWidth,
                     _viewportHeight,
-                    _displayPitch == 0 ? VectorGeometryCachePadding : 0,
+                    VectorGeometryCachePadding,
                     batches,
                     batchOrder);
             }
@@ -1592,6 +1590,7 @@ internal sealed partial class MapRenderer
         double latitude,
         double zoom,
         double heading,
+        double pitch,
         double viewportWidth,
         double viewportHeight,
         VectorLineCachedBatch[] batches,
@@ -1627,6 +1626,7 @@ internal sealed partial class MapRenderer
             ulong currentFallbackMask,
             double currentZoom,
             double currentHeading,
+            double currentPitch,
             double currentViewportWidth,
             double currentViewportHeight) =>
             layer.RuntimeId == currentLayer.RuntimeId &&
@@ -1636,6 +1636,7 @@ internal sealed partial class MapRenderer
             fallbackMask == currentFallbackMask &&
             zoom == currentZoom &&
             heading == currentHeading &&
+            pitch == currentPitch &&
             viewportWidth == currentViewportWidth &&
             viewportHeight == currentViewportHeight;
 

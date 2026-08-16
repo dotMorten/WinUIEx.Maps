@@ -102,6 +102,7 @@ namespace WinUIEx.Maps;
 /// </example>
 public sealed partial class MapControl : Control
 {
+    private static int s_resourceCollectionQueued;
     private MapLayerCollection _layers = null!;
     private bool _isRestoringLayers;
     private readonly HashSet<MapElementsLayer> _trackedLayers =
@@ -179,6 +180,7 @@ public sealed partial class MapControl : Control
     }
 
     internal int ActiveRasterWorkerCount => _rasterTileManager.ActiveWorkerCount;
+
 
     internal bool RasterManagerHasScene => _rasterTileManager.HasScene;
 
@@ -495,7 +497,39 @@ public sealed partial class MapControl : Control
             _renderer.Suspend();
             DetachSystemAccessibilitySettings();
             CancelPendingViewChange();
+            RequestResourceCollection();
         });
+    }
+
+    private static void RequestResourceCollection()
+    {
+        if (Interlocked.Exchange(ref s_resourceCollectionQueued, 1) != 0)
+        {
+            return;
+        }
+
+        bool queued = ThreadPool.QueueUserWorkItem<object?>(
+            static _ =>
+            {
+                try
+                {
+                    GC.Collect(
+                        GC.MaxGeneration,
+                        GCCollectionMode.Optimized,
+                        blocking: false,
+                        compacting: false);
+                }
+                finally
+                {
+                    Volatile.Write(ref s_resourceCollectionQueued, 0);
+                }
+            },
+            null,
+            preferLocal: false);
+        if (!queued)
+        {
+            Volatile.Write(ref s_resourceCollectionQueued, 0);
+        }
     }
 
     private bool IsAttachedToXamlRootVisualTree()

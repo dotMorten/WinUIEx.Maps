@@ -100,17 +100,14 @@ internal sealed partial class MapRenderer
             return;
         }
 
-        MapScreenSegment[] segments = MapGeometryOperations.BuildStrokeSegments(
-            snapshot.Geometry,
-            snapshot.IsPolygon,
-            snapshot.StrokeThickness,
-            snapshot.StrokeDashed,
-            camera);
         DrawGeometryTriangles(
             context,
-            MapGeometryOperations.ExpandStrokeTriangles(
-                segments,
-                snapshot.StrokeThickness),
+            MapGeometryOperations.BuildStrokeTriangles(
+                snapshot.Geometry,
+                snapshot.IsPolygon,
+                snapshot.StrokeThickness,
+                snapshot.StrokeDashed,
+                camera),
             snapshot.StrokeColor.ToVector(layerOpacity));
     }
 
@@ -155,17 +152,28 @@ internal sealed partial class MapRenderer
         Vector4 color,
         bool premultiplied,
         double offsetX,
-        double offsetY)
+        double offsetY) =>
+        PrepareGeometryDraw(
+            context,
+            color,
+            premultiplied,
+            MapViewportProjectiveTransform.CreateTranslation(offsetX, offsetY));
+
+    private unsafe void PrepareGeometryDraw(
+        IntPtr context,
+        Vector4 color,
+        bool premultiplied,
+        MapViewportProjectiveTransform projectiveTransform)
     {
         GeometryConstants constants = new(
             new Vector4(
                 (float)(2 / Viewport.Width),
                 (float)(-2 / Viewport.Height),
-                (float)(-1 + ((offsetX * 2) / Viewport.Width)),
-                (float)(1 - ((offsetY * 2) / Viewport.Height))),
+                (float)(Viewport.Width / 2),
+                (float)(Viewport.Height / 2)),
             color,
-            Vector4.Zero,
-            Vector4.Zero);
+            projectiveTransform.X,
+            projectiveTransform.Y);
         UpdateSubresource(context, _constantBufferPointer, &constants);
         SetBlendState(
             context,
@@ -260,7 +268,20 @@ internal sealed partial class MapRenderer
         Vector4 color,
         bool premultiplied = false,
         double offsetX = 0,
-        double offsetY = 0)
+        double offsetY = 0) =>
+        DrawGpuGeometryBuffer(
+            context,
+            buffer,
+            color,
+            premultiplied,
+            MapViewportProjectiveTransform.CreateTranslation(offsetX, offsetY));
+
+    private unsafe void DrawGpuGeometryBuffer(
+        IntPtr context,
+        GpuGeometryBuffer buffer,
+        Vector4 color,
+        bool premultiplied,
+        MapViewportProjectiveTransform projectiveTransform)
     {
         if (buffer.VertexCount < 3 || color.W <= 0)
         {
@@ -271,8 +292,7 @@ internal sealed partial class MapRenderer
             context,
             color,
             premultiplied,
-            offsetX,
-            offsetY);
+            projectiveTransform);
         foreach (GpuGeometryChunk chunk in buffer.Chunks)
         {
             SetVertexBuffer(
@@ -375,9 +395,48 @@ internal sealed partial class MapRenderer
         return true;
     }
 
+    private static bool TryGetVectorPanTransform(
+        double cachedLongitude,
+        double cachedLatitude,
+        double currentLongitude,
+        double currentLatitude,
+        double zoom,
+        double heading,
+        double pitch,
+        double viewportWidth,
+        double viewportHeight,
+        out MapViewportProjectiveTransform transform,
+        out double offsetX,
+        out double offsetY)
+    {
+        if (!TryGetVectorPanOffset(
+                cachedLongitude,
+                cachedLatitude,
+                currentLongitude,
+                currentLatitude,
+                zoom,
+                heading,
+                viewportWidth,
+                viewportHeight,
+                out offsetX,
+                out offsetY))
+        {
+            transform = default;
+            return false;
+        }
+
+        transform = MapViewportProjectiveTransform.CreatePan(
+            offsetX,
+            offsetY,
+            pitch,
+            viewportHeight);
+        return transform.IsFinite;
+    }
+
     private void OnVectorTilesChanged(bool disposeGeometryCaches = false)
     {
         _vectorTileVersion++;
+        ClearVectorSymbolFrameCaches();
         if (disposeGeometryCaches)
         {
             DisposeVectorGeometryCaches();
@@ -387,6 +446,7 @@ internal sealed partial class MapRenderer
     private void DisposeVectorGeometryCaches()
     {
         CancelVectorGeometryPreparation();
+        ClearVectorSymbolFrameCaches();
         _vectorLineFrameCache?.Dispose();
         _vectorLineFrameCache = null;
         _vectorPolygonFrameCache?.Dispose();
@@ -586,6 +646,7 @@ internal sealed partial class MapRenderer
     private readonly record struct GeometryConstants(
         Vector4 Transform,
         Vector4 Color,
-        Vector4 Padding,
-        Vector4 Padding2);
+        Vector4 ProjectiveX,
+        Vector4 ProjectiveY);
+
 }

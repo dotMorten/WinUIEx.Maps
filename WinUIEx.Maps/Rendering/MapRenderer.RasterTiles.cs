@@ -92,7 +92,9 @@ internal sealed partial class MapRenderer
             if (clearExistingTiles)
             {
                 RemoveRasterTilesLocked(sourceId);
-                RemoveVectorTilesLocked(sourceId);
+                RemoveVectorTilesLocked(
+                    sourceId,
+                    releaseGeometryCaches: IsVectorRenderKind(state.RenderKind));
                 state.FallbackTileZooms.Clear();
                 state.VectorStyleAssets = null;
             }
@@ -139,8 +141,11 @@ internal sealed partial class MapRenderer
     {
         lock (RenderLock)
         {
+            bool releaseGeometryCaches =
+                _rasterLayers.TryGetValue(sourceId, out RasterLayerState? state) &&
+                IsVectorRenderKind(state.RenderKind);
             RemoveRasterTilesLocked(sourceId);
-            RemoveVectorTilesLocked(sourceId);
+            RemoveVectorTilesLocked(sourceId, releaseGeometryCaches);
             RemoveVectorSpriteTextures(sourceId);
             _rasterLayers.Remove(sourceId);
             _pendingRasterTiles.RemoveSource(sourceId);

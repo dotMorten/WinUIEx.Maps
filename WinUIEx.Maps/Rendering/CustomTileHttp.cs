@@ -169,7 +169,7 @@ internal static class CustomTileHttp
 {
     private static readonly WinRtHttpClient HttpClient = CreateHttpClient();
 
-    internal static async Task<byte[]> GetBytesAsync(
+    internal static async Task<PooledByteBuffer> GetBytesAsync(
         Uri uri,
         string acceptMediaType,
         int maximumBytes,

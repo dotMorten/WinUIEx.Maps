@@ -406,6 +406,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
         }
         if (removedCount != 0 || uploadedCount != 0 || replacedCount != 0)
         {
+            _iconTextureVersion++;
+            ClearVectorSymbolFrameCaches();
             MapControlEventSource.Log.IconTextureUploadSummary(
                 uploadedCount,
                 replacedCount,

@@ -417,6 +417,56 @@ public sealed class MapCameraTests
     }
 
     [TestMethod]
+    [DataRow(0, 120, -80)]
+    [DataRow(30, -75, 110)]
+    [DataRow(60, 95, -140)]
+    public void ProjectivePanTransformMatchesCameraProjection(
+        double pitch,
+        double offsetX,
+        double offsetY)
+    {
+        const double viewportHeight = 768;
+        MapViewportProjectiveTransform transform =
+            MapViewportProjectiveTransform.CreatePan(
+                offsetX,
+                offsetY,
+                pitch,
+                viewportHeight);
+        MapScreenPoint[] points =
+        [
+            new(-400, -280),
+            new(350, -250),
+            new(-300, 220),
+            new(420, 300),
+            new(0, 0),
+        ];
+
+        foreach (MapScreenPoint point in points)
+        {
+            MapCamera.UntransformViewportOffset(
+                point.X,
+                point.Y,
+                heading: 0,
+                pitch,
+                viewportHeight,
+                out double mapX,
+                out double mapY);
+            MapCamera.TransformViewportOffset(
+                mapX + offsetX,
+                mapY + offsetY,
+                heading: 0,
+                pitch,
+                viewportHeight,
+                out double expectedX,
+                out double expectedY);
+            MapScreenPoint actual = transform.Transform(point);
+
+            Assert.AreEqual(expectedX, actual.X, 0.001);
+            Assert.AreEqual(expectedY, actual.Y, 0.001);
+        }
+    }
+
+    [TestMethod]
     public void ZoomCenterKeepsLocationAtCursorFixed()
     {
         MapCenter anchor = MapCamera.LocationAtOffset(

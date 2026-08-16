@@ -1432,8 +1432,8 @@ internal sealed class MapControlEventSource : EventSource
     }
 
     /// <summary>
-    /// Records whether retained GPU line or polygon geometry was reused for a translated
-    /// frame, including its vertex count and native buffer bytes.
+    /// Records whether retained GPU line or polygon geometry was reused for a transformed
+    /// pan frame, including its vertex count and native buffer bytes.
     /// </summary>
     [Event(
         61,
@@ -1803,6 +1803,35 @@ internal sealed class MapControlEventSource : EventSource
                 issueKind,
                 construct ?? string.Empty,
                 count);
+        }
+    }
+
+    /// <summary>
+    /// Records renderer-owned managed symbol working buffers released with dormant resources.
+    /// </summary>
+    [Event(
+        76,
+        Level = EventLevel.Informational,
+        Keywords = Keywords.Icons | Keywords.VectorTiles,
+        Task = Tasks.VectorTiles)]
+    public void VectorSymbolWorkingMemoryReleased(
+        int instanceBufferCount,
+        int instanceCapacity,
+        int placementCapacity,
+        int collisionCapacity,
+        int accessibilityCapacity)
+    {
+        if (IsEnabled(
+            EventLevel.Informational,
+            Keywords.Icons | Keywords.VectorTiles))
+        {
+            WriteEvent(
+                76,
+                instanceBufferCount,
+                instanceCapacity,
+                placementCapacity,
+                collisionCapacity,
+                accessibilityCapacity);
         }
     }
 }

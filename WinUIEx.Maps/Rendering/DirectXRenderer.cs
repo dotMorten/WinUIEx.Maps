@@ -53,7 +53,10 @@ internal abstract class DirectXRenderer : IDisposable
     private IntPtr _devicePointer;
     private IntPtr _contextPointer;
     private IntPtr _renderTargetPointer;
+    private IntPtr _offscreenTargetPointer;
+    private IntPtr _gpuCompletionQueryPointer;
     private long _swapChainMemoryPressure;
+    private long _offscreenFrameCount;
     private Thread? _renderThread;
     private bool _initialized;
     private bool _initializing;
@@ -68,6 +71,112 @@ internal abstract class DirectXRenderer : IDisposable
     protected D3D11_VIEWPORT Viewport => _viewport;
     protected bool IsInitialized => _initialized;
     internal bool HasDeviceResources => _initialized;
+
+    protected void WaitForGpuCompletion()
+    {
+        if (_contextPointer == IntPtr.Zero ||
+            _gpuCompletionQueryPointer == IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                "GPU completion tracking is not initialized.");
+        }
+        WaitForGpu(_contextPointer, _gpuCompletionQueryPointer);
+    }
+
+    /// <summary>
+    /// Creates renderer resources against an offscreen texture without a swap chain.
+    /// </summary>
+    internal unsafe void InitializeOffscreenForBenchmark(int width, int height)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(width);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_initialized || _initializing)
+        {
+            throw new InvalidOperationException(
+                "The renderer has already been initialized.");
+        }
+
+        _initializing = true;
+        try
+        {
+            CreateDeviceResources();
+            lock (_renderLock)
+            {
+                D3D11_TEXTURE2D_DESC description = new()
+                {
+                    Width = checked((uint)width),
+                    Height = checked((uint)height),
+                    MipLevels = 1,
+                    ArraySize = 1,
+                    Format = DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
+                    SampleDesc = new DXGI_SAMPLE_DESC { Count = 1 },
+                    Usage = D3D11_USAGE.D3D11_USAGE_DEFAULT,
+                    BindFlags = D3D11_BIND_FLAG.D3D11_BIND_RENDER_TARGET,
+                };
+                _offscreenTargetPointer = CreateTexture(
+                    _devicePointer,
+                    &description,
+                    null,
+                    "Failed to create the offscreen benchmark target.");
+                _renderTargetPointer = CreateView(
+                    _devicePointer,
+                    _offscreenTargetPointer,
+                    9,
+                    "Failed to create the offscreen benchmark render target.");
+                _gpuCompletionQueryPointer = CreateEventQuery(_devicePointer);
+                _viewport = new D3D11_VIEWPORT
+                {
+                    Width = width,
+                    Height = height,
+                    MinDepth = 0,
+                    MaxDepth = 1,
+                };
+                CreateRendererResources();
+                _initialized = true;
+            }
+        }
+        catch
+        {
+            ReleaseDeviceResources(detachSwapChain: false);
+            throw;
+        }
+        finally
+        {
+            _initializing = false;
+        }
+    }
+
+    /// <summary>
+    /// Renders and completes one offscreen frame without presenting or waiting for vsync.
+    /// </summary>
+    internal long RenderOffscreenFrameForBenchmark()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        lock (_renderLock)
+        {
+            if (!_initialized ||
+                _swapChainPointer != IntPtr.Zero ||
+                _contextPointer == IntPtr.Zero ||
+                _renderTargetPointer == IntPtr.Zero ||
+                _gpuCompletionQueryPointer == IntPtr.Zero ||
+                !HasRendererResources())
+            {
+                throw new InvalidOperationException(
+                    "The renderer has not been initialized for offscreen benchmarking.");
+            }
+
+            Clear(
+                _contextPointer,
+                _renderTargetPointer,
+                [0.94f, 0.94f, 0.94f, 1]);
+            SetRenderTarget(_contextPointer, _renderTargetPointer);
+            SetViewport(_contextPointer, _viewport);
+            RenderFrame();
+            WaitForGpu(_contextPointer, _gpuCompletionQueryPointer);
+            return ++_offscreenFrameCount;
+        }
+    }
 
     /// <summary>
     /// Completes with a top-down BGRA copy of the next render frame after derived
@@ -685,6 +794,8 @@ internal abstract class DirectXRenderer : IDisposable
 
             ReleaseRendererResources();
             ReleasePointer(ref _renderTargetPointer);
+            ReleasePointer(ref _gpuCompletionQueryPointer);
+            ReleasePointer(ref _offscreenTargetPointer);
             ReleasePointer(ref _swapChainPointer);
             ReleasePointer(ref _contextPointer);
             TrimDevice(_devicePointer);

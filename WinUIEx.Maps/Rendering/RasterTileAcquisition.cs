@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices.WindowsRuntime;
@@ -114,7 +115,7 @@ internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisition
         string requestUrl = ExpandUrl(id);
         int maximumEncodedBytes = checked(
             (TileSize * TileSize * 4) + EncodedTileOverheadAllowance);
-        byte[] encoded = await CustomTileHttp.GetBytesAsync(
+        using PooledByteBuffer encoded = await CustomTileHttp.GetBytesAsync(
                 new Uri(requestUrl),
                 "image/*",
                 maximumEncodedBytes,
@@ -124,7 +125,7 @@ internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisition
         double downloadMilliseconds =
             Stopwatch.GetElapsedTime(downloadStarted).TotalMilliseconds;
         long decodeStarted = Stopwatch.GetTimestamp();
-        using MemoryStream stream = new(encoded, writable: false);
+        using MemoryStream stream = encoded.CreateReadStream();
         using Windows.Storage.Streams.IRandomAccessStream randomAccessStream =
             stream.AsRandomAccessStream();
         BitmapDecoder decoder = await BitmapDecoder
@@ -324,7 +325,9 @@ internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisition
 
 internal static class WinRtHttpContentReader
 {
-    internal static async Task<byte[]> ReadBoundedAsync(
+    private const int InitialBufferSize = 16 * 1024;
+
+    internal static async Task<PooledByteBuffer> ReadBoundedAsync(
         Windows.Web.Http.IHttpContent content,
         int maximumBytes,
         CancellationToken cancellationToken)
@@ -341,26 +344,102 @@ internal static class WinRtHttpContentReader
                 .AsTask(cancellationToken)
                 .ConfigureAwait(false);
         using Stream stream = input.AsStreamForRead();
-        using MemoryStream buffer = new(Math.Min(
-            maximumBytes,
-            declaredLength is null
-                ? 16 * 1024
-                : checked((int)declaredLength.Value)));
-        byte[] chunk = new byte[16 * 1024];
-        while (true)
+        int initialCapacity = declaredLength is null
+            ? Math.Min(maximumBytes, InitialBufferSize)
+            : Math.Max(1, checked((int)declaredLength.Value));
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
+        int length = 0;
+        try
         {
-            int read = await stream.ReadAsync(chunk, cancellationToken)
-                .ConfigureAwait(false);
-            if (read == 0)
+            while (true)
             {
-                return buffer.ToArray();
+                if (length == maximumBytes)
+                {
+                    byte[] overflowProbe = ArrayPool<byte>.Shared.Rent(1);
+                    try
+                    {
+                        if (await stream.ReadAsync(
+                                overflowProbe.AsMemory(0, 1),
+                                cancellationToken)
+                            .ConfigureAwait(false) != 0)
+                        {
+                            throw new InvalidDataException(
+                                "The encoded map response exceeds the configured size limit.");
+                        }
+                    }
+                    finally
+                    {
+                        ArrayPool<byte>.Shared.Return(overflowProbe);
+                    }
+
+                    return new PooledByteBuffer(buffer, length);
+                }
+
+                if (length == buffer.Length)
+                {
+                    int nextCapacity = Math.Min(
+                        maximumBytes,
+                        length > maximumBytes / 2
+                            ? maximumBytes
+                            : Math.Max(length + 1, length * 2));
+                    byte[] replacement =
+                        ArrayPool<byte>.Shared.Rent(nextCapacity);
+                    buffer.AsSpan(0, length).CopyTo(replacement);
+                    ArrayPool<byte>.Shared.Return(buffer);
+                    buffer = replacement;
+                }
+
+                int read = await stream.ReadAsync(
+                        buffer.AsMemory(
+                            length,
+                            Math.Min(
+                                buffer.Length - length,
+                                maximumBytes - length)),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (read == 0)
+                {
+                    return new PooledByteBuffer(buffer, length);
+                }
+
+                length += read;
             }
-            if (buffer.Length + read > maximumBytes)
-            {
-                throw new InvalidDataException(
-                    "The encoded map response exceeds the configured size limit.");
-            }
-            buffer.Write(chunk, 0, read);
+        }
+        catch
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+            throw;
         }
     }
+}
+
+internal sealed class PooledByteBuffer : IDisposable
+{
+    private byte[]? _buffer;
+
+    internal PooledByteBuffer(byte[] buffer, int length)
+    {
+        _buffer = buffer;
+        Length = length;
+    }
+
+    internal int Length { get; }
+
+    internal ReadOnlyMemory<byte> Memory =>
+        GetBuffer().AsMemory(0, Length);
+
+    internal MemoryStream CreateReadStream() =>
+        new(GetBuffer(), 0, Length, writable: false, publiclyVisible: false);
+
+    public void Dispose()
+    {
+        byte[]? buffer = Interlocked.Exchange(ref _buffer, null);
+        if (buffer is not null)
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private byte[] GetBuffer() =>
+        _buffer ?? throw new ObjectDisposedException(nameof(PooledByteBuffer));
 }

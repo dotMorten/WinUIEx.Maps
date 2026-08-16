@@ -86,7 +86,7 @@ internal sealed class AzureVectorStyleProvider
     {
         long started = Stopwatch.GetTimestamp();
         AzureVectorStyleAssetPaths paths = GetAssetPaths(_style);
-        byte[] styleJson = await AzureTileAcquisitionSession
+        using PooledByteBuffer styleJson = await AzureTileAcquisitionSession
             .GetStyleAssetAsync(
                 paths.Style,
                 _token,
@@ -94,29 +94,34 @@ internal sealed class AzureVectorStyleProvider
                 MaximumStyleBytes,
                 cancellationToken)
             .ConfigureAwait(false);
-        byte[] spriteJson = await AzureTileAcquisitionSession
+        VectorStyle style = VectorStyle.Parse(styleJson.Memory);
+        Dictionary<string, VectorSpriteEntry> spriteEntries;
+        using (PooledByteBuffer spriteJson = await AzureTileAcquisitionSession
             .GetStyleAssetAsync(
                 paths.SpriteIndex,
                 _token,
                 "application/json",
                 MaximumSpriteIndexBytes,
                 cancellationToken)
-            .ConfigureAwait(false);
-        byte[] spritePng = await AzureTileAcquisitionSession
+            .ConfigureAwait(false))
+        {
+            spriteEntries = VectorSpriteAtlas.ParseIndex(spriteJson.Memory);
+        }
+        DecodedSpriteImage decoded;
+        using (PooledByteBuffer spritePng = await AzureTileAcquisitionSession
             .GetStyleAssetAsync(
                 paths.SpriteImage,
                 _token,
                 "image/png",
                 MaximumEncodedSpriteBytes,
                 cancellationToken)
-            .ConfigureAwait(false);
-
-        VectorStyle style = VectorStyle.Parse(styleJson);
-        Dictionary<string, VectorSpriteEntry> spriteEntries =
-            VectorSpriteAtlas.ParseIndex(spriteJson);
-        DecodedSpriteImage decoded = await DecodeSpriteAsync(
-            spritePng,
-            cancellationToken).ConfigureAwait(false);
+            .ConfigureAwait(false))
+        {
+            decoded = await DecodeSpriteAsync(
+                    spritePng,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
         VectorSpriteAtlas spriteAtlas = new(
             _styleSlug,
             spriteEntries,
@@ -136,16 +141,16 @@ internal sealed class AzureVectorStyleProvider
             checked((int)decoded.Width),
             checked((int)decoded.Height),
             Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-        VectorStyleCompatibility.Report((int)_style, styleJson);
+        VectorStyleCompatibility.Report((int)_style, styleJson.Memory);
         return assets;
     }
 
     internal static async Task<DecodedSpriteImage> DecodeSpriteAsync(
-        byte[] encoded,
+        PooledByteBuffer encoded,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        using MemoryStream stream = new(encoded, writable: false);
+        using MemoryStream stream = encoded.CreateReadStream();
         using Windows.Storage.Streams.IRandomAccessStream randomAccessStream =
             stream.AsRandomAccessStream();
         BitmapDecoder? decoder = null;

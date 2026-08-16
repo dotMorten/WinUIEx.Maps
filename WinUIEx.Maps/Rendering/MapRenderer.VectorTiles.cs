@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
 using System.Diagnostics;
 using System.Numerics;
-using System.Runtime.InteropServices;
 using WinUIEx.Maps.Rendering.Diagnostics;
 using static WinUIEx.Maps.Rendering.DirectXInterop;
 
@@ -16,7 +16,27 @@ internal sealed partial class MapRenderer
     private const long MaximumVectorCacheBytes = 32 * 1024 * 1024;
     private readonly ConcurrentQueue<QueuedVectorTile> _completedVectorTiles = new();
     private readonly Dictionary<RasterTileKey, VectorTileCacheEntry> _vectorTiles = [];
+    private readonly Dictionary<long, PreparedVectorSymbolFrame>
+        _vectorSymbolFrameCaches = [];
+    private readonly VectorSymbolRenderWorkspace _vectorSymbolWorkspace = new();
+    private readonly List<MapAccessibilityFeature> _vectorAccessibilityFeatures = [];
+    private readonly Dictionary<string, MapAccessibilityFeature>
+        _uniqueVectorAccessibilityFeatures =
+            new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<MapAccessibilityFeature>
+        _orderedVectorAccessibilityFeatures = [];
+    private readonly AccessibilityFeatureComparer
+        _accessibilityFeatureComparer = new();
+    private readonly string?[] _lastAccessibilityFeatureNames = new string?[8];
+    private int _lastAccessibilityFeatureCount;
+    private VectorAccessibilityCacheKey? _lastVectorAccessibilityCacheKey;
     private long _vectorTileVersion;
+    private long _iconTextureVersion;
+    private long _vectorSymbolFrameBuildCount;
+
+    internal long VectorSymbolFrameBuildCountForBenchmark =>
+        _vectorSymbolFrameBuildCount;
+
 
     /// <summary>
     /// Reserves shared tile-pipeline capacity, registers referenced sprite crops with the
@@ -196,7 +216,42 @@ internal sealed partial class MapRenderer
         }
 
         VectorRenderResult renderResult = default;
-        List<VectorTileDrawData> drawTiles = [];
+        VectorSymbolRenderCacheKey cacheKey = new(
+            layer,
+            _vectorTileVersion,
+            _iconTextureVersion,
+            _deviceEpoch,
+            state.SceneVersion,
+            GetFallbackZoomSignature(state.FallbackTileZooms),
+            _displayLongitude,
+            _displayLatitude,
+            _displayZoom,
+            _displayHeading,
+            _displayPitch,
+            _viewportWidth,
+            _viewportHeight,
+            Volatile.Read(ref _textScaleFactor));
+        if (_vectorSymbolFrameCaches.TryGetValue(
+                layer.RuntimeId,
+                out PreparedVectorSymbolFrame? cachedFrame) &&
+            cachedFrame.Key == cacheKey)
+        {
+            DrawPreparedVectorBatches(
+                context,
+                cachedFrame.Batches,
+                ref cachedFrame.RenderResult);
+            LogVectorRenderResult(layer.Style, cachedFrame.RenderResult);
+            return false;
+        }
+        if (cachedFrame is not null)
+        {
+            _vectorSymbolFrameCaches.Remove(layer.RuntimeId);
+            cachedFrame.Dispose();
+        }
+
+        VectorSymbolRenderWorkspace workspace = _vectorSymbolWorkspace;
+        _vectorSymbolFrameBuildCount++;
+        workspace.ResetFrame();
         long nextCollisionGroup = 0;
         bool canEnumerateActiveScene = CanEnumerateRasterScene(
             _displayZoom,
@@ -210,7 +265,7 @@ internal sealed partial class MapRenderer
         bool activeFade = CollectCachedVectorLevels(
             layer,
             cachedLevels,
-            drawTiles,
+            workspace,
             ref renderResult,
             ref nextCollisionGroup);
         if (canEnumerateActiveScene)
@@ -219,7 +274,7 @@ internal sealed partial class MapRenderer
             activeFade |= CollectVectorScene(
                 layer,
                 scene,
-                drawTiles,
+                workspace,
                 ref renderResult,
                 ref nextCollisionGroup);
             if (HasCompleteVectorCoverage(
@@ -231,106 +286,76 @@ internal sealed partial class MapRenderer
             }
         }
 
-        VectorSymbolPlacement[] allPlacements =
-            drawTiles.SelectMany(tile => tile.Placements).ToArray();
-        HashSet<long> incompleteLabelGroups = FindIncompleteLabelGroups(
-            allPlacements,
+        FindIncompleteLabelGroups(
+            workspace.Placements,
             _iconTextures.ContainsKey,
+            workspace.IncompleteLabelGroups,
             out int pendingTextureGlyphCount);
-        VectorSymbolPlacement[] readyPlacements = allPlacements
-            .Where(placement =>
-                placement.CollisionGroup < 0 ||
-                !incompleteLabelGroups.Contains(placement.CollisionGroup))
-            .ToArray();
-        LabelCollisionResult collision = ResolveLabelCollisions(readyPlacements);
-        renderResult.CandidateLabelCount = collision.CandidateLabelCount;
-        renderResult.SuppressedLabelCount = collision.SuppressedLabelCount;
-        renderResult.SuppressedGlyphCount = collision.SuppressedGlyphCount;
-        renderResult.PendingTextureLabelCount = incompleteLabelGroups.Count;
+        ResolveLabelCollisions(
+            workspace.Placements,
+            workspace.IncompleteLabelGroups,
+            workspace);
+        renderResult.CandidateLabelCount = workspace.CollisionCandidates.Count;
+        renderResult.SuppressedLabelCount =
+            workspace.CollisionCandidates.Count -
+            workspace.AcceptedCollisionGroups.Count;
+        renderResult.SuppressedGlyphCount = workspace.SuppressedGlyphCount;
+        renderResult.PendingTextureLabelCount =
+            workspace.IncompleteLabelGroups.Count;
         renderResult.PendingTextureGlyphCount = pendingTextureGlyphCount;
         int fadingLabelCount = 0;
         int fadingGlyphCount = 0;
-        List<VectorSymbolPlacement> drawablePlacements = [];
-        foreach (VectorTileDrawData drawTile in drawTiles)
+        foreach (VectorTileDrawData drawTile in workspace.DrawTiles)
         {
-            VectorSymbolPlacement[] placements = drawTile.Placements
-                .Where(placement =>
-                    placement.CollisionGroup < 0 ||
-                    collision.AcceptedGroups.Contains(
-                        placement.CollisionGroup))
-                .ToArray();
+            Span<VectorSymbolPlacement> placements = CollectionsMarshal.AsSpan(
+                workspace.Placements).Slice(
+                    drawTile.StartIndex,
+                    drawTile.Count);
             activeFade |= ApplyLabelTextureFade(
                 placements,
                 layer.FadeDuration,
                 ref fadingLabelCount,
                 ref fadingGlyphCount);
-            drawablePlacements.AddRange(placements.Select(placement =>
-                placement with
+            foreach (VectorSymbolPlacement placement in placements)
+            {
+                if (placement.CollisionGroup < 0 ||
+                    workspace.AcceptedCollisionGroups.Contains(
+                        placement.CollisionGroup))
                 {
-                    Opacity = placement.Opacity * drawTile.Opacity,
-                }));
+                    workspace.DrawablePlacements.Add(placement with
+                    {
+                        Opacity = placement.Opacity * drawTile.Opacity,
+                    });
+                }
+            }
         }
-        DrawVectorPlacements(
-            context,
-            drawablePlacements.ToArray(),
-            1,
+        PreparedVectorSymbolBatch[] batches = PrepareVectorBatches(
+            workspace.DrawablePlacements,
             ref renderResult);
-
-        MapControlEventSource.Log.VectorSymbolRenderBatch(
-            layer.Style,
-            renderResult.CandidateCount,
-            renderResult.DrawableCount,
-            renderResult.EvaluationFailureCount,
-            renderResult.UnavailableSpriteCount,
-            renderResult.TextureBatchCount,
-            renderResult.DrawCallCount);
-        MapControlEventSource.Log.VectorLabelRenderBatch(
-            layer.Style,
-            renderResult.GlyphCandidateCount,
-            renderResult.DrawableGlyphCount,
-            renderResult.EvaluationFailureCount,
-            renderResult.UnavailableGlyphCount,
-            renderResult.GlyphTextureBatchCount,
-            renderResult.GlyphDrawCallCount);
-        MapControlEventSource.Log.VectorLabelCollisionSummary(
-            layer.Style,
-            renderResult.CandidateLabelCount,
-            renderResult.CandidateLabelCount -
-                renderResult.SuppressedLabelCount,
-            renderResult.SuppressedLabelCount,
-            renderResult.SuppressedGlyphCount);
-        MapControlEventSource.Log.VectorLabelTextureReadinessSummary(
-            layer.Style,
-            renderResult.PendingTextureLabelCount,
-            renderResult.PendingTextureGlyphCount);
-        MapControlEventSource.Log.VectorLabelFadeSummary(
-            layer.Style,
-            fadingLabelCount,
-            fadingGlyphCount);
-        MapControlEventSource.Log.VectorLineSymbolPlacementSummary(
-            layer.Style,
-            renderResult.LineSymbolCandidateCount,
-            renderResult.LineSymbolProjectedCount,
-            renderResult.LineSymbolDrawnCount);
-        MapControlEventSource.Log.VectorLineDecorationSummary(
-            layer.Style,
-            2,
-            renderResult.PatternLineCandidateCount,
-            renderResult.PatternInstanceCount);
-        MapControlEventSource.Log.VectorAdvancedSymbolStyleSummary(
-            layer.Style,
-            renderResult.RotatedIconCount,
-            renderResult.TintedIconCount,
-            renderResult.FittedIconCount,
-            renderResult.SortedSymbolCount,
-            renderResult.CollisionOverrideSymbolCount);
+        DrawPreparedVectorBatches(context, batches, ref renderResult);
+        renderResult.FadingLabelCount = fadingLabelCount;
+        renderResult.FadingGlyphCount = fadingGlyphCount;
+        LogVectorRenderResult(layer.Style, renderResult);
+        if (!activeFade)
+        {
+            _vectorSymbolFrameCaches[layer.RuntimeId] =
+                new PreparedVectorSymbolFrame(
+                    workspace,
+                    cacheKey,
+                    batches,
+                    renderResult);
+        }
+        else
+        {
+            workspace.ReturnPreparedVectorBatches(batches);
+        }
         return activeFade;
     }
 
     private bool CollectVectorScene(
         LayerRenderSnapshot layer,
         MapScene scene,
-        List<VectorTileDrawData> drawTiles,
+        VectorSymbolRenderWorkspace workspace,
         ref VectorRenderResult renderResult,
         ref long nextCollisionGroup)
     {
@@ -345,7 +370,7 @@ internal sealed partial class MapRenderer
                     layer,
                     visibleTile,
                     tile,
-                    drawTiles,
+                    workspace,
                     ref renderResult,
                     ref nextCollisionGroup);
             }
@@ -356,7 +381,7 @@ internal sealed partial class MapRenderer
     private bool CollectCachedVectorLevels(
         LayerRenderSnapshot layer,
         IReadOnlySet<int> tileZooms,
-        List<VectorTileDrawData> drawTiles,
+        VectorSymbolRenderWorkspace workspace,
         ref VectorRenderResult renderResult,
         ref long nextCollisionGroup)
     {
@@ -382,7 +407,7 @@ internal sealed partial class MapRenderer
                     layer,
                     instance,
                     tile,
-                    drawTiles,
+                    workspace,
                     ref renderResult,
                     ref nextCollisionGroup);
             }
@@ -394,7 +419,7 @@ internal sealed partial class MapRenderer
         LayerRenderSnapshot layer,
         VisibleTile visibleTile,
         VectorTileCacheEntry tile,
-        List<VectorTileDrawData> drawTiles,
+        VectorSymbolRenderWorkspace workspace,
         ref VectorRenderResult renderResult,
         ref long nextCollisionGroup)
     {
@@ -403,8 +428,6 @@ internal sealed partial class MapRenderer
             _displayZoom,
             Volatile.Read(ref _textScaleFactor));
         VectorTileSymbol[] symbols = resolution.Symbols;
-        renderResult.CandidateCount +=
-            symbols.Count(symbol => symbol.Kind == VectorSymbolKind.Icon);
         renderResult.GlyphCandidateCount += resolution.ResolvedGlyphCount;
         renderResult.EvaluationFailureCount +=
             resolution.EvaluationFailureCount;
@@ -412,48 +435,69 @@ internal sealed partial class MapRenderer
             resolution.UnavailableSpriteCount;
         renderResult.UnavailableGlyphCount +=
             resolution.UnavailableGlyphCount;
-        renderResult.LineSymbolCandidateCount +=
-            symbols.Count(symbol => symbol.LinePoints is not null);
+        foreach (VectorTileSymbol symbol in symbols)
+        {
+            renderResult.CandidateCount +=
+                symbol.Kind == VectorSymbolKind.Icon ? 1 : 0;
+            renderResult.LineSymbolCandidateCount +=
+                symbol.LinePoints is not null ? 1 : 0;
+            renderResult.PatternLineCandidateCount +=
+                symbol.ContinuousLinePlacement ? 1 : 0;
+            renderResult.RotatedIconCount +=
+                symbol.Kind == VectorSymbolKind.Icon &&
+                Math.Abs(symbol.Rotation) > 1e-7 ? 1 : 0;
+            renderResult.TintedIconCount +=
+                symbol.Kind == VectorSymbolKind.Icon &&
+                symbol.IconPaint.IsTinted ? 1 : 0;
+            renderResult.FittedIconCount +=
+                symbol.Kind == VectorSymbolKind.Icon &&
+                symbol.TextFit != VectorIconTextFit.None ? 1 : 0;
+            renderResult.SortedSymbolCount +=
+                Math.Abs(symbol.SortKey) > 1e-7 ? 1 : 0;
+            renderResult.CollisionOverrideSymbolCount +=
+                symbol.AllowOverlap ||
+                symbol.IgnorePlacement ||
+                symbol.Optional ? 1 : 0;
+        }
         double opacity = ComputeLayerTileOpacity(
             Stopwatch.GetElapsedTime(tile.ReadyTimestamp),
             layer.FadeDuration,
             layer.Opacity);
-        VectorSymbolPlacement[] placements = ProjectVectorSymbols(
+        int placementStart = workspace.Placements.Count;
+        ProjectVectorSymbols(
             symbols,
             visibleTile,
             _viewportWidth,
             _viewportHeight,
             _displayHeading,
-            _displayPitch);
+            _displayPitch,
+            workspace.Placements);
+        int placementCount = workspace.Placements.Count - placementStart;
         renderResult.LineSymbolProjectedCount +=
-            placements.Count(placement => placement.IsLinePlacement);
-        renderResult.PatternLineCandidateCount +=
-            symbols.Count(symbol => symbol.ContinuousLinePlacement);
+            CountPlacements(
+                CollectionsMarshal.AsSpan(workspace.Placements).Slice(
+                    placementStart,
+                    placementCount),
+                static placement => placement.IsLinePlacement);
         renderResult.PatternInstanceCount +=
-            placements.Count(placement =>
-                placement.IsContinuousLinePlacement);
-        renderResult.RotatedIconCount += symbols.Count(symbol =>
-            symbol.Kind == VectorSymbolKind.Icon &&
-            Math.Abs(symbol.Rotation) > 1e-7);
-        renderResult.TintedIconCount += symbols.Count(symbol =>
-            symbol.Kind == VectorSymbolKind.Icon &&
-            symbol.IconPaint.IsTinted);
-        renderResult.FittedIconCount += symbols.Count(symbol =>
-            symbol.Kind == VectorSymbolKind.Icon &&
-            symbol.TextFit != VectorIconTextFit.None);
-        renderResult.SortedSymbolCount += symbols.Count(symbol =>
-            Math.Abs(symbol.SortKey) > 1e-7);
-        renderResult.CollisionOverrideSymbolCount += symbols.Count(symbol =>
-            symbol.AllowOverlap ||
-            symbol.IgnorePlacement ||
-            symbol.Optional);
-        if (placements.Length == 0)
+            CountPlacements(
+                CollectionsMarshal.AsSpan(workspace.Placements).Slice(
+                    placementStart,
+                    placementCount),
+                static placement => placement.IsContinuousLinePlacement);
+        if (placementCount == 0)
         {
             return opacity < layer.Opacity;
         }
 
-        AssignSymbolCollisionGroups(placements, ref nextCollisionGroup);
-        drawTiles.Add(new VectorTileDrawData(placements, opacity));
+        AssignSymbolCollisionGroups(
+            CollectionsMarshal.AsSpan(workspace.Placements).Slice(
+                placementStart,
+                placementCount),
+            ref nextCollisionGroup,
+            workspace);
+        workspace.DrawTiles.Add(
+            new VectorTileDrawData(placementStart, placementCount, opacity));
         return opacity < layer.Opacity;
     }
 
@@ -461,19 +505,36 @@ internal sealed partial class MapRenderer
         VectorSymbolPlacement[] placements,
         ref long nextCollisionGroup)
     {
-        HashSet<(long SymbolGroupId, int PlacementIndex)> splitGroups = [
-            .. placements
-                .Where(placement =>
-                    placement.SymbolGroupId >= 0 &&
-                    placement.Optional)
-                .Select(placement => (
-                    placement.SymbolGroupId,
-                    placement.PlacementIndex)),
-        ];
+        VectorSymbolRenderWorkspace workspace = new();
+        AssignSymbolCollisionGroups(
+            placements.AsSpan(),
+            ref nextCollisionGroup,
+            workspace);
+    }
+
+    private static void AssignSymbolCollisionGroups(
+        Span<VectorSymbolPlacement> placements,
+        ref long nextCollisionGroup,
+        VectorSymbolRenderWorkspace workspace)
+    {
+        HashSet<(long SymbolGroupId, int PlacementIndex)> splitGroups =
+            workspace.SplitCollisionGroups;
         Dictionary<(long SymbolGroupId, int PlacementIndex, int Component),
-            long> collisionGroups = [];
+            long> collisionGroups = workspace.CollisionGroups;
         Dictionary<(long SymbolGroupId, int PlacementIndex), long>
-            collisionFamilies = [];
+            collisionFamilies = workspace.CollisionFamilies;
+        splitGroups.Clear();
+        collisionGroups.Clear();
+        collisionFamilies.Clear();
+        foreach (VectorSymbolPlacement placement in placements)
+        {
+            if (placement.SymbolGroupId >= 0 && placement.Optional)
+            {
+                splitGroups.Add((
+                    placement.SymbolGroupId,
+                    placement.PlacementIndex));
+            }
+        }
         for (int index = 0; index < placements.Length; index++)
         {
             VectorSymbolPlacement placement = placements[index];
@@ -510,18 +571,202 @@ internal sealed partial class MapRenderer
         }
     }
 
-    private unsafe void DrawVectorPlacements(
-        IntPtr context,
-        VectorSymbolPlacement[] placements,
-        double opacity,
+    private PreparedVectorSymbolBatch[] PrepareVectorBatches(
+        IReadOnlyList<VectorSymbolPlacement> placements,
         ref VectorRenderResult renderResult)
     {
-        if (placements.Length == 0)
+        if (placements.Count == 0)
+        {
+            return [];
+        }
+
+        VectorSymbolRenderWorkspace workspace = _vectorSymbolWorkspace;
+        workspace.ResetBatches();
+        foreach (VectorSymbolPlacement placement in placements)
+        {
+            if (placement.CollisionGroup < 0 ||
+                placement.AllowOverlap ||
+                placement.IgnorePlacement)
+            {
+                workspace.OrderSensitiveLayers.Add(
+                    placement.StyleLayerOrder);
+            }
+        }
+
+        List<PreparedVectorSymbolBatch> prepared = [];
+        foreach (VectorSymbolPlacement placement in placements)
+        {
+            if (workspace.OrderSensitiveLayers.Contains(
+                    placement.StyleLayerOrder))
+            {
+                workspace.OrderSensitivePlacements.Add(placement);
+                continue;
+            }
+
+            PreparedVectorBatchKey key = new(
+                placement.StyleLayerOrder,
+                new VectorBatchKey(
+                    placement.TextureId,
+                    placement.Kind,
+                    placement.Paint,
+                    placement.IconPaint,
+                    placement.Opacity));
+            if (!workspace.WorkingBatchIndexes.TryGetValue(
+                    key,
+                    out int batchIndex))
+            {
+                batchIndex = workspace.WorkingBatches.Count;
+                workspace.WorkingBatchIndexes.Add(key, batchIndex);
+                workspace.WorkingBatches.Add(
+                    workspace.RentWorkingBatch(key));
+            }
+            workspace.WorkingBatches[batchIndex].Add(
+                CreateIconInstance(
+                    placement.Left,
+                    placement.Top,
+                    placement.Width,
+                    placement.Height,
+                    placement.Rotation),
+                placement.IsLinePlacement);
+        }
+
+        workspace.WorkingBatches.Sort(WorkingVectorSymbolBatchComparer.Instance);
+        foreach (WorkingVectorSymbolBatch batch in workspace.WorkingBatches)
+        {
+            prepared.Add(CreatePreparedVectorBatch(
+                batch,
+                prepared.Count,
+                ref renderResult));
+        }
+
+        if (workspace.OrderSensitivePlacements.Count != 0)
+        {
+            foreach (VectorSymbolBatch batch in BatchVectorSymbolsByTexture(
+                workspace.OrderSensitivePlacements))
+            {
+                prepared.Add(CreatePreparedVectorBatch(
+                    batch.StyleLayerOrder,
+                    batch.TextureId,
+                    batch.Kind,
+                    batch.Paint,
+                    batch.IconPaint,
+                    batch.Opacity,
+                    batch.Placements,
+                    prepared.Count,
+                    ref renderResult));
+            }
+        }
+        prepared.Sort(PreparedVectorSymbolBatchComparer.Instance);
+        return prepared.ToArray();
+    }
+
+    private PreparedVectorSymbolBatch CreatePreparedVectorBatch(
+        WorkingVectorSymbolBatch batch,
+        int drawSequence,
+        ref VectorRenderResult renderResult)
+    {
+        IconInstance[] instances =
+            _vectorSymbolWorkspace.RentInstanceBuffer(batch.Instances.Count);
+        CollectionsMarshal.AsSpan(batch.Instances).CopyTo(instances);
+        UpdatePreparedVectorBatchCounts(
+            batch.Key.Batch.Kind,
+            batch.Instances.Count,
+            batch.LinePlacementCount,
+            ref renderResult);
+        return new PreparedVectorSymbolBatch(
+            batch.Key.StyleLayerOrder,
+            batch.Key.Batch.TextureId,
+            batch.Key.Batch.Kind,
+            batch.Key.Batch.Paint,
+            batch.Key.Batch.IconPaint,
+            batch.Key.Batch.Opacity,
+            instances,
+            batch.Instances.Count,
+            drawSequence);
+    }
+
+    private PreparedVectorSymbolBatch CreatePreparedVectorBatch(
+        int styleLayerOrder,
+        long textureId,
+        VectorSymbolKind kind,
+        VectorTextPaint paint,
+        VectorIconPaint iconPaint,
+        double opacity,
+        IEnumerable<VectorSymbolPlacement> placements,
+        int drawSequence,
+        ref VectorRenderResult renderResult)
+    {
+        VectorSymbolPlacement[] placementArray = placements as VectorSymbolPlacement[] ??
+            placements.ToArray();
+        IconInstance[] instances =
+            _vectorSymbolWorkspace.RentInstanceBuffer(placementArray.Length);
+        int linePlacementCount = 0;
+        for (int index = 0; index < placementArray.Length; index++)
+        {
+            VectorSymbolPlacement placement = placementArray[index];
+            instances[index] = CreateIconInstance(
+                placement.Left,
+                placement.Top,
+                placement.Width,
+                placement.Height,
+                placement.Rotation);
+            if (placement.IsLinePlacement)
+            {
+                linePlacementCount++;
+            }
+        }
+        UpdatePreparedVectorBatchCounts(
+            kind,
+            placementArray.Length,
+            linePlacementCount,
+            ref renderResult);
+        return new PreparedVectorSymbolBatch(
+            styleLayerOrder,
+            textureId,
+            kind,
+            paint,
+            iconPaint,
+            opacity,
+            instances,
+            placementArray.Length,
+            drawSequence);
+    }
+
+    private static void UpdatePreparedVectorBatchCounts(
+        VectorSymbolKind kind,
+        int instanceCount,
+        int linePlacementCount,
+        ref VectorRenderResult renderResult)
+    {
+        renderResult.LineSymbolDrawnCount += linePlacementCount;
+        if (kind == VectorSymbolKind.Text)
+        {
+            renderResult.DrawableGlyphCount += instanceCount;
+            renderResult.GlyphTextureBatchCount++;
+            renderResult.GlyphDrawCallCount +=
+                (instanceCount + IconInstanceCapacity - 1) /
+                IconInstanceCapacity;
+        }
+        else
+        {
+            renderResult.DrawableCount += instanceCount;
+            renderResult.TextureBatchCount++;
+            renderResult.DrawCallCount +=
+                (instanceCount + IconInstanceCapacity - 1) /
+                IconInstanceCapacity;
+        }
+    }
+
+    private unsafe void DrawPreparedVectorBatches(
+        IntPtr context,
+        IReadOnlyList<PreparedVectorSymbolBatch> batches,
+        ref VectorRenderResult renderResult)
+    {
+        if (batches.Count == 0)
         {
             return;
         }
 
-        VectorSymbolBatch[] batches = BatchVectorSymbolsByTexture(placements);
         SetBlendState(context, _premultipliedBlendStatePointer);
         SetInputLayout(context, _iconInputLayoutPointer);
         SetVertexBuffers(
@@ -532,7 +777,7 @@ internal sealed partial class MapRenderer
             (uint)Marshal.SizeOf<IconInstance>());
         SetVertexShader(context, _iconVertexShaderPointer);
 
-        foreach (VectorSymbolBatch batch in batches)
+        foreach (PreparedVectorSymbolBatch batch in batches)
         {
             if (!_iconTextures.TryGetValue(
                     batch.TextureId,
@@ -547,7 +792,7 @@ internal sealed partial class MapRenderer
                     batch.Paint.Color,
                     batch.Paint.HaloColor,
                     new Vector4(
-                        (float)(opacity * batch.Opacity),
+                        (float)batch.Opacity,
                         (float)batch.Paint.HaloOffset,
                         (float)batch.Paint.HaloBlur,
                         0))
@@ -556,7 +801,7 @@ internal sealed partial class MapRenderer
                     batch.IconPaint.Color,
                     new Vector4(1, 0, 1, 0),
                     new Vector4(
-                        (float)(opacity * batch.Opacity),
+                        (float)batch.Opacity,
                         batch.IconPaint.IsTinted ? 1 : 0,
                         0,
                         0));
@@ -569,34 +814,11 @@ internal sealed partial class MapRenderer
                 texture.ViewPointer,
                 _samplerPointer,
                 _constantBufferPointer);
-            IconInstance[] instances = new IconInstance[batch.Placements.Length];
-            for (int index = 0; index < instances.Length; index++)
-            {
-                VectorSymbolPlacement placement = batch.Placements[index];
-                instances[index] = CreateIconInstance(
-                    placement.Left,
-                    placement.Top,
-                    placement.Width,
-                    placement.Height,
-                    placement.Rotation);
-            }
-            renderResult.LineSymbolDrawnCount += batch.Placements.Count(
-                placement => placement.IsLinePlacement);
-
-            if (batch.Kind == VectorSymbolKind.Text)
-            {
-                renderResult.DrawableGlyphCount += instances.Length;
-                renderResult.GlyphTextureBatchCount++;
-            }
-            else
-            {
-                renderResult.DrawableCount += instances.Length;
-                renderResult.TextureBatchCount++;
-            }
-            Span<IconInstance> remaining = instances;
+            ReadOnlySpan<IconInstance> remaining =
+                batch.Instances.AsSpan(0, batch.InstanceCount);
             while (!remaining.IsEmpty)
             {
-                Span<IconInstance> chunk = remaining[..Math.Min(
+                ReadOnlySpan<IconInstance> chunk = remaining[..Math.Min(
                     IconInstanceCapacity,
                     remaining.Length)];
                 fixed (IconInstance* instancePointer = chunk)
@@ -608,14 +830,6 @@ internal sealed partial class MapRenderer
                         (nuint)(chunk.Length * Marshal.SizeOf<IconInstance>()));
                 }
                 DrawIndexedInstanced(context, (uint)chunk.Length);
-                if (batch.Kind == VectorSymbolKind.Text)
-                {
-                    renderResult.GlyphDrawCallCount++;
-                }
-                else
-                {
-                    renderResult.DrawCallCount++;
-                }
                 remaining = remaining[chunk.Length..];
             }
         }
@@ -630,21 +844,67 @@ internal sealed partial class MapRenderer
         double pitch)
     {
         List<VectorSymbolPlacement> projected = new(symbols.Count);
+        ProjectVectorSymbols(
+            symbols,
+            tile,
+            viewportWidth,
+            viewportHeight,
+            heading,
+            pitch,
+            projected);
+        return projected.ToArray();
+    }
+
+    private static void ProjectVectorSymbols(
+        IReadOnlyList<VectorTileSymbol> symbols,
+        VisibleTile tile,
+        double viewportWidth,
+        double viewportHeight,
+        double heading,
+        double pitch,
+        List<VectorSymbolPlacement> projected)
+    {
         Dictionary<
             (long SymbolGroupId, int StyleLayerOrder, VectorTilePoint[] Path),
-            List<VectorTileSymbol>>
-            lineGroups = [];
+            List<VectorTileSymbol>>? lineGroups = null;
+        long projectedGroupId = long.MinValue;
+        double projectedX = double.NaN;
+        double projectedY = double.NaN;
+        double anchorX = 0;
+        double anchorY = 0;
         foreach (VectorTileSymbol symbol in symbols)
         {
             if (symbol.LinePoints is not { Length: >= 2 } linePoints)
             {
-                AddProjectedPointSymbol(
+                long groupId = symbol.SymbolGroupId >= 0
+                    ? symbol.SymbolGroupId
+                    : symbol.LabelId;
+                if (groupId != projectedGroupId ||
+                    symbol.X != projectedX ||
+                    symbol.Y != projectedY)
+                {
+                    ProjectVectorSymbolAnchor(
+                        symbol,
+                        tile,
+                        viewportWidth,
+                        viewportHeight,
+                        heading,
+                        pitch,
+                        out anchorX,
+                        out anchorY);
+                    projectedGroupId = groupId;
+                    projectedX = symbol.X;
+                    projectedY = symbol.Y;
+                }
+                AddProjectedPointSymbolAtAnchor(
                     symbol,
                     tile,
                     viewportWidth,
                     viewportHeight,
                     heading,
                     pitch,
+                    anchorX,
+                    anchorY,
                     projected);
                 continue;
             }
@@ -652,6 +912,7 @@ internal sealed partial class MapRenderer
             long symbolGroupId = symbol.SymbolGroupId >= 0
                 ? symbol.SymbolGroupId
                 : symbol.LabelId;
+            lineGroups ??= [];
             (long SymbolGroupId, int StyleLayerOrder, VectorTilePoint[] Path) key =
                 (symbolGroupId, symbol.StyleLayerOrder, linePoints);
             if (!lineGroups.TryGetValue(
@@ -662,6 +923,10 @@ internal sealed partial class MapRenderer
                 lineGroups.Add(key, group);
             }
             group.Add(symbol);
+        }
+        if (lineGroups is null)
+        {
+            return;
         }
         foreach (List<VectorTileSymbol> group in lineGroups.Values)
         {
@@ -674,7 +939,6 @@ internal sealed partial class MapRenderer
                 pitch,
                 projected);
         }
-        return projected.ToArray();
     }
 
     internal static HashSet<long> FindIncompleteLabelGroups(
@@ -683,6 +947,21 @@ internal sealed partial class MapRenderer
         out int pendingGlyphCount)
     {
         HashSet<long> incompleteGroups = [];
+        FindIncompleteLabelGroups(
+            placements,
+            isTextureAvailable,
+            incompleteGroups,
+            out pendingGlyphCount);
+        return incompleteGroups;
+    }
+
+    private static void FindIncompleteLabelGroups(
+        IEnumerable<VectorSymbolPlacement> placements,
+        Predicate<long> isTextureAvailable,
+        HashSet<long> incompleteGroups,
+        out int pendingGlyphCount)
+    {
+        incompleteGroups.Clear();
         pendingGlyphCount = 0;
         foreach (VectorSymbolPlacement placement in placements)
         {
@@ -697,17 +976,16 @@ internal sealed partial class MapRenderer
         }
         if (incompleteGroups.Count == 0)
         {
-            return incompleteGroups;
+            return;
         }
 
         pendingGlyphCount = placements.Count(placement =>
             placement.Kind == VectorSymbolKind.Text &&
             incompleteGroups.Contains(placement.CollisionGroup));
-        return incompleteGroups;
     }
 
     private bool ApplyLabelTextureFade(
-        VectorSymbolPlacement[] placements,
+        Span<VectorSymbolPlacement> placements,
         TimeSpan fadeDuration,
         ref int fadingLabelCount,
         ref int fadingGlyphCount)
@@ -772,27 +1050,41 @@ internal sealed partial class MapRenderer
         return activeFade;
     }
 
-    private static void AddProjectedPointSymbol(
+    private static void ProjectVectorSymbolAnchor(
         VectorTileSymbol symbol,
         VisibleTile tile,
         double viewportWidth,
         double viewportHeight,
         double heading,
         double pitch,
+        out double x,
+        out double y)
+    {
+        x = tile.Left + (symbol.X * tile.Size) - (viewportWidth / 2);
+        y = tile.Top + (symbol.Y * tile.Size) - (viewportHeight / 2);
+        MapCamera.TransformViewportOffset(
+            x,
+            y,
+            heading,
+            pitch,
+            viewportHeight,
+            out x,
+            out y);
+        x += viewportWidth / 2;
+        y += viewportHeight / 2;
+    }
+
+    private static void AddProjectedPointSymbolAtAnchor(
+        VectorTileSymbol symbol,
+        VisibleTile tile,
+        double viewportWidth,
+        double viewportHeight,
+        double heading,
+        double pitch,
+        double x,
+        double y,
         List<VectorSymbolPlacement> projected)
     {
-            double x = tile.Left + (symbol.X * tile.Size) - (viewportWidth / 2);
-            double y = tile.Top + (symbol.Y * tile.Size) - (viewportHeight / 2);
-            MapCamera.TransformViewportOffset(
-                x,
-                y,
-                heading,
-                pitch,
-                viewportHeight,
-                out x,
-                out y);
-            x += viewportWidth / 2;
-            y += viewportHeight / 2;
             double left = x - (symbol.Width / 2) + symbol.OffsetX;
             double top = y - (symbol.Height / 2) + symbol.OffsetY;
             VectorSymbolPlacement placement = new(
@@ -1290,18 +1582,49 @@ internal sealed partial class MapRenderer
     internal static LabelCollisionResult ResolveLabelCollisions(
         IEnumerable<VectorSymbolPlacement> placements)
     {
+        VectorSymbolRenderWorkspace workspace = new();
+        ResolveLabelCollisions(
+            placements,
+            incompleteGroups: null,
+            workspace);
+        return new LabelCollisionResult(
+            [.. workspace.AcceptedCollisionGroups],
+            workspace.CollisionCandidates.Count,
+            workspace.CollisionCandidates.Count -
+                workspace.AcceptedCollisionGroups.Count,
+            workspace.SuppressedGlyphCount);
+    }
+
+    private static void ResolveLabelCollisions(
+        IEnumerable<VectorSymbolPlacement> placements,
+        IReadOnlySet<long>? incompleteGroups,
+        VectorSymbolRenderWorkspace workspace)
+    {
         const double gridCellSize = 64;
-        Dictionary<long, LabelCollisionCandidate> candidates = [];
+        List<LabelCollisionCandidate> candidates =
+            workspace.CollisionCandidates;
+        Dictionary<long, int> candidateIndexes =
+            workspace.CollisionCandidateIndexes;
+        HashSet<long> acceptedGroups =
+            workspace.AcceptedCollisionGroups;
+        Dictionary<long, List<LabelCollisionRectangle>> occupiedCells =
+            workspace.OccupiedCollisionCells;
+        candidates.Clear();
+        candidateIndexes.Clear();
+        acceptedGroups.Clear();
+        workspace.ClearOccupiedCollisionCells();
+        workspace.SuppressedGlyphCount = 0;
         int sequence = 0;
         foreach (VectorSymbolPlacement placement in placements)
         {
-            if (placement.CollisionGroup < 0)
+            if (placement.CollisionGroup < 0 ||
+                (incompleteGroups?.Contains(placement.CollisionGroup) ?? false))
             {
                 continue;
             }
-            if (!candidates.TryGetValue(
+            if (!candidateIndexes.TryGetValue(
                     placement.CollisionGroup,
-                    out LabelCollisionCandidate? candidate))
+                    out int candidateIndex))
             {
                 GetVectorSymbolBounds(
                     placement,
@@ -1309,7 +1632,8 @@ internal sealed partial class MapRenderer
                     out double top,
                     out double right,
                     out double bottom);
-                candidate = new LabelCollisionCandidate(
+                candidateIndex = candidates.Count;
+                candidates.Add(new LabelCollisionCandidate(
                     placement.CollisionGroup,
                     placement.StyleLayerOrder,
                     placement.SortKey,
@@ -1320,8 +1644,10 @@ internal sealed partial class MapRenderer
                     left,
                     top,
                     right,
-                    bottom);
-                candidates.Add(placement.CollisionGroup, candidate);
+                    bottom));
+                candidateIndexes.Add(
+                    placement.CollisionGroup,
+                    candidateIndex);
             }
             else
             {
@@ -1331,11 +1657,14 @@ internal sealed partial class MapRenderer
                     out double top,
                     out double right,
                     out double bottom);
-                candidate.Left = Math.Min(candidate.Left, left);
-                candidate.Top = Math.Min(candidate.Top, top);
-                candidate.Right = Math.Max(candidate.Right, right);
-                candidate.Bottom = Math.Max(candidate.Bottom, bottom);
+                LabelCollisionCandidate existing = candidates[candidateIndex];
+                existing.Left = Math.Min(existing.Left, left);
+                existing.Top = Math.Min(existing.Top, top);
+                existing.Right = Math.Max(existing.Right, right);
+                existing.Bottom = Math.Max(existing.Bottom, bottom);
+                candidates[candidateIndex] = existing;
             }
+            LabelCollisionCandidate candidate = candidates[candidateIndex];
             candidate.SortKey = Math.Min(candidate.SortKey, placement.SortKey);
             candidate.CollisionPadding = Math.Max(
                 candidate.CollisionPadding,
@@ -1346,15 +1675,11 @@ internal sealed partial class MapRenderer
             {
                 candidate.GlyphCount++;
             }
+            candidates[candidateIndex] = candidate;
         }
 
-        HashSet<long> acceptedGroups = [];
-        Dictionary<long, List<LabelCollisionRectangle>> occupiedCells = [];
-        int suppressedGlyphCount = 0;
-        foreach (LabelCollisionCandidate candidate in candidates.Values
-            .OrderByDescending(candidate => candidate.StyleLayerOrder)
-            .ThenBy(candidate => candidate.SortKey)
-            .ThenBy(candidate => candidate.Sequence))
+        candidates.Sort(LabelCollisionCandidateComparer.Instance);
+        foreach (LabelCollisionCandidate candidate in candidates)
         {
             LabelCollisionRectangle bounds = new(
                 candidate.Left - candidate.CollisionPadding,
@@ -1387,7 +1712,7 @@ internal sealed partial class MapRenderer
             }
             if (overlaps && !candidate.AllowOverlap)
             {
-                suppressedGlyphCount += candidate.GlyphCount;
+                workspace.SuppressedGlyphCount += candidate.GlyphCount;
                 continue;
             }
 
@@ -1405,18 +1730,13 @@ internal sealed partial class MapRenderer
                             cell,
                             out List<LabelCollisionRectangle>? occupied))
                     {
-                        occupied = [];
+                        occupied = workspace.RentCollisionCell();
                         occupiedCells.Add(cell, occupied);
                     }
                     occupied.Add(bounds);
                 }
             }
         }
-        return new LabelCollisionResult(
-            acceptedGroups,
-            candidates.Count,
-            candidates.Count - acceptedGroups.Count,
-            suppressedGlyphCount);
     }
 
     internal static VectorSymbolBatch[] BatchVectorSymbolsByTexture(
@@ -1570,37 +1890,65 @@ internal sealed partial class MapRenderer
         long sceneVersion)
     {
         const int maximumPublishedFeatureCount = 8;
-        MapAccessibilityFeature[] uniqueFeatures = candidates
-            .GroupBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group
-                .OrderByDescending(candidate => candidate.StyleLayerOrder)
-                .ThenByDescending(candidate => candidate.Prominence)
-                .First())
-            .OrderByDescending(candidate => candidate.StyleLayerOrder)
-            .ThenByDescending(candidate => candidate.Prominence)
-            .ThenBy(candidate =>
-                Math.Abs(candidate.Longitude - scene.Longitude) +
-                Math.Abs(candidate.Latitude - scene.Latitude))
-            .ToArray();
-        MapAccessibilityFeature[] features = uniqueFeatures
-            .Take(maximumPublishedFeatureCount)
-            .ToArray();
-        string signature = string.Join(
-            '\u001F',
-            features.Select(feature => feature.Name));
-        if (string.Equals(
-                signature,
-                _lastAccessibilitySignature,
-                StringComparison.Ordinal))
+        Dictionary<string, MapAccessibilityFeature> unique =
+            _uniqueVectorAccessibilityFeatures;
+        unique.Clear();
+        foreach (MapAccessibilityFeature candidate in candidates)
+        {
+            if (!unique.TryGetValue(
+                    candidate.Name,
+                    out MapAccessibilityFeature? existing) ||
+                existing is null ||
+                candidate.StyleLayerOrder > existing.StyleLayerOrder ||
+                (candidate.StyleLayerOrder == existing.StyleLayerOrder &&
+                 candidate.Prominence > existing.Prominence))
+            {
+                unique[candidate.Name] = candidate;
+            }
+        }
+
+        List<MapAccessibilityFeature> ordered =
+            _orderedVectorAccessibilityFeatures;
+        ordered.Clear();
+        ordered.AddRange(unique.Values);
+        _accessibilityFeatureComparer.Longitude = scene.Longitude;
+        _accessibilityFeatureComparer.Latitude = scene.Latitude;
+        ordered.Sort(_accessibilityFeatureComparer);
+        int featureCount = Math.Min(
+            maximumPublishedFeatureCount,
+            ordered.Count);
+        bool changed = featureCount != _lastAccessibilityFeatureCount;
+        for (int index = 0; index < featureCount && !changed; index++)
+        {
+            changed = !string.Equals(
+                ordered[index].Name,
+                _lastAccessibilityFeatureNames[index],
+                StringComparison.Ordinal);
+        }
+        if (!changed)
         {
             return;
         }
 
-        _lastAccessibilitySignature = signature;
+        MapAccessibilityFeature[] features =
+            new MapAccessibilityFeature[featureCount];
+        for (int index = 0; index < featureCount; index++)
+        {
+            MapAccessibilityFeature feature = ordered[index];
+            features[index] = feature;
+            _lastAccessibilityFeatureNames[index] = feature.Name;
+        }
+        for (int index = featureCount;
+            index < _lastAccessibilityFeatureCount;
+            index++)
+        {
+            _lastAccessibilityFeatureNames[index] = null;
+        }
+        _lastAccessibilityFeatureCount = featureCount;
         MapControlEventSource.Log.AccessibilitySnapshotPublished(
             style,
             candidates.Count,
-            candidates.Count - uniqueFeatures.Length,
+            candidates.Count - unique.Count,
             features.Length,
             sceneVersion);
         AccessibilitySnapshotChanged?.Invoke(new MapAccessibilitySnapshot(
@@ -1622,7 +1970,12 @@ internal sealed partial class MapRenderer
             _ => _rasterTiles.ContainsKey(key),
         };
 
-    private void RemoveVectorTilesLocked(long sourceId)
+    private static bool IsVectorRenderKind(LayerRenderKind renderKind) =>
+        renderKind is LayerRenderKind.VectorPoints or LayerRenderKind.HybridTiles;
+
+    private void RemoveVectorTilesLocked(
+        long sourceId,
+        bool releaseGeometryCaches = false)
     {
         bool removed = false;
         foreach (RasterTileKey key in _vectorTiles.Keys
@@ -1632,7 +1985,7 @@ internal sealed partial class MapRenderer
             _vectorTiles.Remove(key);
             removed = true;
         }
-        if (removed)
+        if (removed || releaseGeometryCaches)
         {
             OnVectorTilesChanged(disposeGeometryCaches: true);
         }
@@ -1802,6 +2155,163 @@ internal sealed partial class MapRenderer
         internal void MarkUsed() => LastUsedTimestamp = Stopwatch.GetTimestamp();
     }
 
+    private static int GetFallbackZoomSignature(IReadOnlySet<int> zooms)
+    {
+        int hash = 17;
+        foreach (int zoom in zooms)
+        {
+            hash ^= HashCode.Combine(zoom);
+        }
+        return hash;
+    }
+
+    private VectorAccessibilityCacheKey CreateVectorAccessibilityCacheKey(
+        MapScene scene)
+    {
+        long sourceStateSignature = 17;
+        foreach (LayerRenderSnapshot layer in _layerRenderPlan)
+        {
+            if (layer.Kind is not (
+                    LayerRenderKind.VectorPoints or
+                    LayerRenderKind.HybridTiles) ||
+                !_rasterLayers.TryGetValue(
+                    layer.RuntimeId,
+                    out RasterLayerState? state))
+            {
+                continue;
+            }
+            sourceStateSignature = HashCode.Combine(
+                sourceStateSignature,
+                layer.RuntimeId,
+                state.SceneVersion,
+                GetFallbackZoomSignature(state.FallbackTileZooms));
+        }
+        return new(
+            _vectorTileVersion,
+            _layerRenderPlanVersion,
+            sourceStateSignature,
+            scene.TileZoom,
+            _displayLongitude,
+            _displayLatitude,
+            _displayZoom,
+            _displayHeading,
+            _displayPitch,
+            _viewportWidth,
+            _viewportHeight);
+    }
+
+    private static int CountPlacements(
+        ReadOnlySpan<VectorSymbolPlacement> placements,
+        Predicate<VectorSymbolPlacement> predicate)
+    {
+        int count = 0;
+        foreach (VectorSymbolPlacement placement in placements)
+        {
+            if (predicate(placement))
+            {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static void LogVectorRenderResult(
+        int style,
+        VectorRenderResult renderResult)
+    {
+        MapControlEventSource.Log.VectorSymbolRenderBatch(
+            style,
+            renderResult.CandidateCount,
+            renderResult.DrawableCount,
+            renderResult.EvaluationFailureCount,
+            renderResult.UnavailableSpriteCount,
+            renderResult.TextureBatchCount,
+            renderResult.DrawCallCount);
+        MapControlEventSource.Log.VectorLabelRenderBatch(
+            style,
+            renderResult.GlyphCandidateCount,
+            renderResult.DrawableGlyphCount,
+            renderResult.EvaluationFailureCount,
+            renderResult.UnavailableGlyphCount,
+            renderResult.GlyphTextureBatchCount,
+            renderResult.GlyphDrawCallCount);
+        MapControlEventSource.Log.VectorLabelCollisionSummary(
+            style,
+            renderResult.CandidateLabelCount,
+            renderResult.CandidateLabelCount -
+                renderResult.SuppressedLabelCount,
+            renderResult.SuppressedLabelCount,
+            renderResult.SuppressedGlyphCount);
+        MapControlEventSource.Log.VectorLabelTextureReadinessSummary(
+            style,
+            renderResult.PendingTextureLabelCount,
+            renderResult.PendingTextureGlyphCount);
+        MapControlEventSource.Log.VectorLabelFadeSummary(
+            style,
+            renderResult.FadingLabelCount,
+            renderResult.FadingGlyphCount);
+        MapControlEventSource.Log.VectorLineSymbolPlacementSummary(
+            style,
+            renderResult.LineSymbolCandidateCount,
+            renderResult.LineSymbolProjectedCount,
+            renderResult.LineSymbolDrawnCount);
+        MapControlEventSource.Log.VectorLineDecorationSummary(
+            style,
+            2,
+            renderResult.PatternLineCandidateCount,
+            renderResult.PatternInstanceCount);
+        MapControlEventSource.Log.VectorAdvancedSymbolStyleSummary(
+            style,
+            renderResult.RotatedIconCount,
+            renderResult.TintedIconCount,
+            renderResult.FittedIconCount,
+            renderResult.SortedSymbolCount,
+            renderResult.CollisionOverrideSymbolCount);
+    }
+
+    private void ClearVectorSymbolFrameCaches()
+    {
+        foreach (PreparedVectorSymbolFrame frame in
+            _vectorSymbolFrameCaches.Values)
+        {
+            frame.Dispose();
+        }
+        _vectorSymbolFrameCaches.Clear();
+    }
+
+    private void ReleaseVectorSymbolWorkingMemory()
+    {
+        ClearVectorSymbolFrameCaches();
+        VectorSymbolWorkingMemoryStats retained =
+            _vectorSymbolWorkspace.GetRetainedMemoryStats();
+        int accessibilityCapacity =
+            _vectorAccessibilityFeatures.Capacity +
+            _orderedVectorAccessibilityFeatures.Capacity +
+            _uniqueVectorAccessibilityFeatures.Count;
+        if (retained.InstanceBufferCount != 0 ||
+            retained.PlacementCapacity != 0 ||
+            retained.CollisionCapacity != 0 ||
+            accessibilityCapacity != 0)
+        {
+            MapControlEventSource.Log.VectorSymbolWorkingMemoryReleased(
+                retained.InstanceBufferCount,
+                retained.InstanceCapacity,
+                retained.PlacementCapacity,
+                retained.CollisionCapacity,
+                accessibilityCapacity);
+        }
+        _vectorSymbolWorkspace.ReleaseRetainedMemory();
+        _vectorAccessibilityFeatures.Clear();
+        _vectorAccessibilityFeatures.TrimExcess();
+        _uniqueVectorAccessibilityFeatures.Clear();
+        _uniqueVectorAccessibilityFeatures.TrimExcess();
+        _orderedVectorAccessibilityFeatures.Clear();
+        _orderedVectorAccessibilityFeatures.TrimExcess();
+        _lastVectorAccessibilityCacheKey = null;
+        _lastAccessibilityFeatureCount = 0;
+        Array.Clear(_lastAccessibilityFeatureNames);
+    }
+
     private struct VectorRenderResult
     {
         internal int CandidateCount;
@@ -1830,6 +2340,8 @@ internal sealed partial class MapRenderer
         internal int FittedIconCount;
         internal int SortedSymbolCount;
         internal int CollisionOverrideSymbolCount;
+        internal int FadingLabelCount;
+        internal int FadingGlyphCount;
     }
 
     internal readonly record struct LabelCollisionResult(
@@ -1838,7 +2350,7 @@ internal sealed partial class MapRenderer
         int SuppressedLabelCount,
         int SuppressedGlyphCount);
 
-    private sealed class LabelCollisionCandidate(
+    private struct LabelCollisionCandidate(
         long collisionGroup,
         int styleLayerOrder,
         double sortKey,
@@ -1864,6 +2376,27 @@ internal sealed partial class MapRenderer
         internal bool IgnorePlacement { get; set; } = true;
     }
 
+    private sealed class LabelCollisionCandidateComparer :
+        IComparer<LabelCollisionCandidate>
+    {
+        internal static LabelCollisionCandidateComparer Instance { get; } = new();
+
+        public int Compare(
+            LabelCollisionCandidate x,
+            LabelCollisionCandidate y)
+        {
+            int order = y.StyleLayerOrder.CompareTo(x.StyleLayerOrder);
+            if (order != 0)
+            {
+                return order;
+            }
+            order = x.SortKey.CompareTo(y.SortKey);
+            return order != 0
+                ? order
+                : x.Sequence.CompareTo(y.Sequence);
+        }
+    }
+
     private readonly record struct LabelCollisionRectangle(
         double Left,
         double Top,
@@ -1871,8 +2404,9 @@ internal sealed partial class MapRenderer
         double Bottom,
         long CollisionFamily);
 
-    private sealed record VectorTileDrawData(
-        VectorSymbolPlacement[] Placements,
+    private readonly record struct VectorTileDrawData(
+        int StartIndex,
+        int Count,
         double Opacity);
 
     private readonly record struct VectorBatchKey(
@@ -1881,6 +2415,399 @@ internal sealed partial class MapRenderer
         VectorTextPaint Paint,
         VectorIconPaint IconPaint,
         double Opacity);
+
+    private readonly record struct PreparedVectorBatchKey(
+        int StyleLayerOrder,
+        VectorBatchKey Batch);
+
+    private sealed record PreparedVectorSymbolBatch(
+        int StyleLayerOrder,
+        long TextureId,
+        VectorSymbolKind Kind,
+        VectorTextPaint Paint,
+        VectorIconPaint IconPaint,
+        double Opacity,
+        IconInstance[] Instances,
+        int InstanceCount,
+        int DrawSequence);
+
+    private sealed class PreparedVectorSymbolBatchComparer :
+        IComparer<PreparedVectorSymbolBatch>
+    {
+        internal static PreparedVectorSymbolBatchComparer Instance { get; } =
+            new();
+
+        public int Compare(
+            PreparedVectorSymbolBatch? x,
+            PreparedVectorSymbolBatch? y)
+        {
+            if (ReferenceEquals(x, y))
+            {
+                return 0;
+            }
+            if (x is null)
+            {
+                return -1;
+            }
+            if (y is null)
+            {
+                return 1;
+            }
+            int styleOrder = x.StyleLayerOrder.CompareTo(y.StyleLayerOrder);
+            return styleOrder != 0
+                ? styleOrder
+                : x.DrawSequence.CompareTo(y.DrawSequence);
+        }
+    }
+
+    private sealed class PreparedVectorSymbolFrame(
+        VectorSymbolRenderWorkspace workspace,
+        VectorSymbolRenderCacheKey key,
+        PreparedVectorSymbolBatch[] batches,
+        VectorRenderResult renderResult) : IDisposable
+    {
+        internal VectorSymbolRenderCacheKey Key { get; } = key;
+        internal PreparedVectorSymbolBatch[] Batches { get; } = batches;
+        internal VectorRenderResult RenderResult = renderResult;
+
+        public void Dispose() => workspace.ReturnPreparedVectorBatches(Batches);
+    }
+
+    private sealed class WorkingVectorSymbolBatch
+    {
+        internal PreparedVectorBatchKey Key { get; private set; }
+        internal List<IconInstance> Instances { get; } = [];
+        internal int LinePlacementCount { get; private set; }
+
+        internal void Add(IconInstance instance, bool isLinePlacement)
+        {
+            Instances.Add(instance);
+            LinePlacementCount += isLinePlacement ? 1 : 0;
+        }
+
+        internal void Reset(PreparedVectorBatchKey key)
+        {
+            Key = key;
+            Instances.Clear();
+            LinePlacementCount = 0;
+        }
+    }
+
+    private sealed class WorkingVectorSymbolBatchComparer :
+        IComparer<WorkingVectorSymbolBatch>
+    {
+        internal static WorkingVectorSymbolBatchComparer Instance { get; } =
+            new();
+
+        public int Compare(
+            WorkingVectorSymbolBatch? x,
+            WorkingVectorSymbolBatch? y)
+        {
+            if (ReferenceEquals(x, y))
+            {
+                return 0;
+            }
+            if (x is null)
+            {
+                return -1;
+            }
+            if (y is null)
+            {
+                return 1;
+            }
+            int order = x.Key.StyleLayerOrder.CompareTo(
+                y.Key.StyleLayerOrder);
+            return order != 0
+                ? order
+                : x.Key.Batch.Kind.CompareTo(y.Key.Batch.Kind);
+        }
+    }
+
+    private sealed class AccessibilityFeatureComparer :
+        IComparer<MapAccessibilityFeature>
+    {
+        internal double Longitude { get; set; }
+        internal double Latitude { get; set; }
+
+        public int Compare(
+            MapAccessibilityFeature? x,
+            MapAccessibilityFeature? y)
+        {
+            if (ReferenceEquals(x, y))
+            {
+                return 0;
+            }
+            if (x is null)
+            {
+                return -1;
+            }
+            if (y is null)
+            {
+                return 1;
+            }
+            int order = y.StyleLayerOrder.CompareTo(x.StyleLayerOrder);
+            if (order != 0)
+            {
+                return order;
+            }
+            order = y.Prominence.CompareTo(x.Prominence);
+            if (order != 0)
+            {
+                return order;
+            }
+            double xDistance =
+                Math.Abs(x.Longitude - Longitude) +
+                Math.Abs(x.Latitude - Latitude);
+            double yDistance =
+                Math.Abs(y.Longitude - Longitude) +
+                Math.Abs(y.Latitude - Latitude);
+            return xDistance.CompareTo(yDistance);
+        }
+    }
+
+    private readonly record struct VectorSymbolRenderCacheKey(
+        LayerRenderSnapshot Layer,
+        long VectorTileVersion,
+        long IconTextureVersion,
+        int DeviceEpoch,
+        long SceneVersion,
+        int FallbackZoomSignature,
+        double Longitude,
+        double Latitude,
+        double Zoom,
+        double Heading,
+        double Pitch,
+        double ViewportWidth,
+        double ViewportHeight,
+        double TextScaleFactor);
+
+    private readonly record struct VectorAccessibilityCacheKey(
+        long VectorTileVersion,
+        long LayerRenderPlanVersion,
+        long SourceStateSignature,
+        int TileZoom,
+        double Longitude,
+        double Latitude,
+        double Zoom,
+        double Heading,
+        double Pitch,
+        double ViewportWidth,
+        double ViewportHeight);
+
+    private readonly record struct VectorSymbolWorkingMemoryStats(
+        int InstanceBufferCount,
+        int InstanceCapacity,
+        int PlacementCapacity,
+        int CollisionCapacity);
+
+    private sealed class VectorSymbolRenderWorkspace
+    {
+        private readonly Stack<List<LabelCollisionRectangle>>
+            _availableCollisionCells = [];
+        private readonly Stack<WorkingVectorSymbolBatch>
+            _availableWorkingBatches = [];
+        private readonly Dictionary<int, Stack<IconInstance[]>>
+            _availableInstanceBuffers = [];
+
+        internal List<VectorTileDrawData> DrawTiles { get; } = [];
+        internal List<VectorSymbolPlacement> Placements { get; } = [];
+        internal List<VectorSymbolPlacement> DrawablePlacements { get; } = [];
+        internal HashSet<long> IncompleteLabelGroups { get; } = [];
+        internal HashSet<(long SymbolGroupId, int PlacementIndex)>
+            SplitCollisionGroups { get; } = [];
+        internal Dictionary<
+            (long SymbolGroupId, int PlacementIndex, int Component),
+            long> CollisionGroups { get; } = [];
+        internal Dictionary<(long SymbolGroupId, int PlacementIndex), long>
+            CollisionFamilies { get; } = [];
+        internal List<LabelCollisionCandidate> CollisionCandidates { get; } = [];
+        internal Dictionary<long, int> CollisionCandidateIndexes { get; } = [];
+        internal HashSet<long> AcceptedCollisionGroups { get; } = [];
+        internal Dictionary<long, List<LabelCollisionRectangle>>
+            OccupiedCollisionCells { get; } = [];
+        internal Dictionary<PreparedVectorBatchKey, int>
+            WorkingBatchIndexes { get; } = [];
+        internal List<WorkingVectorSymbolBatch> WorkingBatches { get; } = [];
+        internal HashSet<int> OrderSensitiveLayers { get; } = [];
+        internal List<VectorSymbolPlacement> OrderSensitivePlacements { get; } =
+            [];
+        internal int SuppressedGlyphCount { get; set; }
+
+        internal void ResetFrame()
+        {
+            DrawTiles.Clear();
+            Placements.Clear();
+            DrawablePlacements.Clear();
+            IncompleteLabelGroups.Clear();
+        }
+
+        internal void ResetBatches()
+        {
+            WorkingBatchIndexes.Clear();
+            foreach (WorkingVectorSymbolBatch batch in WorkingBatches)
+            {
+                _availableWorkingBatches.Push(batch);
+            }
+            WorkingBatches.Clear();
+            OrderSensitiveLayers.Clear();
+            OrderSensitivePlacements.Clear();
+        }
+
+        internal WorkingVectorSymbolBatch RentWorkingBatch(
+            PreparedVectorBatchKey key)
+        {
+            WorkingVectorSymbolBatch batch =
+                _availableWorkingBatches.TryPop(
+                    out WorkingVectorSymbolBatch? available)
+                    ? available
+                    : new WorkingVectorSymbolBatch();
+            batch.Reset(key);
+            return batch;
+        }
+
+        internal void ClearOccupiedCollisionCells()
+        {
+            foreach (List<LabelCollisionRectangle> cell in
+                OccupiedCollisionCells.Values)
+            {
+                cell.Clear();
+                _availableCollisionCells.Push(cell);
+            }
+            OccupiedCollisionCells.Clear();
+        }
+
+        internal List<LabelCollisionRectangle> RentCollisionCell() =>
+            _availableCollisionCells.TryPop(out List<LabelCollisionRectangle>? cell)
+                ? cell
+                : [];
+
+        internal IconInstance[] RentInstanceBuffer(int minimumLength)
+        {
+            int length = (int)BitOperations.RoundUpToPowerOf2(
+                checked((uint)Math.Max(minimumLength, 16)));
+            if (_availableInstanceBuffers.TryGetValue(
+                    length,
+                    out Stack<IconInstance[]>? buffers) &&
+                buffers.TryPop(out IconInstance[]? buffer))
+            {
+                return buffer;
+            }
+            return new IconInstance[length];
+        }
+
+        internal void ReturnPreparedVectorBatches(
+            IEnumerable<PreparedVectorSymbolBatch> batches)
+        {
+            foreach (PreparedVectorSymbolBatch batch in batches)
+            {
+                int length = batch.Instances.Length;
+                if (!_availableInstanceBuffers.TryGetValue(
+                        length,
+                        out Stack<IconInstance[]>? buffers))
+                {
+                    buffers = [];
+                    _availableInstanceBuffers.Add(length, buffers);
+                }
+                buffers.Push(batch.Instances);
+            }
+        }
+
+        internal VectorSymbolWorkingMemoryStats GetRetainedMemoryStats()
+        {
+            int instanceBufferCount = 0;
+            int instanceCapacity = 0;
+            foreach (Stack<IconInstance[]> buffers in
+                _availableInstanceBuffers.Values)
+            {
+                instanceBufferCount += buffers.Count;
+                foreach (IconInstance[] buffer in buffers)
+                {
+                    instanceCapacity += buffer.Length;
+                }
+            }
+            foreach (WorkingVectorSymbolBatch batch in WorkingBatches)
+            {
+                instanceCapacity += batch.Instances.Capacity;
+            }
+            foreach (WorkingVectorSymbolBatch batch in _availableWorkingBatches)
+            {
+                instanceCapacity += batch.Instances.Capacity;
+            }
+            return new VectorSymbolWorkingMemoryStats(
+                instanceBufferCount,
+                instanceCapacity,
+                Placements.Capacity +
+                    DrawablePlacements.Capacity +
+                    OrderSensitivePlacements.Capacity,
+                CollisionCandidates.Capacity +
+                    CollisionCandidateIndexes.Count +
+                    AcceptedCollisionGroups.Count +
+                    OccupiedCollisionCells.Count);
+        }
+
+        internal void ReleaseRetainedMemory()
+        {
+            foreach (WorkingVectorSymbolBatch batch in WorkingBatches)
+            {
+                batch.Instances.Clear();
+                batch.Instances.TrimExcess();
+            }
+            foreach (WorkingVectorSymbolBatch batch in _availableWorkingBatches)
+            {
+                batch.Instances.Clear();
+                batch.Instances.TrimExcess();
+            }
+            foreach (List<LabelCollisionRectangle> cell in
+                OccupiedCollisionCells.Values)
+            {
+                cell.Clear();
+                cell.TrimExcess();
+            }
+            foreach (List<LabelCollisionRectangle> cell in
+                _availableCollisionCells)
+            {
+                cell.Clear();
+                cell.TrimExcess();
+            }
+
+            DrawTiles.Clear();
+            DrawTiles.TrimExcess();
+            Placements.Clear();
+            Placements.TrimExcess();
+            DrawablePlacements.Clear();
+            DrawablePlacements.TrimExcess();
+            CollisionCandidates.Clear();
+            CollisionCandidates.TrimExcess();
+            OrderSensitivePlacements.Clear();
+            OrderSensitivePlacements.TrimExcess();
+            WorkingBatches.Clear();
+            WorkingBatches.TrimExcess();
+            _availableWorkingBatches.Clear();
+            _availableWorkingBatches.TrimExcess();
+            _availableCollisionCells.Clear();
+            _availableCollisionCells.TrimExcess();
+            _availableInstanceBuffers.Clear();
+            _availableInstanceBuffers.TrimExcess();
+            IncompleteLabelGroups.Clear();
+            IncompleteLabelGroups.TrimExcess();
+            SplitCollisionGroups.Clear();
+            SplitCollisionGroups.TrimExcess();
+            CollisionGroups.Clear();
+            CollisionGroups.TrimExcess();
+            CollisionFamilies.Clear();
+            CollisionFamilies.TrimExcess();
+            CollisionCandidateIndexes.Clear();
+            CollisionCandidateIndexes.TrimExcess();
+            AcceptedCollisionGroups.Clear();
+            AcceptedCollisionGroups.TrimExcess();
+            OccupiedCollisionCells.Clear();
+            OccupiedCollisionCells.TrimExcess();
+            WorkingBatchIndexes.Clear();
+            WorkingBatchIndexes.TrimExcess();
+            OrderSensitiveLayers.Clear();
+            OrderSensitiveLayers.TrimExcess();
+        }
+    }
 
     private readonly record struct QueuedVectorTile(
         VectorTileData Tile,

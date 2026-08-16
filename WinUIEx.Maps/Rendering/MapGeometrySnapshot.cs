@@ -66,13 +66,24 @@ internal readonly record struct MapScreenPoint(double X, double Y);
 /// <summary>
 /// Represents one solid or visible dashed screen-space stroke segment.
 /// </summary>
-internal readonly record struct MapScreenSegment(MapScreenPoint Start, MapScreenPoint End);
+internal readonly record struct MapScreenSegment(
+    MapScreenPoint Start,
+    MapScreenPoint End,
+    int PathIndex = 0);
+
+internal enum MapStrokeJoinPolicy
+{
+    SegmentsOnly,
+    Round,
+}
 
 /// <summary>
 /// Performs bounded screen-space fill expansion, dash generation, and geometry hit testing.
 /// </summary>
 internal static class MapGeometryOperations
 {
+    internal const MapStrokeJoinPolicy AutomaticStrokeJoinPolicy =
+        MapStrokeJoinPolicy.Round;
     internal const int MaximumGeneratedVertexCount =
         MapGeometryData.MaximumPointCount * 6;
     private const int MaximumGeneratedSegmentCount =
@@ -147,8 +158,11 @@ internal static class MapGeometryOperations
         }
 
         List<MapScreenSegment> segments = [];
-        foreach (MapGeometryContour contour in geometry.Contours)
+        for (int pathIndex = 0;
+            pathIndex < geometry.Contours.Length;
+            pathIndex++)
         {
+            MapGeometryContour contour = geometry.Contours[pathIndex];
             double pathDistance = 0;
             MapWorldPoint[] points = contour.Points;
             int segmentCount = closed && points.Length > 2
@@ -191,13 +205,15 @@ internal static class MapGeometryOperations
                             length,
                             clippedStart,
                             clippedEnd,
-                            thickness);
+                            thickness,
+                            pathIndex);
                     }
                     else if (segments.Count < MaximumGeneratedSegmentCount)
                     {
                         segments.Add(new MapScreenSegment(
                             Interpolate(start, end, clippedStart),
-                            Interpolate(start, end, clippedEnd)));
+                            Interpolate(start, end, clippedEnd),
+                            pathIndex));
                     }
                 }
                 pathDistance += length;
@@ -212,11 +228,60 @@ internal static class MapGeometryOperations
 
     internal static MapScreenPoint[] ExpandStrokeTriangles(
         IReadOnlyList<MapScreenSegment> segments,
-        double thickness)
+        double thickness) =>
+        ExpandStrokeTriangles(
+            segments,
+            thickness,
+            closed: false,
+            MapStrokeJoinPolicy.SegmentsOnly);
+
+    internal static MapScreenPoint[] BuildStrokeTriangles(
+        MapGeometryData geometry,
+        bool closed,
+        double thickness,
+        bool dashed,
+        MapGeometryCamera camera) =>
+        BuildStrokeTriangles(
+            geometry,
+            closed,
+            thickness,
+            dashed,
+            camera,
+            AutomaticStrokeJoinPolicy);
+
+    internal static MapScreenPoint[] BuildStrokeTriangles(
+        MapGeometryData geometry,
+        bool closed,
+        double thickness,
+        bool dashed,
+        MapGeometryCamera camera,
+        MapStrokeJoinPolicy joinPolicy)
+    {
+        MapScreenSegment[] segments = BuildStrokeSegments(
+            geometry,
+            closed,
+            thickness,
+            dashed,
+            camera);
+        return ExpandStrokeTriangles(segments, thickness, closed, joinPolicy);
+    }
+
+    internal static MapScreenPoint[] ExpandStrokeTriangles(
+        IReadOnlyList<MapScreenSegment> segments,
+        double thickness,
+        bool closed,
+        MapStrokeJoinPolicy joinPolicy)
     {
         int segmentCount = Math.Min(segments.Count, MaximumGeneratedSegmentCount);
-        MapScreenPoint[] triangles = new MapScreenPoint[segmentCount * 6];
+        int joinVertexCount = GetStrokeJoinVertexCount(
+            segments,
+            segmentCount,
+            closed,
+            joinPolicy);
+        MapScreenPoint[] triangles = new MapScreenPoint[
+            checked((segmentCount * 6) + joinVertexCount)];
         double halfThickness = thickness / 2;
+        int vertex = 0;
         for (int index = 0; index < segmentCount; index++)
         {
             MapScreenSegment segment = segments[index];
@@ -242,15 +307,267 @@ internal static class MapGeometryOperations
             MapScreenPoint fourth = new(
                 segment.Start.X - perpendicularX,
                 segment.Start.Y - perpendicularY);
-            int vertex = index * 6;
-            triangles[vertex] = first;
-            triangles[vertex + 1] = second;
-            triangles[vertex + 2] = third;
-            triangles[vertex + 3] = first;
-            triangles[vertex + 4] = third;
-            triangles[vertex + 5] = fourth;
+            AddTriangle(triangles, ref vertex, first, second, third);
+            AddTriangle(triangles, ref vertex, first, third, fourth);
+        }
+
+        if (joinPolicy == MapStrokeJoinPolicy.SegmentsOnly)
+        {
+            return triangles;
+        }
+
+        for (int index = 1; index < segmentCount; index++)
+        {
+            MapScreenSegment previous = segments[index - 1];
+            MapScreenSegment next = segments[index];
+            if (GetStrokeJoinVertexCount(previous, next) > 0)
+            {
+                AddStrokeJoin(
+                    triangles,
+                    ref vertex,
+                    previous,
+                    next,
+                    halfThickness);
+            }
+        }
+
+        if (closed)
+        {
+            int first = 0;
+            while (first < segmentCount)
+            {
+                int last = first;
+                while (last + 1 < segmentCount &&
+                    segments[last + 1].PathIndex == segments[first].PathIndex)
+                {
+                    last++;
+                }
+                if (last > first &&
+                    GetStrokeJoinVertexCount(
+                        segments[last],
+                        segments[first]) > 0)
+                {
+                    AddStrokeJoin(
+                        triangles,
+                        ref vertex,
+                        segments[last],
+                        segments[first],
+                        halfThickness);
+                }
+                first = last + 1;
+            }
         }
         return triangles;
+    }
+
+    private static int GetStrokeJoinVertexCount(
+        IReadOnlyList<MapScreenSegment> segments,
+        int segmentCount,
+        bool closed,
+        MapStrokeJoinPolicy joinPolicy)
+    {
+        if (joinPolicy == MapStrokeJoinPolicy.SegmentsOnly)
+        {
+            return 0;
+        }
+
+        int count = 0;
+        for (int index = 1; index < segmentCount; index++)
+        {
+            count += GetStrokeJoinVertexCount(
+                segments[index - 1],
+                segments[index]);
+        }
+        if (!closed)
+        {
+            return count;
+        }
+
+        int first = 0;
+        while (first < segmentCount)
+        {
+            int last = first;
+            while (last + 1 < segmentCount &&
+                segments[last + 1].PathIndex == segments[first].PathIndex)
+            {
+                last++;
+            }
+            if (last > first)
+            {
+                count += GetStrokeJoinVertexCount(
+                    segments[last],
+                    segments[first]);
+            }
+            first = last + 1;
+        }
+        return count;
+    }
+
+    private static int GetStrokeJoinVertexCount(
+        MapScreenSegment previous,
+        MapScreenSegment next)
+    {
+        if (previous.PathIndex != next.PathIndex ||
+            Math.Abs(previous.End.X - next.Start.X) > 1e-7 ||
+            Math.Abs(previous.End.Y - next.Start.Y) > 1e-7 ||
+            !TryGetUnitDirection(previous.Start, previous.End, out MapScreenPoint incoming) ||
+            !TryGetUnitDirection(next.Start, next.End, out MapScreenPoint outgoing))
+        {
+            return 0;
+        }
+
+        double cross =
+            (incoming.X * outgoing.Y) - (incoming.Y * outgoing.X);
+        double dot =
+            (incoming.X * outgoing.X) + (incoming.Y * outgoing.Y);
+        if (Math.Abs(cross) <= 1e-7 && dot >= 0)
+        {
+            return 0;
+        }
+        if (Math.Abs(cross) <= 1e-7)
+        {
+            return 24;
+        }
+
+        return GetRoundJoinSegmentCount(dot) * 3;
+    }
+
+    private static void AddStrokeJoin(
+        MapScreenPoint[] triangles,
+        ref int vertex,
+        MapScreenSegment previous,
+        MapScreenSegment next,
+        double radius)
+    {
+        AddRoundJoin(
+            triangles,
+            ref vertex,
+            previous.Start,
+            previous.End,
+            next.End,
+            radius);
+    }
+
+    private static void AddRoundJoin(
+        MapScreenPoint[] triangles,
+        ref int vertex,
+        MapScreenPoint previous,
+        MapScreenPoint join,
+        MapScreenPoint next,
+        double radius)
+    {
+        if (!TryGetUnitDirection(previous, join, out MapScreenPoint incoming) ||
+            !TryGetUnitDirection(join, next, out MapScreenPoint outgoing))
+        {
+            return;
+        }
+
+        double cross =
+            (incoming.X * outgoing.Y) - (incoming.Y * outgoing.X);
+        double dot =
+            (incoming.X * outgoing.X) + (incoming.Y * outgoing.Y);
+        if (Math.Abs(cross) <= 1e-7)
+        {
+            AddCircle(triangles, ref vertex, join, radius);
+            return;
+        }
+
+        MapScreenPoint incomingNormal = new(-incoming.Y, incoming.X);
+        MapScreenPoint startOffset;
+        if (cross > 0)
+        {
+            startOffset = new MapScreenPoint(
+                -incomingNormal.X,
+                -incomingNormal.Y);
+        }
+        else
+        {
+            startOffset = incomingNormal;
+        }
+
+        int segmentCount = GetRoundJoinSegmentCount(dot);
+        double sweep = Math.CopySign(
+            Math.Atan2(Math.Abs(cross), Math.Clamp(dot, -1, 1)),
+            cross);
+        (double stepSin, double stepCos) =
+            Math.SinCos(sweep / segmentCount);
+        MapScreenPoint offset = startOffset;
+        MapScreenPoint previousArc = new(
+            join.X + (offset.X * radius),
+            join.Y + (offset.Y * radius));
+        for (int index = 1; index <= segmentCount; index++)
+        {
+            offset = new MapScreenPoint(
+                (offset.X * stepCos) - (offset.Y * stepSin),
+                (offset.X * stepSin) + (offset.Y * stepCos));
+            MapScreenPoint current = new(
+                join.X + (offset.X * radius),
+                join.Y + (offset.Y * radius));
+            AddTriangle(triangles, ref vertex, join, previousArc, current);
+            previousArc = current;
+        }
+    }
+
+    private static int GetRoundJoinSegmentCount(double dot)
+    {
+        const double cosine45Degrees = 0.7071067811865476;
+        if (dot >= cosine45Degrees)
+        {
+            return 1;
+        }
+        if (dot >= 0)
+        {
+            return 2;
+        }
+        return dot >= -cosine45Degrees ? 3 : 4;
+    }
+
+    private static void AddCircle(
+        MapScreenPoint[] triangles,
+        ref int vertex,
+        MapScreenPoint center,
+        double radius)
+    {
+        const int segmentCount = 8;
+        MapScreenPoint previous = new(center.X + radius, center.Y);
+        for (int index = 1; index <= segmentCount; index++)
+        {
+            double angle = index * Math.Tau / segmentCount;
+            MapScreenPoint current = new(
+                center.X + (Math.Cos(angle) * radius),
+                center.Y + (Math.Sin(angle) * radius));
+            AddTriangle(triangles, ref vertex, center, previous, current);
+            previous = current;
+        }
+    }
+
+    private static bool TryGetUnitDirection(
+        MapScreenPoint start,
+        MapScreenPoint end,
+        out MapScreenPoint direction)
+    {
+        double deltaX = end.X - start.X;
+        double deltaY = end.Y - start.Y;
+        double length = Math.Sqrt((deltaX * deltaX) + (deltaY * deltaY));
+        if (!double.IsFinite(length) || length <= 1e-7)
+        {
+            direction = default;
+            return false;
+        }
+        direction = new MapScreenPoint(deltaX / length, deltaY / length);
+        return true;
+    }
+
+    private static void AddTriangle(
+        MapScreenPoint[] triangles,
+        ref int vertex,
+        MapScreenPoint first,
+        MapScreenPoint second,
+        MapScreenPoint third)
+    {
+        triangles[vertex++] = first;
+        triangles[vertex++] = second;
+        triangles[vertex++] = third;
     }
 
     internal static bool Contains(
@@ -271,19 +588,24 @@ internal static class MapGeometryOperations
         }
 
         MapScreenPoint point = new(viewportX, viewportY);
-        foreach (MapScreenSegment segment in BuildStrokeSegments(
+        MapScreenSegment[] segments = BuildStrokeSegments(
             snapshot.Geometry,
             snapshot.IsPolygon,
             snapshot.StrokeThickness,
             snapshot.StrokeDashed,
-            camera))
+            camera);
+        foreach (MapScreenSegment segment in segments)
         {
             if (StrokeContainsPoint(point, segment, snapshot.StrokeThickness / 2))
             {
-                return true;
+               return true;
             }
         }
-        return false;
+        return StrokeJoinContainsPoint(
+            point,
+            segments,
+            snapshot.IsPolygon,
+            snapshot.StrokeThickness / 2);
     }
 
     internal static bool TryHitTestAbove(
@@ -429,7 +751,8 @@ internal static class MapGeometryOperations
         double length,
         double clippedStart,
         double clippedEnd,
-        double thickness)
+        double thickness,
+        int pathIndex)
     {
         double dashLength = Math.Max(4, thickness * 3);
         double gapLength = Math.Max(2, thickness * 2);
@@ -452,7 +775,8 @@ internal static class MapGeometryOperations
             {
                 segments.Add(new MapScreenSegment(
                     Interpolate(start, end, (segmentStart - pathDistance) / length),
-                    Interpolate(start, end, (segmentEnd - pathDistance) / length)));
+                    Interpolate(start, end, (segmentEnd - pathDistance) / length),
+                    pathIndex));
             }
             dashStart += period;
         }
@@ -540,6 +864,62 @@ internal static class MapGeometryOperations
             ((point.X - segment.Start.X) * deltaY) -
             ((point.Y - segment.Start.Y) * deltaX);
         return Math.Abs(cross) <= halfThickness * Math.Sqrt(lengthSquared);
+    }
+
+    private static bool StrokeJoinContainsPoint(
+        MapScreenPoint point,
+        IReadOnlyList<MapScreenSegment> segments,
+        bool closed,
+        double radius)
+    {
+        int segmentCount = Math.Min(segments.Count, MaximumGeneratedSegmentCount);
+        for (int index = 1; index < segmentCount; index++)
+        {
+            MapScreenSegment previous = segments[index - 1];
+            MapScreenSegment next = segments[index];
+            if (GetStrokeJoinVertexCount(
+                    previous,
+                    next) > 0 &&
+                PointInCircle(point, previous.End, radius))
+            {
+                return true;
+            }
+        }
+        if (!closed)
+        {
+            return false;
+        }
+
+        int first = 0;
+        while (first < segmentCount)
+        {
+            int last = first;
+            while (last + 1 < segmentCount &&
+                segments[last + 1].PathIndex == segments[first].PathIndex)
+            {
+                last++;
+            }
+            if (last > first &&
+                GetStrokeJoinVertexCount(
+                    segments[last],
+                    segments[first]) > 0 &&
+                PointInCircle(point, segments[last].End, radius))
+            {
+                return true;
+            }
+            first = last + 1;
+        }
+        return false;
+    }
+
+    private static bool PointInCircle(
+        MapScreenPoint point,
+        MapScreenPoint center,
+        double radius)
+    {
+        double deltaX = point.X - center.X;
+        double deltaY = point.Y - center.Y;
+        return (deltaX * deltaX) + (deltaY * deltaY) <= radius * radius;
     }
 
     private static bool PointOnSegment(

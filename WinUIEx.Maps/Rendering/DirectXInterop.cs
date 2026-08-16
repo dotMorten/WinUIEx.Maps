@@ -344,6 +344,65 @@ internal static class DirectXInterop
     }
 
     /// <summary>
+    /// Creates a reusable event query used to wait for prior GPU commands to complete.
+    /// </summary>
+    internal static unsafe IntPtr CreateEventQuery(IntPtr devicePointer)
+    {
+        D3D11_QUERY_DESC description = new()
+        {
+            Query = D3D11_QUERY.D3D11_QUERY_EVENT,
+        };
+        IntPtr queryPointer = IntPtr.Zero;
+        IntPtr* vtable = *(IntPtr**)devicePointer;
+        var createQuery = (delegate* unmanaged[Stdcall]<
+            IntPtr,
+            D3D11_QUERY_DESC*,
+            IntPtr*,
+            int>)vtable[24];
+        ThrowIfFailed(
+            new(createQuery(devicePointer, &description, &queryPointer)),
+            "Failed to create the map GPU completion query.");
+        return queryPointer;
+    }
+
+    /// <summary>
+    /// Waits until every command submitted before the event query has completed on the GPU.
+    /// </summary>
+    internal static unsafe void WaitForGpu(IntPtr contextPointer, IntPtr queryPointer)
+    {
+        IntPtr* vtable = *(IntPtr**)contextPointer;
+        ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, void>)vtable[28])(
+            contextPointer,
+            queryPointer);
+
+        int completed = 0;
+        var getData = (delegate* unmanaged[Stdcall]<
+            IntPtr,
+            IntPtr,
+            int*,
+            uint,
+            uint,
+            int>)vtable[29];
+        while (true)
+        {
+            int result = getData(
+                contextPointer,
+                queryPointer,
+                &completed,
+                sizeof(int),
+                0);
+            if (result == 0)
+            {
+                return;
+            }
+            ThrowIfFailed(
+                new(result),
+                "Failed while waiting for map GPU completion.");
+            Thread.SpinWait(1);
+        }
+    }
+
+    /// <summary>
     /// Invokes the selected D3D11 device view factory and wraps its returned COM interface.
     /// </summary>
     internal static unsafe IntPtr CreateView(

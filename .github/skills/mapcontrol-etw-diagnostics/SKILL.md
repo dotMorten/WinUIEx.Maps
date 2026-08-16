@@ -126,7 +126,7 @@ payload inspection is best in PerfView's Events view.
 | 58 | `VectorPolygonRenderBatch` | Verbose/Tiles+VectorTiles | style-resolved polygon candidates, visible tessellated triangles, evaluation failures, distant fallback suppression, and draw calls |
 | 59 | `VectorGeometryFallbackOpacitySummary` | Verbose/Tiles+VectorTiles | retained line or polygon opacity during replacement; polygon fallback coverage remains until replacements are opaque, while line fallback also fades with replacement readiness |
 | 60 | `VectorLineSymbolPlacementSummary` | Verbose/Icons+VectorTiles | line-following icon and glyph components resolved from tile geometry, successfully projected along screen-space paths, and drawn after collision suppression |
-| 61 | `VectorGeometryFrameCacheSummary` | Verbose/Tiles+VectorTiles | GPU line or polygon frame geometry built or reused for translation-only panning, with retained vertex and native-buffer byte counts |
+| 61 | `VectorGeometryFrameCacheSummary` | Verbose/Tiles+VectorTiles | GPU line or polygon frame geometry built or reused for flat or projective panning, with retained vertex and native-buffer byte counts |
 | 62 | `VectorGeometryDeferredRebuildSummary` | Verbose/Tiles+VectorTiles | whole-scene line or polygon rebuild deferred during active panning while newly available tiles are rendered incrementally, with pending tile count and translated cache offset |
 | 63 | `VectorGeometryPreparationSummary` | Informational/Tiles+VectorTiles | background line/polygon vertex preparation accepted or discarded, separating CPU preparation from immutable GPU-buffer creation |
 | 64 | `VectorLabelTextureReadinessSummary` | Verbose/Icons+VectorTiles | whole labels and glyphs withheld until every texture required by each label is available |
@@ -141,6 +141,7 @@ payload inspection is best in PerfView's Events view.
 | 73 | `AccessibilityAnnouncementDecision` | Info/Accessibility | feature count and whether a settled semantic update raised or suppressed a live-region announcement |
 | 74 | `AnimationsEnabledChanged` | Info/Camera+Accessibility | effective system animation preference changed, suppressing camera interpolation, touch inertia, focus transitions, and layer fades when disabled |
 | 75 | `VectorStyleCompatibilityIssue` | Info/Tiles+VectorTiles | aggregate unsupported Style Spec layer type or sanitized layout/paint property and occurrence count; custom styles use `style = -1` |
+| 76 | `VectorSymbolWorkingMemoryReleased` | Info/Icons+VectorTiles | renderer-owned symbol instance, placement, collision, and accessibility working capacities released when map resources become dormant |
 
 ## Reproduce and interpret
 
@@ -162,7 +163,7 @@ payload inspection is best in PerfView's Events view.
   hidden Azure `TileLayer`, so it should produce no Azure tile/attribution work while custom
   IDs continue.
 - **Vector tiles:** select Tiles+VectorTiles (`0x108`) and correlate IDs 11–17, 43–46,
-  and 49–69. ID 49 confirms that MVT responses reached generation-checked CPU cache commit,
+  49–69, and 76. ID 49 confirms that MVT responses reached generation-checked CPU cache commit,
   ID 50 distinguishes asset acquisition from tile decode and reports explicitly unsupported
   style-layer counts. The `style` payload is `-1` for a custom vector source and a
   `MapStyle` value for Azure. ID 52 reports glyph-range latency, ID 54 reports definitive unavailable
@@ -172,7 +173,7 @@ payload inspection is best in PerfView's Events view.
   fallback suppression during zoom transitions, ID 58 summarizes polygon fills, and ID 59
   quantifies polygon fallback coverage and line crossfading, ID 60 reports line-following
   symbol placement, and ID 61
-  distinguishes geometry rebuilds from translation-only frame reuse, while ID 62 confirms
+  distinguishes geometry rebuilds from flat or pitched projective frame reuse, while ID 62 confirms
   that tile arrivals were handled incrementally instead of forcing an in-motion rebuild, and ID 63
   separates background geometry preparation from immutable GPU-buffer creation. ID 64 confirms
   labels are withheld as complete groups while glyph textures are still uploading, ID 65
@@ -181,7 +182,9 @@ payload inspection is best in PerfView's Events view.
   reports patterned polygon and explicit outline geometry, and ID 68 reports advanced line
   styling usage, and ID 69 reports advanced symbol styling and collision-control usage. None exposes source-layer names, properties, sprite names, URLs, or service
   content. ID 75 identifies unsupported Style Spec construct categories and counts without
-  exposing layer IDs, source-layer names, or property values. Its `issueKind` is `1` for
+  exposing layer IDs, source-layer names, or property values. ID 76 confirms renderer-owned
+  managed symbol working capacities were dropped during dormant-resource release. The
+  compatibility event's `issueKind` is `1` for
   layer types, `2` for layout properties, and `3` for paint properties.
 - **Cache/dedup:** inspect ID 18 over time. A high `pendingDedupCount` is expected while a
   wave is active. Repeated misses for the same stable scene or evictions that cannot return

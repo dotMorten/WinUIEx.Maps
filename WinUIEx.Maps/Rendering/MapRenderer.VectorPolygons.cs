@@ -31,25 +31,27 @@ internal sealed partial class MapRenderer
         }
 
         ulong fallbackMask = GetFallbackZoomMask(state);
-        if (_displayPitch == 0 &&
-            _vectorPolygonFrameCache is { } cached &&
+        if (_vectorPolygonFrameCache is { } cached &&
             cached.MatchesConfiguration(
                 layer,
                 state,
                 fallbackMask,
                 _displayZoom,
                 _displayHeading,
+                _displayPitch,
                 _viewportWidth,
                 _viewportHeight) &&
-            TryGetVectorPanOffset(
+            TryGetVectorPanTransform(
                 cached.Longitude,
                 cached.Latitude,
                 _displayLongitude,
                 _displayLatitude,
                 _displayZoom,
                 _displayHeading,
+                _displayPitch,
                 _viewportWidth,
                 _viewportHeight,
+                out MapViewportProjectiveTransform panTransform,
                 out double offsetX,
                 out double offsetY) &&
             Math.Abs(offsetX) <= VectorGeometryCachePanLimit &&
@@ -93,8 +95,7 @@ internal sealed partial class MapRenderer
                             cached,
                             pendingBatches,
                             pendingOrder,
-                            offsetX,
-                            offsetY,
+                            panTransform,
                             ref pendingResult);
                         result.Add(pendingResult);
                     }
@@ -107,8 +108,7 @@ internal sealed partial class MapRenderer
                                 batch.Buffer,
                                 batch.Key.Color,
                                 premultiplied: true,
-                                offsetX,
-                                offsetY);
+                                panTransform);
                         }
                     }
                     TraceVectorPolygonResult(layer, result);
@@ -144,7 +144,7 @@ internal sealed partial class MapRenderer
                 _displayZoom,
                 _viewportWidth,
                 _viewportHeight,
-                _displayPitch == 0 ? VectorGeometryCachePadding : 0,
+                VectorGeometryCachePadding,
                 batches,
                 batchOrder,
                 ref result);
@@ -208,7 +208,6 @@ internal sealed partial class MapRenderer
             long retainedByteSize = 0;
             bool shouldRetain = !activeFade &&
                 patternBatches.Count == 0 &&
-                _displayPitch == 0 &&
                 !_zoomAnimation.IsActive &&
                 !_headingAnimation.IsActive &&
                 !_pitchAnimation.IsActive;
@@ -230,6 +229,7 @@ internal sealed partial class MapRenderer
                     _displayLatitude,
                     _displayZoom,
                     _displayHeading,
+                    _displayPitch,
                     _viewportWidth,
                     _viewportHeight,
                     cachedBatches,
@@ -361,8 +361,7 @@ internal sealed partial class MapRenderer
         VectorPolygonFrameCache cached,
         IReadOnlyDictionary<VectorPolygonBatchKey, PooledGeometryBuffer> pending,
         IReadOnlyList<VectorPolygonBatchKey> pendingOrder,
-        double offsetX,
-        double offsetY,
+        MapViewportProjectiveTransform panTransform,
         ref VectorPolygonRenderResult pendingResult)
     {
         int cachedIndex = 0;
@@ -383,8 +382,7 @@ internal sealed partial class MapRenderer
                     batch.Buffer,
                     batch.Key.Color,
                     premultiplied: true,
-                    offsetX,
-                    offsetY);
+                    panTransform);
             }
             else
             {
@@ -623,7 +621,7 @@ internal sealed partial class MapRenderer
                     _viewportHeight,
                     _displayHeading,
                     _displayPitch,
-                    _displayPitch == 0 ? VectorGeometryCachePadding : 0,
+                    VectorGeometryCachePadding,
                     polygon.Style.PatternWidth,
                     polygon.Style.PatternHeight,
                     polygon.Style.TranslateX,
@@ -649,7 +647,7 @@ internal sealed partial class MapRenderer
                     _viewportHeight,
                     _displayHeading,
                     _displayPitch,
-                    _displayPitch == 0 ? VectorGeometryCachePadding : 0,
+                    VectorGeometryCachePadding,
                     polygon.Style.TranslateX,
                     polygon.Style.TranslateY,
                     polygon.Style.TranslateAnchor,
@@ -710,7 +708,7 @@ internal sealed partial class MapRenderer
             _viewportHeight,
             _displayHeading,
             _displayPitch,
-            _displayPitch == 0 ? VectorGeometryCachePadding : 0,
+            VectorGeometryCachePadding,
             outlineStyle,
             polygon.Style.TranslateX,
             polygon.Style.TranslateY,
@@ -1367,6 +1365,7 @@ internal sealed partial class MapRenderer
         double latitude,
         double zoom,
         double heading,
+        double pitch,
         double viewportWidth,
         double viewportHeight,
         VectorPolygonCachedBatch[] batches,
@@ -1402,6 +1401,7 @@ internal sealed partial class MapRenderer
             ulong currentFallbackMask,
             double currentZoom,
             double currentHeading,
+            double currentPitch,
             double currentViewportWidth,
             double currentViewportHeight) =>
             layer.RuntimeId == currentLayer.RuntimeId &&
@@ -1411,6 +1411,7 @@ internal sealed partial class MapRenderer
             fallbackMask == currentFallbackMask &&
             zoom == currentZoom &&
             heading == currentHeading &&
+            pitch == currentPitch &&
             viewportWidth == currentViewportWidth &&
             viewportHeight == currentViewportHeight;
 

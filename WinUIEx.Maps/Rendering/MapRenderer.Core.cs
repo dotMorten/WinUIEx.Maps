@@ -96,8 +96,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private bool _uploadDisposed;
     private HashSet<TileId> _lastRequiredTiles = [];
     private LayerRenderSnapshot[] _layerRenderPlan = [];
+    private long _layerRenderPlanVersion;
     private bool[] _visibleMapElementLayers = [];
-    private string? _lastAccessibilitySignature;
 
     public event Action<MapScene>? SceneChanged;
 
@@ -124,7 +124,9 @@ internal sealed partial class MapRenderer : DirectXRenderer
         lock (RenderLock)
         {
             CancelVectorGeometryPreparation();
+            ClearVectorSymbolFrameCaches();
             _layerRenderPlan = plan;
+            _layerRenderPlanVersion++;
         }
         Volatile.Write(ref _visibleMapElementLayers, visibleMapElementLayers);
         RequestRender();
@@ -140,6 +142,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     {
         SuspendBackgroundWork();
         ReleaseResourcesAndDetachPanel();
+        ReleaseVectorSymbolWorkingMemory();
         lock (_iconSync)
         {
             _iconPixels.Clear();
@@ -497,7 +500,16 @@ internal sealed partial class MapRenderer : DirectXRenderer
 
         LayerRenderSnapshot[] plan = _layerRenderPlan;
         bool hasRasterFade = false;
-        List<MapAccessibilityFeature> accessibilityFeatures = [];
+        VectorAccessibilityCacheKey accessibilityKey =
+            CreateVectorAccessibilityCacheKey(activeScene);
+        bool updateAccessibility =
+            _lastVectorAccessibilityCacheKey != accessibilityKey;
+        List<MapAccessibilityFeature> accessibilityFeatures =
+            _vectorAccessibilityFeatures;
+        if (updateAccessibility)
+        {
+            accessibilityFeatures.Clear();
+        }
         int accessibilityStyle = 0;
         long accessibilitySceneVersion = 0;
         foreach (LayerRenderSnapshot layer in plan)
@@ -528,22 +540,29 @@ internal sealed partial class MapRenderer : DirectXRenderer
                 hasRasterFade |= DrawVectorPolygonLayer(context, layer);
                 hasRasterFade |= DrawVectorLineLayer(context, layer);
                 hasRasterFade |= DrawVectorPointLayer(context, layer);
-                CollectVectorAccessibilityFeatures(
-                    layer,
-                    accessibilityFeatures,
-                    ref accessibilitySceneVersion);
-                accessibilityStyle = layer.Style;
+                if (updateAccessibility)
+                {
+                    CollectVectorAccessibilityFeatures(
+                        layer,
+                        accessibilityFeatures,
+                        ref accessibilitySceneVersion);
+                    accessibilityStyle = layer.Style;
+                }
             }
             else if (layer.Kind == LayerRenderKind.MapElements)
             {
                 DrawMapElements(context, layer.LayerIndex, layer.Opacity);
             }
         }
-        PublishAccessibilitySnapshot(
-            activeScene,
-            accessibilityFeatures,
-            accessibilityStyle,
-            accessibilitySceneVersion);
+        if (updateAccessibility)
+        {
+            PublishAccessibilitySnapshot(
+                activeScene,
+                accessibilityFeatures,
+                accessibilityStyle,
+                accessibilitySceneVersion);
+            _lastVectorAccessibilityCacheKey = accessibilityKey;
+        }
         TrimRasterTileCache();
         TrimVectorTileCache();
         _hasActiveFrameFade = hasRasterFade;
@@ -882,6 +901,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         StopUploadThread();
 
         base.Dispose();
+        ReleaseVectorSymbolWorkingMemory();
         lock (_iconSync)
         {
             _iconPixels.Clear();

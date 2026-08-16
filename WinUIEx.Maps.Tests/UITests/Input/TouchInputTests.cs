@@ -295,11 +295,12 @@ public sealed class TouchInputTests
             async map =>
         {
             await MapControlTestUtilities.SetupMapAsync(map);
-            map.Heading = 352;
-            await WaitForDisplayedHeadingAsync(map, 352);
+            map.Heading = 350;
+            await WaitForDisplayedHeadingAsync(map, 350);
             UiInputInjector input =
                 UiInputInjector.ForElement(MapControlTestHost.Window, map);
             bool manipulationCompleted = false;
+            double headingBeforeRelease = double.NaN;
             map.AddHandler(
                 UIElement.ManipulationCompletedEvent,
                 new ManipulationCompletedEventHandler((_, _) =>
@@ -308,9 +309,25 @@ public sealed class TouchInputTests
                 }),
                 handledEventsToo: true);
 
-            await input.Touch.RotateAsync(13);
+            await input.Touch.RotateAsync(
+                -13,
+                beforeRelease: () =>
+                {
+                    headingBeforeRelease = map.Heading;
+                    return Task.CompletedTask;
+                });
 
             await MapControlTestUtilities.WaitForAsync(() => manipulationCompleted);
+            Assert.IsGreaterThan(
+                0,
+                Math.Abs(MapCamera.ShortestHeadingDelta(
+                    headingBeforeRelease,
+                    0)));
+            Assert.IsLessThanOrEqualTo(
+                TouchRotationState.SnapThreshold,
+                Math.Abs(MapCamera.ShortestHeadingDelta(
+                    headingBeforeRelease,
+                    0)));
             Assert.AreEqual(0, map.Heading, $"Final heading was {map.Heading}.");
             await WaitForDisplayedHeadingAsync(map, 0);
         });

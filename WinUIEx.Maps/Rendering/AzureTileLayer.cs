@@ -329,7 +329,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         DecodedTile? imagery = IsHybridStyle(_style)
             ? await GetHybridImageryTileAsync(id, cancellationToken)
             : null;
-        byte[] encoded;
+        PooledByteBuffer encoded;
         try
         {
             encoded = await GetVectorTileBytesAsync(
@@ -343,15 +343,19 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                 "AzureMapsHybridVectorRequestException";
             throw;
         }
+        VectorTileFeatureCollection features;
+        using (encoded)
+        {
+            features = VectorTileDecoder.Decode(
+                encoded.Memory.Span,
+                cancellationToken);
+        }
         VectorStyleAssets styleAssets =
             await styleAssetsTask.ConfigureAwait(false);
         double downloadMilliseconds =
             Stopwatch.GetElapsedTime(downloadStarted).TotalMilliseconds -
             (imagery?.DecodeMilliseconds ?? 0);
         long decodeStarted = Stopwatch.GetTimestamp();
-        VectorTileFeatureCollection features = VectorTileDecoder.Decode(
-            encoded,
-            cancellationToken);
         VectorSpriteTextureData[] spriteTextures =
             await styleAssets.PrepareTexturesAsync(
                     features,
@@ -404,7 +408,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         }
     }
 
-    private async Task<byte[]> GetVectorTileBytesAsync(
+    private async Task<PooledByteBuffer> GetVectorTileBytesAsync(
         TileId id,
         CancellationToken cancellationToken)
     {
@@ -612,13 +616,13 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
             "*/*",
             cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, $"attribution '{tileset}'", cancellationToken).ConfigureAwait(false);
-        byte[] content = await WinRtHttpContentReader.ReadBoundedAsync(
+        using PooledByteBuffer content = await WinRtHttpContentReader.ReadBoundedAsync(
                 response.Content,
                 MaximumAttributionBytes,
                 cancellationToken)
             .ConfigureAwait(false);
         AttributionResponse? attribution = JsonSerializer.Deserialize(
-            content,
+            content.Memory.Span,
             AzureJsonContext.Default.AttributionResponse);
 
         return string.Join(
@@ -784,7 +788,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
             "*/*",
             cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, $"tile '{tileset}'", cancellationToken).ConfigureAwait(false);
-        byte[] encodedPixels = await WinRtHttpContentReader.ReadBoundedAsync(
+        using PooledByteBuffer encodedPixels = await WinRtHttpContentReader.ReadBoundedAsync(
                 response.Content,
                 maximumEncodedBytes,
                 cancellationToken)
@@ -793,7 +797,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
             Stopwatch.GetElapsedTime(downloadStarted).TotalMilliseconds;
         long decodeStarted = Stopwatch.GetTimestamp();
         cancellationToken.ThrowIfCancellationRequested();
-        using MemoryStream stream = new(encodedPixels, writable: false);
+        using MemoryStream stream = encodedPixels.CreateReadStream();
         using Windows.Storage.Streams.IRandomAccessStream randomAccessStream = stream.AsRandomAccessStream();
         BitmapDecoder decoder = await BitmapDecoder
             .CreateAsync(randomAccessStream)
@@ -881,7 +885,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     /// Downloads one bounded private styling asset, applying the subscription header only
     /// when a credential is available.
     /// </summary>
-    internal static async Task<byte[]> GetStyleAssetAsync(
+    internal static async Task<PooledByteBuffer> GetStyleAssetAsync(
         string path,
         string token,
         string acceptMediaType,
@@ -959,13 +963,13 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            byte[] content = await WinRtHttpContentReader.ReadBoundedAsync(
+            using PooledByteBuffer content = await WinRtHttpContentReader.ReadBoundedAsync(
                     response.Content,
                     MaximumErrorResponseBytes,
                     cancellationToken)
                 .ConfigureAwait(false);
             ErrorResponse? error = JsonSerializer.Deserialize(
-                content,
+                content.Memory.Span,
                 AzureJsonContext.Default.ErrorResponse);
             serviceMessage = string.Join(
                 " ",

@@ -265,6 +265,7 @@ public sealed partial class MapControl
         control.ReplaceAzureTileLayer();
         control.UpdateAzureAuthenticationInfoBar();
         control.PublishLayerSnapshots();
+        RequestResourceCollection();
     }
 
     /// <summary>

@@ -90,21 +90,25 @@ internal sealed class CustomVectorTileAcquisitionSession :
         Task<VectorStyleAssets> styleAssetsTask =
             _styleProvider.GetAssetsAsync(cancellationToken);
         string requestUrl = _tileTemplate.ExpandUrl(id);
-        byte[] encoded = await CustomTileHttp.GetBytesAsync(
+        PooledByteBuffer encoded = await CustomTileHttp.GetBytesAsync(
                 new Uri(requestUrl),
                 "application/vnd.mapbox-vector-tile, application/x-protobuf",
                 MaximumEncodedVectorTileBytes,
                 _requestHeaders,
                 cancellationToken)
             .ConfigureAwait(false);
+        VectorTileFeatureCollection features;
+        using (encoded)
+        {
+            features = VectorTileDecoder.Decode(
+                encoded.Memory.Span,
+                cancellationToken);
+        }
         VectorStyleAssets styleAssets =
             await styleAssetsTask.ConfigureAwait(false);
         double downloadMilliseconds =
             Stopwatch.GetElapsedTime(downloadStarted).TotalMilliseconds;
         long decodeStarted = Stopwatch.GetTimestamp();
-        VectorTileFeatureCollection features = VectorTileDecoder.Decode(
-            encoded,
-            cancellationToken);
         VectorSpriteTextureData[] spriteTextures =
             await styleAssets.PrepareTexturesAsync(
                     features,
@@ -228,7 +232,7 @@ internal sealed class CustomVectorStyleProvider
         CancellationToken cancellationToken)
     {
         long started = Stopwatch.GetTimestamp();
-        byte[] styleJson = await CustomTileHttp.GetBytesAsync(
+        using PooledByteBuffer styleJson = await CustomTileHttp.GetBytesAsync(
                 _styleUri,
                 "application/json",
                 MaximumStyleBytes,
@@ -236,8 +240,8 @@ internal sealed class CustomVectorStyleProvider
                 cancellationToken)
             .ConfigureAwait(false);
         CustomVectorStyleResourceUrls resources =
-            GetResourceUrls(styleJson, _styleUri);
-        VectorStyle style = VectorStyle.ParseCustom(styleJson);
+            GetResourceUrls(styleJson.Memory, _styleUri);
+        VectorStyle style = VectorStyle.ParseCustom(styleJson.Memory);
         VectorSpriteAtlas spriteAtlas;
         int spriteWidth;
         int spriteHeight;
@@ -260,27 +264,20 @@ internal sealed class CustomVectorStyleProvider
             Uri spriteImageUri = AppendPathSuffix(
                 resources.SpriteBaseUri,
                 ".png");
-            Task<byte[]> spriteIndexTask = CustomTileHttp.GetBytesAsync(
+            Task<Dictionary<string, VectorSpriteEntry>> spriteIndexTask =
+                LoadSpriteIndexAsync(
                 spriteIndexUri,
-                "application/json",
-                MaximumSpriteIndexBytes,
-                _requestHeaders,
                 cancellationToken);
-            Task<byte[]> spriteImageTask = CustomTileHttp.GetBytesAsync(
+            Task<AzureVectorStyleProvider.DecodedSpriteImage> spriteImageTask =
+                LoadSpriteImageAsync(
                 spriteImageUri,
-                "image/png",
-                MaximumEncodedSpriteBytes,
-                _requestHeaders,
                 cancellationToken);
             await Task.WhenAll(spriteIndexTask, spriteImageTask)
                 .ConfigureAwait(false);
             Dictionary<string, VectorSpriteEntry> entries =
-                VectorSpriteAtlas.ParseIndex(await spriteIndexTask.ConfigureAwait(false));
+                await spriteIndexTask.ConfigureAwait(false);
             AzureVectorStyleProvider.DecodedSpriteImage decoded =
-                await AzureVectorStyleProvider.DecodeSpriteAsync(
-                        await spriteImageTask.ConfigureAwait(false),
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                await spriteImageTask.ConfigureAwait(false);
             spriteAtlas = new VectorSpriteAtlas(
                 _styleIdentity,
                 entries,
@@ -310,8 +307,39 @@ internal sealed class CustomVectorStyleProvider
             spriteWidth,
             spriteHeight,
             Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-        VectorStyleCompatibility.Report(-1, styleJson);
+        VectorStyleCompatibility.Report(-1, styleJson.Memory);
         return assets;
+    }
+
+    private async Task<Dictionary<string, VectorSpriteEntry>> LoadSpriteIndexAsync(
+        Uri uri,
+        CancellationToken cancellationToken)
+    {
+        using PooledByteBuffer content = await CustomTileHttp.GetBytesAsync(
+                uri,
+                "application/json",
+                MaximumSpriteIndexBytes,
+                _requestHeaders,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return VectorSpriteAtlas.ParseIndex(content.Memory);
+    }
+
+    private async Task<AzureVectorStyleProvider.DecodedSpriteImage> LoadSpriteImageAsync(
+        Uri uri,
+        CancellationToken cancellationToken)
+    {
+        using PooledByteBuffer content = await CustomTileHttp.GetBytesAsync(
+                uri,
+                "image/png",
+                MaximumEncodedSpriteBytes,
+                _requestHeaders,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return await AzureVectorStyleProvider.DecodeSpriteAsync(
+                content,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     internal static Uri AppendPathSuffix(Uri uri, string suffix)
@@ -428,7 +456,7 @@ internal sealed class CustomVectorGlyphProvider : IVectorGlyphProvider
                 "{range}",
                 $"{key.RangeStart}-{key.RangeStart + 255}",
                 StringComparison.OrdinalIgnoreCase);
-        byte[] encoded;
+        PooledByteBuffer encoded;
         try
         {
             encoded = await CustomTileHttp.GetBytesAsync(
@@ -456,17 +484,20 @@ internal sealed class CustomVectorGlyphProvider : IVectorGlyphProvider
                 new Dictionary<int, VectorGlyph>());
         }
 
-        VectorGlyphRange range = VectorGlyphRangeDecoder.Decode(
-            encoded,
-            key.FontStack,
-            key.RangeStart,
-            cancellationToken);
-        MapControlEventSource.Log.VectorGlyphRangeLoaded(
-            -1,
-            range.Glyphs.Count,
-            encoded.Length,
-            Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-        return range;
+        using (encoded)
+        {
+            VectorGlyphRange range = VectorGlyphRangeDecoder.Decode(
+                encoded.Memory.Span,
+                key.FontStack,
+                key.RangeStart,
+                cancellationToken);
+            MapControlEventSource.Log.VectorGlyphRangeLoaded(
+                -1,
+                range.Glyphs.Count,
+                encoded.Length,
+                Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            return range;
+        }
     }
 }
 

@@ -582,6 +582,10 @@ public sealed class MapElementRenderingTests
             Assert.AreEqual(thinFill.Bounds.CenterX, thickFill.Bounds.CenterX, 2);
             Assert.AreEqual(thinFill.Bounds.CenterY, thickFill.Bounds.CenterY, 2);
             Assert.IsTrue(HasColorNear(thickFrame, fill, new Point(320, 240), 1));
+            Assert.IsTrue(HasColorNear(thickFrame, stroke, new Point(176, 116), 1));
+            Assert.IsTrue(HasColorNear(thickFrame, stroke, new Point(464, 116), 1));
+            Assert.IsTrue(HasColorNear(thickFrame, stroke, new Point(464, 364), 1));
+            Assert.IsTrue(HasColorNear(thickFrame, stroke, new Point(176, 364), 1));
         });
 
     private static Geopath CreateViewportRectanglePath(
@@ -865,6 +869,43 @@ public sealed class MapElementRenderingTests
             Assert.AreEqual(thin.Bounds.CenterY, thick.Bounds.CenterY, 1);
             Assert.IsTrue(HasColorNear(thickFrame, stroke, new Point(120, 300), 3));
             Assert.IsTrue(HasColorNear(thickFrame, stroke, new Point(520, 300), 3));
+        });
+
+    [TestMethod]
+    public Task MapPolyline_ThickCornerUsesGapFreeRoundJoin() =>
+        MapControlTestHost.LoadMapControlAsync(new BasicGeoposition(), 5, async map =>
+        {
+            BasicGeoposition center = new() { Longitude = 0, Latitude = 0 };
+            MapElementsLayer layer = ConfigureBlankMap(map, center);
+            Color stroke = Color.FromArgb(255, 232, 56, 48);
+            var polyline = new MapPolyline
+            {
+                Path = CreateViewportPath(
+                    center,
+                    5,
+                    new Point(180, 300),
+                    new Point(320, 160),
+                    new Point(460, 300)),
+                StrokeColor = stroke,
+                StrokeThickness = 14,
+            };
+            layer.MapElements.Add(polyline);
+
+            using CancellationTokenSource timeout =
+                new(TimeSpan.FromSeconds(10));
+            await MapControlTestUtilities.WaitForDisplayedCameraAsync(map, center, 5);
+            MapRenderFrame frame = await CaptureUntilAndSaveAsync(
+                map,
+                timeout.Token,
+                "round-join",
+                candidate =>
+                    FindColor(candidate, stroke, 4_000).Length == 1 &&
+                    HasColorNear(candidate, stroke, new Point(320, 154), 1));
+
+            ConnectedComponent strokeComponent =
+                AssertSingleColorComponent(frame, stroke, 4_000);
+            Assert.IsTrue(HasColorNear(frame, stroke, new Point(320, 154), 1));
+            Assert.IsGreaterThan(5_000, strokeComponent.PixelCount);
         });
 
     [TestMethod]

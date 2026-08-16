@@ -75,7 +75,7 @@ public sealed class MapRendererRasterTests
     }
 
     [TestMethod]
-    public async Task ReleasingRendererResourcesDropsSourceLevelVectorStyleAssets()
+    public async Task RemovingVectorSourceDropsSourceLevelVectorStyleAssets()
     {
         WeakReference assets = await RetainAndReleaseVectorStyleAssetsAsync();
 
@@ -129,7 +129,7 @@ public sealed class MapRendererRasterTests
             throw new InvalidOperationException(
                 "Could not find the vector tile completion method.");
         processCompleted.Invoke(renderer, null);
-        renderer.ReleaseDormantResources();
+        renderer.RemoveRasterTileSource(sourceId);
         return reference;
     }
 

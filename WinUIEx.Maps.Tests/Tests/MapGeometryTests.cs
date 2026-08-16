@@ -186,6 +186,83 @@ public sealed class MapGeometryTests
     }
 
     [TestMethod]
+    public void AutomaticRoundJoinsFillCornersAndPolygonSeams()
+    {
+        MapScreenSegment[] open =
+        [
+            new(new MapScreenPoint(0, 10), new MapScreenPoint(10, 10)),
+            new(new MapScreenPoint(10, 10), new MapScreenPoint(10, 20)),
+        ];
+
+        MapScreenPoint[] openTriangles =
+            MapGeometryOperations.ExpandStrokeTriangles(
+                open,
+                thickness: 10,
+                closed: false,
+                MapGeometryOperations.AutomaticStrokeJoinPolicy);
+
+        Assert.AreEqual(18, openTriangles.Length);
+        Assert.IsTrue(TrianglesContain(openTriangles, new MapScreenPoint(13, 7)));
+
+        MapScreenSegment[] closed =
+        [
+            new(new MapScreenPoint(10, 10), new MapScreenPoint(20, 10)),
+            new(new MapScreenPoint(20, 10), new MapScreenPoint(20, 20)),
+            new(new MapScreenPoint(20, 20), new MapScreenPoint(10, 20)),
+            new(new MapScreenPoint(10, 20), new MapScreenPoint(10, 10)),
+        ];
+        MapScreenPoint[] closedTriangles =
+            MapGeometryOperations.ExpandStrokeTriangles(
+                closed,
+                thickness: 10,
+                closed: true,
+                MapGeometryOperations.AutomaticStrokeJoinPolicy);
+
+        Assert.AreEqual(48, closedTriangles.Length);
+        Assert.IsTrue(TrianglesContain(closedTriangles, new MapScreenPoint(7, 7)));
+    }
+
+    [TestMethod]
+    public void AutomaticRoundJoinsRespectPathsDashesAndSharpAngleBounds()
+    {
+        MapScreenSegment[] disconnected =
+        [
+            new(
+                new MapScreenPoint(0, 10),
+                new MapScreenPoint(10, 10),
+                PathIndex: 0),
+            new(
+                new MapScreenPoint(10, 10),
+                new MapScreenPoint(10, 20),
+                PathIndex: 1),
+        ];
+        MapScreenPoint[] disconnectedTriangles =
+            MapGeometryOperations.ExpandStrokeTriangles(
+                disconnected,
+                thickness: 10,
+                closed: false,
+                MapGeometryOperations.AutomaticStrokeJoinPolicy);
+        Assert.AreEqual(12, disconnectedTriangles.Length);
+
+        MapScreenSegment[] sharp =
+        [
+            new(new MapScreenPoint(0, 0), new MapScreenPoint(10, 0)),
+            new(new MapScreenPoint(10, 0), new MapScreenPoint(1, 1)),
+        ];
+        MapScreenPoint[] sharpTriangles =
+            MapGeometryOperations.ExpandStrokeTriangles(
+                sharp,
+                thickness: 10,
+                closed: false,
+                MapGeometryOperations.AutomaticStrokeJoinPolicy);
+
+        Assert.IsLessThanOrEqualTo(24, sharpTriangles.Length);
+        Assert.IsTrue(sharpTriangles.All(point =>
+            Math.Abs(point.X - 10) <= 15 &&
+            Math.Abs(point.Y) <= 10));
+    }
+
+    [TestMethod]
     public void GeometryHitTestingHonorsFillStrokeDashesAndOrder()
     {
         MapPolygon polygon = new()
@@ -318,6 +395,34 @@ public sealed class MapGeometryTests
     }
 
     [TestMethod]
+    public void StrokeHitTestingIncludesAutomaticRoundJoin()
+    {
+        MapPolyline polyline = new()
+        {
+            Path = CreatePath((-1, 0), (0, 0), (0, -1)),
+            StrokeThickness = 10,
+        };
+        MapGeometryCamera camera = new(0, 0, 6, 0, 512, 512);
+        MapGeometrySnapshot snapshot = CreateSnapshot(polyline, orderIndex: 0);
+        MapScreenSegment[] segments = MapGeometryOperations.BuildStrokeSegments(
+            snapshot.Geometry,
+            closed: false,
+            snapshot.StrokeThickness,
+            snapshot.StrokeDashed,
+            camera);
+        Assert.HasCount(2, segments);
+        MapScreenPoint joinOnlyPoint = new(
+            segments[0].End.X + 3,
+            segments[0].End.Y - 3);
+
+        Assert.IsTrue(MapGeometryOperations.Contains(
+            snapshot,
+            camera,
+            joinOnlyPoint.X,
+            joinOnlyPoint.Y));
+    }
+
+    [TestMethod]
     public void GeometryColorPreservesRgbAndMultipliesAlphaByLayerOpacity()
     {
         MapColorSnapshot color = MapColorSnapshot.FromColor(
@@ -415,4 +520,36 @@ public sealed class MapGeometryTests
             Longitude = point.Longitude,
             Latitude = point.Latitude,
         }));
+
+    private static bool TrianglesContain(
+        IReadOnlyList<MapScreenPoint> triangles,
+        MapScreenPoint point)
+    {
+        for (int index = 0; index + 2 < triangles.Count; index += 3)
+        {
+            MapScreenPoint first = triangles[index];
+            MapScreenPoint second = triangles[index + 1];
+            MapScreenPoint third = triangles[index + 2];
+            double firstCross = Cross(first, second, point);
+            double secondCross = Cross(second, third, point);
+            double thirdCross = Cross(third, first, point);
+            if ((firstCross >= -1e-7 &&
+                    secondCross >= -1e-7 &&
+                    thirdCross >= -1e-7) ||
+                (firstCross <= 1e-7 &&
+                    secondCross <= 1e-7 &&
+                    thirdCross <= 1e-7))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static double Cross(
+        MapScreenPoint start,
+        MapScreenPoint end,
+        MapScreenPoint point) =>
+        ((end.X - start.X) * (point.Y - start.Y)) -
+        ((end.Y - start.Y) * (point.X - start.X));
 }

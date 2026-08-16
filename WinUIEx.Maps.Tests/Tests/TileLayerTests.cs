@@ -589,12 +589,31 @@ public sealed class TileLayerTests
         byte[] expected = Enumerable.Range(0, 16).Select(value => (byte)value).ToArray();
         using HttpBufferContent content = new(expected.AsBuffer());
 
-        byte[] actual = await WinRtHttpContentReader.ReadBoundedAsync(
+        PooledByteBuffer actual = await WinRtHttpContentReader.ReadBoundedAsync(
             content,
             expected.Length,
             CancellationToken.None);
 
-        Assert.AreSequenceEqual(expected, actual);
+        using (actual)
+        {
+            Assert.AreEqual(expected.Length, actual.Length);
+            Assert.AreSequenceEqual(expected, actual.Memory.ToArray());
+        }
+        Assert.ThrowsExactly<ObjectDisposedException>(
+            () => actual.CreateReadStream());
+    }
+
+    [TestMethod]
+    public async Task EncodedTileReadRejectsUndeclaredOversizeContent()
+    {
+        using MemoryStream stream = new(new byte[17]);
+        using HttpStreamContent content = new(stream.AsInputStream());
+
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(
+            () => WinRtHttpContentReader.ReadBoundedAsync(
+                content,
+                16,
+                CancellationToken.None));
     }
 
     private static TileLayerSnapshot Snapshot(

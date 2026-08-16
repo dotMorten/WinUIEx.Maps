@@ -87,7 +87,7 @@ internal sealed class AzureGlyphProvider : IVectorGlyphProvider
         string escapedFont = Uri.EscapeDataString(key.FontStack);
         string path =
             $"styling/glyphs/{escapedFont}/{key.RangeStart}-{key.RangeStart + 255}.pbf?styleVersion=2023-01-01&api-version=2.0";
-        byte[] encoded;
+        PooledByteBuffer encoded;
         try
         {
             encoded = await AzureTileAcquisitionSession.GetStyleAssetAsync(
@@ -121,17 +121,20 @@ internal sealed class AzureGlyphProvider : IVectorGlyphProvider
                 "AzureMapsGlyphRangeRequestException";
             throw;
         }
-        VectorGlyphRange range = VectorGlyphRangeDecoder.Decode(
-            encoded,
-            key.FontStack,
-            key.RangeStart,
-            cancellationToken);
-        MapControlEventSource.Log.VectorGlyphRangeLoaded(
-            (int)_style,
-            range.Glyphs.Count,
-            encoded.Length,
-            System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-        return range;
+        using (encoded)
+        {
+            VectorGlyphRange range = VectorGlyphRangeDecoder.Decode(
+                encoded.Memory.Span,
+                key.FontStack,
+                key.RangeStart,
+                cancellationToken);
+            MapControlEventSource.Log.VectorGlyphRangeLoaded(
+                (int)_style,
+                range.Glyphs.Count,
+                encoded.Length,
+                System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            return range;
+        }
     }
 }
 
