@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Automation.Provider;
+using WinUIEx.Maps.Localization;
 using WinUIEx.Maps.Rendering;
 using Windows.Devices.Geolocation;
 
@@ -262,7 +263,9 @@ public sealed class MapControlAutomationPeer :
     protected override string GetNameCore()
     {
         string name = base.GetNameCore();
-        return string.IsNullOrWhiteSpace(name) ? "Map" : name;
+        return string.IsNullOrWhiteSpace(name)
+            ? MapControlResources.GetString("MapAutomationName")
+            : name;
     }
 
     /// <inheritdoc />
@@ -270,9 +273,7 @@ public sealed class MapControlAutomationPeer :
     {
         string helpText = base.GetHelpTextCore();
         return string.IsNullOrWhiteSpace(helpText)
-            ? "Use arrow keys to pan, plus and minus to zoom, Shift plus arrow keys " +
-                "to rotate or tilt, Escape to return to the map, and Control plus " +
-                "Alt plus D to toggle description detail."
+            ? MapControlResources.GetString("MapAutomationHelpText")
             : helpText;
     }
 
@@ -287,7 +288,7 @@ public sealed class MapControlAutomationPeer :
 
         description = MapOwner.GetAccessibilityDescription();
         return string.IsNullOrWhiteSpace(description)
-            ? "Interactive map."
+            ? MapControlResources.GetString("MapAutomationFullDescription")
             : description;
     }
 
@@ -343,10 +344,10 @@ public sealed class MapControlAutomationPeer :
         }
 
         string previousValue = string.IsNullOrWhiteSpace(previousDescription)
-            ? "Interactive map."
+            ? MapControlResources.GetString("MapAutomationFullDescription")
             : previousDescription;
         string currentValue = string.IsNullOrWhiteSpace(currentDescription)
-            ? "Interactive map."
+            ? MapControlResources.GetString("MapAutomationFullDescription")
             : currentDescription;
         if (!string.Equals(
                 previousValue,
@@ -475,7 +476,7 @@ public sealed class MapControlAutomationPeer :
         if (!MapOwner.IsEnabled)
         {
             throw new InvalidOperationException(
-                "The associated map control is disabled.");
+                MapControlResources.GetString("AutomationDisabledMapError"));
         }
     }
 

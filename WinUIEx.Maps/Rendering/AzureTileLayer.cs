@@ -20,20 +20,29 @@ namespace WinUIEx.Maps.Rendering;
 /// <remarks>
 /// The UI thread replaces this dependency object when map style or credential changes and
 /// publishes it ahead of public layers. <see cref="CreateSnapshot"/> is the only boundary to
-/// rendering workers: it captures style and credential into immutable acquisition state so
-/// no background path reads UI-thread properties.
+/// rendering workers: it captures style, credential, and language into immutable acquisition
+/// state so no background path reads UI-thread properties.
 /// </remarks>
 internal sealed class AzureTileLayer : TileLayer
 {
     private readonly MapStyle _style;
     private readonly string _token;
+    private readonly string? _language;
     private readonly AzureVectorStyleProvider? _vectorStyleProvider;
 
     /// <summary>
     /// Initializes the hidden base-map layer with the selected Azure style and the
-    /// credential that will be captured by later acquisition snapshots.
+    /// credential and language that will be captured by later acquisition snapshots.
     /// </summary>
     internal AzureTileLayer(MapStyle style, string? token)
+        : this(style, token, null)
+    {
+    }
+
+    internal AzureTileLayer(
+        MapStyle style,
+        string? token,
+        string? language)
         : base(
             new TileLayerOptions
             {
@@ -50,6 +59,7 @@ internal sealed class AzureTileLayer : TileLayer
         }
         _style = style;
         _token = token ?? string.Empty;
+        _language = language;
         if (AzureTileAcquisitionSession.IsVectorStyle(style))
         {
             _vectorStyleProvider = new AzureVectorStyleProvider(style, _token);
@@ -59,14 +69,20 @@ internal sealed class AzureTileLayer : TileLayer
     internal MapStyle Style => _style;
 
     /// <summary>
-    /// Determines whether this layer already represents the requested style and credential.
+    /// Determines whether this layer already represents the requested style, credential, and
+    /// language.
     /// </summary>
-    internal bool Matches(MapStyle style, string? token) =>
+    internal bool Matches(
+        MapStyle style,
+        string? token,
+        string? language) =>
         _style == style &&
-        string.Equals(_token, token ?? string.Empty, StringComparison.Ordinal);
+        string.Equals(_token, token ?? string.Empty, StringComparison.Ordinal) &&
+        string.Equals(_language, language, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Captures Azure style and authentication into a worker-safe immutable session.
+    /// Captures Azure style, authentication, and language into a worker-safe immutable
+    /// session.
     /// </summary>
     /// <remarks>
     /// UI-thread-only. The returned session owns all data used by background requests and
@@ -79,7 +95,8 @@ internal sealed class AzureTileLayer : TileLayer
             new AzureTileAcquisitionSession(
                 _style,
                 _token,
-                _vectorStyleProvider),
+                _vectorStyleProvider,
+                _language),
             MinZoom,
             MaxZoom,
             IsVisible,
@@ -124,6 +141,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     private readonly AzureSourceKey _sourceKey;
     private readonly MapStyle _style;
     private readonly string _token;
+    private readonly string? _language;
     private readonly AzureVectorStyleProvider? _vectorStyleProvider;
 
     /// <summary>
@@ -135,12 +153,21 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     /// must not be included in diagnostics or exception text.
     /// </remarks>
     internal AzureTileAcquisitionSession(MapStyle style, string token)
+        : this(style, token, null)
+    {
+    }
+
+    internal AzureTileAcquisitionSession(
+        MapStyle style,
+        string token,
+        string? language)
         : this(
             style,
             token,
             IsVectorStyle(style)
                 ? new AzureVectorStyleProvider(style, token)
-                : null)
+                : null,
+            language)
     {
     }
 
@@ -150,13 +177,17 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     internal AzureTileAcquisitionSession(
         MapStyle style,
         string token,
-        AzureVectorStyleProvider? vectorStyleProvider)
+        AzureVectorStyleProvider? vectorStyleProvider,
+        string? language)
     {
         _style = style;
         _token = token;
+        _language = language;
         _vectorStyleProvider = vectorStyleProvider;
-        _sourceKey = new AzureSourceKey(style, token);
+        _sourceKey = new AzureSourceKey(style, token, language);
     }
+
+    internal string? Language => _language;
 
     internal override object SourceKey => _sourceKey;
 
@@ -222,6 +253,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                 tileSize,
                 BitmapAlphaMode.Ignore,
                 _token,
+                _language,
                 cancellationToken);
             Task<DecodedTile> terrainTask = GetTilePixelsAsync(
                 id,
@@ -231,6 +263,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                 tileSize,
                 BitmapAlphaMode.Straight,
                 _token,
+                _language,
                 cancellationToken);
             await Task.WhenAll(terrainTask, roadsTask).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
@@ -262,6 +295,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                 GetTileRequestSize(tileset),
                 BitmapAlphaMode.Ignore,
                 _token,
+                _language,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -358,6 +392,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                     256,
                     BitmapAlphaMode.Ignore,
                     _token,
+                    _language,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -375,6 +410,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     {
         string path =
             $"map/tile?api-version={ApiVersion}&tilesetId={VectorTileset}&zoom={id.Zoom}&x={id.X}&y={id.Y}";
+        path = AddLanguageToQuery(path, _language);
         using Windows.Web.Http.HttpResponseMessage response = await SendAsync(
             path,
             _token,
@@ -416,6 +452,26 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
             values
                 .Where(value => !string.IsNullOrWhiteSpace(value))
                 .Distinct(StringComparer.Ordinal));
+    }
+
+    internal static string? GetRequestLanguage(string? language) =>
+        string.IsNullOrWhiteSpace(language)
+            ? null
+            : language.Trim();
+
+    internal static string AddLanguageToQuery(
+        string path,
+        string? language)
+    {
+        if (string.IsNullOrWhiteSpace(language))
+        {
+            return path;
+        }
+
+        char separator = path.Contains('?', StringComparison.Ordinal)
+            ? '&'
+            : '?';
+        return $"{path}{separator}language={Uri.EscapeDataString(language)}";
     }
 
     /// <summary>
@@ -585,6 +641,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         int tileSize,
         BitmapAlphaMode alphaMode,
         string token,
+        string? language,
         CancellationToken cancellationToken)
     {
         if (requestedId.Zoom < minimumZoom)
@@ -596,6 +653,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                 tileSize,
                 alphaMode,
                 token,
+                language,
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -613,6 +671,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
             alphaMode,
             new BitmapTransform(),
             token,
+            language,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -631,6 +690,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         int tileSize,
         BitmapAlphaMode alphaMode,
         string token,
+        string? language,
         CancellationToken cancellationToken)
     {
         int zoomDifference = minimumZoom - requestedId.Zoom;
@@ -658,6 +718,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                     alphaMode,
                     transform,
                     token,
+                    language,
                     cancellationToken);
             }
         }
@@ -709,10 +770,12 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         BitmapAlphaMode alphaMode,
         BitmapTransform transform,
         string token,
+        string? language,
         CancellationToken cancellationToken)
     {
         long downloadStarted = Stopwatch.GetTimestamp();
         string path = $"map/tile?api-version={ApiVersion}&tilesetId={tileset}&zoom={id.Zoom}&x={id.X}&y={id.Y}&tileSize={tileSize}";
+        path = AddLanguageToQuery(path, language);
         int maximumEncodedBytes = checked(
             (tileSize * tileSize * 4) + EncodedTileOverheadAllowance);
         using Windows.Web.Http.HttpResponseMessage response = await SendAsync(
@@ -966,14 +1029,17 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     private sealed partial class AzureJsonContext : JsonSerializerContext;
 
     /// <summary>
-    /// Combines style and credential for private in-process equality and generation
-    /// invalidation.
+    /// Combines style, credential, and language for private in-process equality and
+    /// generation invalidation.
     /// </summary>
     /// <remarks>
     /// The credential-bearing key must never be logged. Its string representation is
     /// intentionally reduced to the type name.
     /// </remarks>
-    private sealed record AzureSourceKey(MapStyle Style, string Token)
+    private sealed record AzureSourceKey(
+        MapStyle Style,
+        string Token,
+        string? Language)
     {
         /// <summary>
         /// Returns a non-sensitive diagnostic name without revealing the credential contained

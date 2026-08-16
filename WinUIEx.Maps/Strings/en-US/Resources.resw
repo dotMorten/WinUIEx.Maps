@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <data name="MapAutomationName" xml:space="preserve">
+    <value>Map</value>
+  </data>
+  <data name="MapAutomationHelpText" xml:space="preserve">
+    <value>Use arrow keys to pan, plus and minus to zoom, Shift plus arrow keys to rotate or tilt, Escape to return to the map, and Control plus Alt plus D to toggle description detail.</value>
+  </data>
+  <data name="MapAutomationFullDescription" xml:space="preserve">
+    <value>Interactive map.</value>
+  </data>
+  <data name="MapDescriptionSingleFormat" xml:space="preserve">
+    <value>Map showing {0}.</value>
+    <comment>{0} is one geographic feature name.</comment>
+  </data>
+  <data name="MapDescriptionPairFormat" xml:space="preserve">
+    <value>Map showing {0} and {1}.</value>
+    <comment>{0} and {1} are geographic feature names.</comment>
+  </data>
+  <data name="MapDescriptionManyFormat" xml:space="preserve">
+    <value>Map showing {0}, and {1}.</value>
+    <comment>{0} is a preformatted list of geographic feature names; {1} is the final feature name.</comment>
+  </data>
+  <data name="MapDescriptionListSeparator" xml:space="preserve">
+    <value>, </value>
+  </data>
+  <data name="MapDescriptionFallback" xml:space="preserve">
+    <value>Map.</value>
+  </data>
+  <data name="MapDescriptionDetailedFormat" xml:space="preserve">
+    <value>{0} Zoom level {1:0.##}. Center {2:0.####} degrees {3}, {4:0.####} degrees {5}.</value>
+    <comment>{0} is the map summary, {1} is zoom, {2} and {4} are absolute latitude and longitude, and {3} and {5} are cardinal directions.</comment>
+  </data>
+  <data name="DirectionNorth" xml:space="preserve">
+    <value>north</value>
+  </data>
+  <data name="DirectionSouth" xml:space="preserve">
+    <value>south</value>
+  </data>
+  <data name="DirectionEast" xml:space="preserve">
+    <value>east</value>
+  </data>
+  <data name="DirectionWest" xml:space="preserve">
+    <value>west</value>
+  </data>
+  <data name="MapAttributionFormat" xml:space="preserve">
+    <value>Map attribution: {0}</value>
+    <comment>{0} is a preformatted list of attribution names.</comment>
+  </data>
+  <data name="MapAttributionListSeparator" xml:space="preserve">
+    <value>, </value>
+  </data>
+  <data name="MapAttributionVisualSeparator" xml:space="preserve">
+    <value> | </value>
+  </data>
+  <data name="AzureAuthenticationFailedTitle" xml:space="preserve">
+    <value>Azure Maps authentication failed</value>
+  </data>
+  <data name="AzureAuthenticationFailedMessage" xml:space="preserve">
+    <value>Azure Maps rejected MapServiceToken. Verify the token and try again.</value>
+  </data>
+  <data name="AzureTokenRequiredTitle" xml:space="preserve">
+    <value>Azure Maps token required</value>
+  </data>
+  <data name="AzureTokenRequiredMessage" xml:space="preserve">
+    <value>Set MapServiceToken to display the selected Azure basemap.</value>
+  </data>
+  <data name="AutomationDisabledMapError" xml:space="preserve">
+    <value>The associated map control is disabled.</value>
+  </data>
+</root>

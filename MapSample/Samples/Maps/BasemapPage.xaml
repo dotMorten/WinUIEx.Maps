@@ -13,15 +13,26 @@
                     AutomationProperties.AutomationId="BasemapPage"
                     Style="{StaticResource TitleTextBlockStyle}"
                     Text="Azure basemaps" />
-                <TextBlock Text="Choose an Azure Maps basemap style." />
+                <TextBlock Text="Choose an Azure Maps basemap style and label language." />
             </StackPanel>
-            <ComboBox
-                x:Name="StylePicker"
+            <StackPanel
                 Grid.Column="1"
-                MinWidth="220"
-                AutomationProperties.AutomationId="MapStyleInput"
-                Header="Map style" SelectedIndex="0"
-                SelectionChanged="StylePicker_SelectionChanged" />
+                Orientation="Horizontal"
+                Spacing="12">
+                <ComboBox
+                    x:Name="StylePicker"
+                    MinWidth="220"
+                    AutomationProperties.AutomationId="MapStyleInput"
+                    Header="Map style"
+                    SelectionChanged="StylePicker_SelectionChanged" />
+                <ComboBox
+                    x:Name="LanguagePicker"
+                    MinWidth="190"
+                    AutomationProperties.AutomationId="MapLanguageInput"
+                    DisplayMemberPath="Name"
+                    Header="Label language"
+                    SelectionChanged="LanguagePicker_SelectionChanged" />
+            </StackPanel>
         </Grid>
         <Grid Grid.Row="1" Margin="32,0,32,32">
             <map:MapControl

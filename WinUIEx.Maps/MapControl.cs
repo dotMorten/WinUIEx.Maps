@@ -8,8 +8,8 @@ using Microsoft.UI.Xaml.Media;
 using WinUIEx.Maps.Rendering;
 using WinUIEx.Maps.Rendering.Diagnostics;
 using WinUIEx.Maps.Automation.Peers;
+using WinUIEx.Maps.Localization;
 using System.Collections.Specialized;
-using System.Globalization;
 using Windows.Devices.Geolocation;
 using Windows.Foundation;
 
@@ -36,6 +36,13 @@ namespace WinUIEx.Maps;
 /// <see href="https://learn.microsoft.com/azure/azure-maps/how-to-manage-authentication">
 /// Azure Maps authentication documentation</see>. Keep subscription keys outside source
 /// control and never commit them.
+/// </para>
+/// <para>
+/// Azure raster and vector tile requests use the effective
+/// <see cref="FrameworkElement.Language"/> value as their IETF language tag when that
+/// property is explicitly set on the map. If it is not set, the language parameter is
+/// omitted and Azure selects its default. Changing the language replaces the hidden Azure
+/// acquisition session so cached tiles from different languages are not mixed.
 /// </para>
 /// <para>
 /// Select <see cref="MapStyle.Blank"/> for a token-free surface containing only public
@@ -266,6 +273,7 @@ public sealed partial class MapControl : Control
             OnAzureAuthenticationFailed;
         SetValue(LayersProperty, new MapLayerCollection());
         InitializeTextScaling();
+        InitializeLocalization();
         DefaultStyleKey = typeof(MapControl);
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
@@ -970,12 +978,19 @@ public sealed partial class MapControl : Control
     /// </summary>
     private void ReplaceAzureTileLayer()
     {
+        string? language = GetAzureRequestLanguage();
         AzureTileLayer? replacement = MapStyle == MapStyle.Blank
             ? null
             : _azureTileLayer is not null &&
-                _azureTileLayer.Matches(MapStyle, MapServiceToken)
+                _azureTileLayer.Matches(
+                    MapStyle,
+                    MapServiceToken,
+                    language)
                 ? _azureTileLayer
-                : CreateAzureBaseLayer(MapStyle, MapServiceToken);
+                : CreateAzureBaseLayer(
+                    MapStyle,
+                    MapServiceToken,
+                    language);
         if (ReferenceEquals(_azureTileLayer, replacement))
         {
             return;
@@ -985,8 +1000,23 @@ public sealed partial class MapControl : Control
         UpdateAttribution();
     }
 
+    internal string? GetAzureRequestLanguage() =>
+        ReferenceEquals(
+                ReadLocalValue(LanguageProperty),
+                DependencyProperty.UnsetValue)
+            ? null
+            : AzureTileAcquisitionSession.GetRequestLanguage(Language);
+
     internal static AzureTileLayer? CreateAzureBaseLayer(MapStyle style, string? token) =>
-        HasAzureBaseLayer(style) ? new AzureTileLayer(style, token) : null;
+        CreateAzureBaseLayer(style, token, null);
+
+    internal static AzureTileLayer? CreateAzureBaseLayer(
+        MapStyle style,
+        string? token,
+        string? language) =>
+        HasAzureBaseLayer(style)
+            ? new AzureTileLayer(style, token, language)
+            : null;
 
     internal static bool HasAzureBaseLayer(MapStyle style) => style != MapStyle.Blank;
 
@@ -1447,9 +1477,20 @@ public sealed partial class MapControl : Control
         return names.Length switch
         {
             0 => string.Empty,
-            1 => $"Map showing {names[0]}.",
-            2 => $"Map showing {names[0]} and {names[1]}.",
-            _ => $"Map showing {string.Join(", ", names[..^1])}, and {names[^1]}.",
+            1 => MapControlResources.Format(
+                "MapDescriptionSingleFormat",
+                names[0]),
+            2 => MapControlResources.Format(
+                "MapDescriptionPairFormat",
+                names[0],
+                names[1]),
+            _ => MapControlResources.Format(
+                "MapDescriptionManyFormat",
+                string.Join(
+                    MapControlResources.GetString(
+                        "MapDescriptionListSeparator"),
+                    names[..^1]),
+                names[^1]),
         };
     }
 
@@ -1463,14 +1504,21 @@ public sealed partial class MapControl : Control
             return simplified;
         }
 
-        string mapDescription = simplified.Length == 0 ? "Map." : simplified;
-        string latitudeDirection = snapshot.Latitude < 0 ? "south" : "north";
-        string longitudeDirection = snapshot.Longitude < 0 ? "west" : "east";
-        return string.Create(
-            CultureInfo.CurrentCulture,
-            $"{mapDescription} Zoom level {snapshot.Zoom:0.##}. Center " +
-            $"{Math.Abs(snapshot.Latitude):0.####} degrees {latitudeDirection}, " +
-            $"{Math.Abs(snapshot.Longitude):0.####} degrees {longitudeDirection}.");
+        string mapDescription = simplified.Length == 0
+            ? MapControlResources.GetString("MapDescriptionFallback")
+            : simplified;
+        string latitudeDirection = MapControlResources.GetString(
+            snapshot.Latitude < 0 ? "DirectionSouth" : "DirectionNorth");
+        string longitudeDirection = MapControlResources.GetString(
+            snapshot.Longitude < 0 ? "DirectionWest" : "DirectionEast");
+        return MapControlResources.Format(
+            "MapDescriptionDetailedFormat",
+            mapDescription,
+            snapshot.Zoom,
+            Math.Abs(snapshot.Latitude),
+            latitudeDirection,
+            Math.Abs(snapshot.Longitude),
+            longitudeDirection);
     }
 
     private void OnAttributionChanged(
@@ -1528,7 +1576,12 @@ public sealed partial class MapControl : Control
             hasAttribution ? Visibility.Visible : Visibility.Collapsed;
 
         string automationName = hasAttribution
-            ? $"Map attribution: {string.Join(", ", attributionNames)}"
+            ? MapControlResources.Format(
+                "MapAttributionFormat",
+                string.Join(
+                    MapControlResources.GetString(
+                        "MapAttributionListSeparator"),
+                    attributionNames))
             : string.Empty;
         AutomationProperties.SetName(_attributionText, automationName);
         if (hasAttribution &&
@@ -1559,7 +1612,11 @@ public sealed partial class MapControl : Control
 
         if (hasAttribution)
         {
-            _attributionText!.Inlines.Add(new Run { Text = " | " });
+            _attributionText!.Inlines.Add(new Run
+            {
+                Text = MapControlResources.GetString(
+                    "MapAttributionVisualSeparator"),
+            });
         }
 
         string text = layer.Attribution.Trim();
@@ -1592,8 +1649,10 @@ public sealed partial class MapControl : Control
 
             ShowAzureAuthenticationInfoBar(
                 InfoBarSeverity.Error,
-                "Azure Maps authentication failed",
-                "Azure Maps rejected MapServiceToken. Verify the token and try again.");
+                MapControlResources.GetString(
+                    "AzureAuthenticationFailedTitle"),
+                MapControlResources.GetString(
+                    "AzureAuthenticationFailedMessage"));
         });
     }
 
@@ -1616,8 +1675,8 @@ public sealed partial class MapControl : Control
 
         SetAzureAuthenticationInfoBarContent(
             InfoBarSeverity.Warning,
-            "Azure Maps token required",
-            "Set MapServiceToken to display the selected Azure basemap.");
+            MapControlResources.GetString("AzureTokenRequiredTitle"),
+            MapControlResources.GetString("AzureTokenRequiredMessage"));
         _missingAzureTokenTimer ??= CreateMissingAzureTokenTimer();
         _missingAzureTokenTimer.Start();
     }
@@ -1644,8 +1703,8 @@ public sealed partial class MapControl : Control
         {
             ShowAzureAuthenticationInfoBar(
                 InfoBarSeverity.Warning,
-                "Azure Maps token required",
-                "Set MapServiceToken to display the selected Azure basemap.");
+                MapControlResources.GetString("AzureTokenRequiredTitle"),
+                MapControlResources.GetString("AzureTokenRequiredMessage"));
         }
     }
 

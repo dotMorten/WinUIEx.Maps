@@ -23,6 +23,11 @@ public sealed class MapControlAuthenticationTests
         Latitude = 47.6062,
         Longitude = -122.3321,
     };
+    private static readonly BasicGeoposition InvalidTokenTestCenter = new()
+    {
+        Latitude = -33.8688,
+        Longitude = 151.2093,
+    };
 
     [TestMethod]
     [DataRow((int)MapStyle.RoadRaster)]
@@ -94,6 +99,26 @@ public sealed class MapControlAuthenticationTests
     }
 
     [TestMethod]
+    public Task ExplicitMapLanguageControlsAzureRequestLanguage()
+    {
+        return MapControlTestHost.LoadMapControlAsync(map =>
+        {
+            map.MapStyle = MapStyle.Blank;
+
+            Assert.IsNull(map.GetAzureRequestLanguage());
+
+            map.Language = "eo";
+
+            Assert.AreEqual("eo", map.GetAzureRequestLanguage());
+
+            map.ClearValue(FrameworkElement.LanguageProperty);
+
+            Assert.IsNull(map.GetAzureRequestLanguage());
+            return Task.CompletedTask;
+        });
+    }
+
+    [TestMethod]
     public Task MissingTokenShowsWarningForAzureBasemap()
     {
         return MapControlTestHost.LoadMapControlAsync(async map =>
@@ -119,8 +144,8 @@ public sealed class MapControlAuthenticationTests
     public Task InvalidTokenShowsAccessibleAuthenticationError()
     {
         return MapControlTestHost.LoadMapControlAsync(
-            AzureTestCenter,
-            6,
+            InvalidTokenTestCenter,
+            12,
             async map =>
             {
                 map.MapServiceToken = "invalid-test-token";

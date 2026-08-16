@@ -210,19 +210,70 @@ public sealed class AzureTileLayerTests
     }
 
     [TestMethod]
+    [DataRow("fr-CA")]
+    [DataRow("zh-Hant-TW")]
+    [DataRow("eo")]
+    public void FrameworkElementLanguageIsPassedThroughToAzure(
+        string language)
+    {
+        Assert.AreEqual(
+            language,
+            AzureTileAcquisitionSession.GetRequestLanguage(
+                language),
+            ignoreCase: true);
+    }
+
+    [TestMethod]
+    public void EmptyFrameworkElementLanguageUsesAzureDefault()
+    {
+        Assert.IsNull(AzureTileAcquisitionSession.GetRequestLanguage(null));
+        Assert.IsNull(AzureTileAcquisitionSession.GetRequestLanguage(""));
+        Assert.IsNull(AzureTileAcquisitionSession.GetRequestLanguage("  "));
+    }
+
+    [TestMethod]
+    public void AzureLanguageIsAddedToTileQueryWhenPresent()
+    {
+        const string path = "map/tile?api-version=2024-04-01";
+
+        Assert.AreEqual(
+            $"{path}&language=fr",
+            AzureTileAcquisitionSession.AddLanguageToQuery(path, "fr"));
+        Assert.AreEqual(
+            path,
+            AzureTileAcquisitionSession.AddLanguageToQuery(path, null));
+    }
+
+    [TestMethod]
     public void StyleAndAuthenticationArePartOfImmutableSourceIdentity()
     {
-        AzureTileAcquisitionSession original = new(MapStyle.Road, "token");
+        AzureTileAcquisitionSession original =
+            new(MapStyle.Road, "token", "en-US");
 
         Assert.AreEqual(
             original.SourceKey,
-            new AzureTileAcquisitionSession(MapStyle.Road, "token").SourceKey);
+            new AzureTileAcquisitionSession(
+                MapStyle.Road,
+                "token",
+                "en-US").SourceKey);
         Assert.AreNotEqual(
             original.SourceKey,
-            new AzureTileAcquisitionSession(MapStyle.Satellite, "token").SourceKey);
+            new AzureTileAcquisitionSession(
+                MapStyle.Satellite,
+                "token",
+                "en-US").SourceKey);
         Assert.AreNotEqual(
             original.SourceKey,
-            new AzureTileAcquisitionSession(MapStyle.Road, "replacement").SourceKey);
+            new AzureTileAcquisitionSession(
+                MapStyle.Road,
+                "replacement",
+                "en-US").SourceKey);
+        Assert.AreNotEqual(
+            original.SourceKey,
+            new AzureTileAcquisitionSession(
+                MapStyle.Road,
+                "token",
+                "fr").SourceKey);
         Assert.DoesNotContain("token", original.SourceKey.ToString()!, StringComparison.Ordinal);
     }
 }
