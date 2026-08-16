@@ -1590,11 +1590,10 @@ public sealed partial class MapControl : Control
                 return;
             }
 
-            _azureAuthenticationInfoBar.Severity = InfoBarSeverity.Error;
-            _azureAuthenticationInfoBar.Title = "Azure Maps authentication failed";
-            _azureAuthenticationInfoBar.Message =
-                "Azure Maps rejected MapServiceToken. Verify the token and try again.";
-            _azureAuthenticationInfoBar.IsOpen = true;
+            ShowAzureAuthenticationInfoBar(
+                InfoBarSeverity.Error,
+                "Azure Maps authentication failed",
+                "Azure Maps rejected MapServiceToken. Verify the token and try again.");
         });
     }
 
@@ -1615,10 +1614,10 @@ public sealed partial class MapControl : Control
             return;
         }
 
-        _azureAuthenticationInfoBar.Severity = InfoBarSeverity.Warning;
-        _azureAuthenticationInfoBar.Title = "Azure Maps token required";
-        _azureAuthenticationInfoBar.Message =
-            "Set MapServiceToken to display the selected Azure basemap.";
+        SetAzureAuthenticationInfoBarContent(
+            InfoBarSeverity.Warning,
+            "Azure Maps token required",
+            "Set MapServiceToken to display the selected Azure basemap.");
         _missingAzureTokenTimer ??= CreateMissingAzureTokenTimer();
         _missingAzureTokenTimer.Start();
     }
@@ -1643,8 +1642,33 @@ public sealed partial class MapControl : Control
             MapStyle != MapStyle.Blank &&
             string.IsNullOrWhiteSpace(MapServiceToken))
         {
-            _azureAuthenticationInfoBar.IsOpen = true;
+            ShowAzureAuthenticationInfoBar(
+                InfoBarSeverity.Warning,
+                "Azure Maps token required",
+                "Set MapServiceToken to display the selected Azure basemap.");
         }
+    }
+
+    private void ShowAzureAuthenticationInfoBar(
+        InfoBarSeverity severity,
+        string title,
+        string message)
+    {
+        SetAzureAuthenticationInfoBarContent(severity, title, message);
+        _azureAuthenticationInfoBar!.IsOpen = true;
+    }
+
+    private void SetAzureAuthenticationInfoBarContent(
+        InfoBarSeverity severity,
+        string title,
+        string message)
+    {
+        _azureAuthenticationInfoBar!.Severity = severity;
+        _azureAuthenticationInfoBar.Title = title;
+        _azureAuthenticationInfoBar.Message = message;
+        AutomationProperties.SetName(
+            _azureAuthenticationInfoBar,
+            $"{title}. {message}");
     }
 
     private void StopMissingAzureTokenTimer()

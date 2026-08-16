@@ -57,6 +57,7 @@
                                 HorizontalAlignment="Center"
                                 VerticalAlignment="Top"
                                 AutomationProperties.AutomationId="AzureMapsAuthenticationInfoBar"
+                                AutomationProperties.LiveSetting="Assertive"
                                 IsClosable="False"
                                 IsOpen="False"/>
                             <Border
