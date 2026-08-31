@@ -1,6 +1,0 @@
-<Project>
-  <ItemGroup>
-    <Analyzer Include="C:\Users\mn\.copilot\installed-plugins\awesome-copilot\winui\skills\winui-dev-workflow\analyzer\Microsoft.WindowsAppSDK.Analyzers.dll" />
-  </ItemGroup>
-  <Import Project="C:\Users\mn\.copilot\installed-plugins\awesome-copilot\winui\skills\winui-dev-workflow\analyzer\Microsoft.WindowsAppSDK.Analyzers.targets" />
-</Project>
