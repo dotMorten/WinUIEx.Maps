@@ -98,7 +98,9 @@ internal sealed partial class MapRenderer
                 state.FallbackTileZooms.Clear();
                 state.VectorStyleAssets = null;
             }
-            else if (previousTileZoom >= 0 && previousTileZoom != scene.TileZoom)
+            else if (previousTileZoom >= 0 &&
+                (previousTileZoom != scene.TileZoom ||
+                 (sceneChanged && IsVectorRenderKind(renderKind))))
             {
                 UpdateCachedFallbackTileZooms(sourceId, state, scene.TileZoom);
             }
@@ -654,8 +656,13 @@ internal sealed partial class MapRenderer
     /// Rebuilds a raster scene at a source zoom from the current animated camera and
     /// viewport.
     /// </summary>
-    private MapScene CreateCurrentRasterScene(int tileZoom) =>
-        MapCamera.CreateScene(
+    private MapScene CreateCurrentRasterScene(int tileZoom)
+    {
+        if (_frameSourceScenes.TryGetValue(tileZoom, out MapScene? scene))
+        {
+            return scene;
+        }
+        scene = MapCamera.CreateScene(
             _displayLongitude,
             _displayLatitude,
             _displayZoom,
@@ -664,6 +671,9 @@ internal sealed partial class MapRenderer
             _viewportHeight,
             _displayHeading,
             _displayPitch);
+        _frameSourceScenes.Add(tileZoom, scene);
+        return scene;
+    }
 
     /// <summary>
     /// Draws every cached tile instance in a scene and reports whether any fade remains

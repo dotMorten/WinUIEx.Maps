@@ -98,6 +98,26 @@ internal readonly record struct TestGlyph(
     uint Advance,
     byte[] Bitmap)
 {
+    internal static TestGlyph RectangleSdf(char character)
+    {
+        const int width = 12;
+        const int height = 16;
+        const int buffer = (int)VectorGlyph.SdfBuffer;
+        byte[] bitmap = new byte[(width + buffer * 2) * (height + buffer * 2)];
+        for (int y = 0; y < height + buffer * 2; y++)
+        {
+            for (int x = 0; x < width + buffer * 2; x++)
+            {
+                int distance = Math.Min(
+                    Math.Min(x - buffer, width + buffer - 1 - x),
+                    Math.Min(y - buffer, height + buffer - 1 - y));
+                bitmap[y * (width + buffer * 2) + x] =
+                    (byte)Math.Clamp(192 + distance * 32, 0, 255);
+            }
+        }
+        return new TestGlyph(character, width, height, 0, height, 10, bitmap);
+    }
+
     internal static TestGlyph Solid(
         char character,
         uint width = 6,

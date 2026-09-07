@@ -1,7 +1,9 @@
 using WinUIEx.Maps.Rendering.Diagnostics;
+using WinUIEx.Maps.Rendering;
 using System.Collections.Concurrent;
 using System.Diagnostics.Tracing;
 using System.Reflection;
+using System.Text;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace WinUIEx.Maps.Tests;
@@ -18,6 +20,44 @@ public sealed class MapControlEventSourceTests
         Assert.DoesNotContain(
             source => source.Name == "Microsoft-MapControl-Rendering",
             EventSource.GetSources());
+    }
+
+    [TestMethod]
+    public void IgnoredTileEdgeLayoutReportsOnlySanitizedCompatibilityCounts()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(
+            EventLevel.Informational,
+            MapControlEventSource.Keywords.Tiles |
+            MapControlEventSource.Keywords.VectorTiles);
+
+        VectorStyleCompatibility.Report(-1, Encoding.UTF8.GetBytes(
+            """
+            {
+              "layers": [
+                {
+                  "id": "private-layer",
+                  "type": "symbol",
+                  "source-layer": "private-source",
+                  "layout": {
+                    "text-field": "private-label",
+                    "symbol-avoid-edges": true
+                  }
+                },
+                {
+                  "type": "symbol",
+                  "layout": {"symbol-avoid-edges": false}
+                }
+              ]
+            }
+            """));
+
+        CapturedEvent captured = listener.Single(75);
+        Assert.AreEqual("VectorStyleCompatibilityIssue", captured.Name);
+        Assert.AreSequenceEqual(
+            ["style", "issueKind", "construct", "count"],
+            captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>([-1, 4, "symbol-avoid-edges", 2], captured.Payload);
     }
 
     [TestMethod]
@@ -439,9 +479,101 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 76),
+            Enumerable.Range(1, 80),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
+    }
+
+    [TestMethod]
+    public void FrameTimingsAreOptInNumericAndCorrelated()
+    {
+        using TestEventListener listener = new();
+        listener.Enable();
+        MapControlEventSource.Log.RenderFrameTiming(4, 12, 1, 2, 3, 4, 5, 15);
+        MapControlEventSource.Log.MapFrameStageTiming(4, 12, 1, 2, 3, 4, 5, 6, 7);
+        MapControlEventSource.Log.GeometryStreamUploadTiming(4, 12, 10, 2, 8, 524280, 1.25);
+        CapturedEvent frame = listener.Single(77);
+        Assert.AreSequenceEqual(
+            ["rendererId", "frameId", "renderLockMilliseconds", "renderMilliseconds",
+             "captureMilliseconds", "presentMilliseconds", "handoffMilliseconds",
+             "totalMilliseconds"],
+            frame.PayloadNames);
+        CapturedEvent stages = listener.Single(78);
+        Assert.AreSequenceEqual(
+            ["rendererId", "frameId", "cameraMilliseconds", "commitMilliseconds",
+             "rasterMilliseconds", "polygonMilliseconds", "lineMilliseconds",
+             "symbolMilliseconds", "otherMilliseconds"],
+            stages.PayloadNames);
+        Assert.AreEqual(4L, frame.Payload[0]);
+        Assert.AreEqual(12L, frame.Payload[1]);
+        Assert.AreEqual(15d, frame.Payload[7]);
+        Assert.AreEqual(frame.Payload[0], stages.Payload[0]);
+        Assert.AreEqual(frame.Payload[1], stages.Payload[1]);
+        Assert.AreEqual(7d, stages.Payload[8]);
+        CapturedEvent uploads = listener.Single(80);
+        Assert.AreEqual("GeometryStreamUploadTiming", uploads.Name);
+        Assert.AreSequenceEqual(
+            ["rendererId", "frameId", "uploadCount", "discardCount",
+             "noOverwriteCount", "byteCount", "uploadMilliseconds"],
+            uploads.PayloadNames);
+        Assert.AreEqual(frame.Payload[0], uploads.Payload[0]);
+        Assert.AreEqual(frame.Payload[1], uploads.Payload[1]);
+        Assert.AreEqual(10, uploads.Payload[2]);
+        Assert.AreEqual(2, uploads.Payload[3]);
+        Assert.AreEqual(8, uploads.Payload[4]);
+        Assert.AreEqual(524280L, uploads.Payload[5]);
+        Assert.AreEqual(1.25d, uploads.Payload[6]);
+        foreach (string name in new[] { "RenderFrameTiming", "MapFrameStageTiming", "GeometryStreamUploadTiming" })
+        {
+            MethodInfo method = typeof(MapControlEventSource).GetMethod(name)!;
+            EventAttribute attribute = method.GetCustomAttribute<EventAttribute>()!;
+            Assert.AreEqual(EventLevel.Verbose, attribute.Level);
+            Assert.AreEqual(MapControlEventSource.Keywords.Frames, attribute.Keywords);
+            Assert.IsTrue(method.GetParameters().All(parameter =>
+                parameter.ParameterType == typeof(int) ||
+                parameter.ParameterType == typeof(long) ||
+                parameter.ParameterType == typeof(double)));
+        }
+        Assert.DoesNotContain(captured => captured.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
+    public void PipelineStageFailurePreservesSanitizedDiagnosticBoundaries()
+    {
+        using TestEventListener listener = new();
+        listener.Enable();
+        MapControlEventSource.Log.TilePipelineStageFailed(
+            0, 12, 669, 1430, 3, 1, nameof(InvalidOperationException), -1);
+        CapturedEvent failure = listener.Single(79);
+        Assert.AreSequenceEqual(
+            ["sourceKind", "zoom", "x", "y", "generation", "stage", "exceptionType", "hresult"],
+            failure.PayloadNames);
+        Assert.AreEqual(3L, failure.Payload[4]);
+        Assert.AreEqual(1, failure.Payload[5]);
+        Assert.AreEqual(nameof(InvalidOperationException), failure.Payload[6]);
+        Assert.AreEqual(-1, failure.Payload[7]);
+        Assert.DoesNotContain(captured => captured.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
+    public void InformationalTracingDoesNotEmitFrameTimings()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational);
+        MapControlEventSource.Log.RenderFrameTiming(4, 12, 1, 2, 3, 4, 5, 15);
+        MapControlEventSource.Log.MapFrameStageTiming(4, 12, 1, 2, 3, 4, 5, 6, 7);
+        MapControlEventSource.Log.GeometryStreamUploadTiming(4, 12, 10, 2, 8, 524280, 1.25);
+        Assert.DoesNotContain(captured => captured.Id is 77 or 78 or 80, listener.Events);
+    }
+
+    [TestMethod]
+    public void GeometryStreamTimingRequiresFramesKeyword()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.Device);
+        MapControlEventSource.Log.GeometryStreamUploadTiming(4, 12, 10, 2, 8, 524280, 1.25);
+        Assert.DoesNotContain(captured => captured.Id is 0 or 80, listener.Events);
+        Assert.AreEqual((EventKeywords)0x400, MapControlEventSource.Keywords.Frames);
     }
 
     [TestMethod]
@@ -567,12 +699,14 @@ public sealed class MapControlEventSourceTests
 
         internal IEnumerable<CapturedEvent> Events => _events;
 
-        internal void Enable()
+        internal void Enable(
+            EventLevel level = EventLevel.Verbose,
+            EventKeywords keywords = EventKeywords.All)
         {
             EnableEvents(
                 MapControlEventSource.Log,
-                EventLevel.Verbose,
-                EventKeywords.All);
+                level,
+                keywords);
         }
 
         internal CapturedEvent Single(int eventId)

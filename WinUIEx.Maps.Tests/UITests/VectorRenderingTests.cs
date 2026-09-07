@@ -10,6 +10,182 @@ namespace WinUIEx.Maps.Tests.UITests;
 [DoNotParallelize]
 public sealed class VectorRenderingTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
+    [TestMethod]
+    [DataRow(256, false, 0, 0d)]
+    [DataRow(256, true, 0, 0d)]
+    [DataRow(512, true, 0, 0d)]
+    [DataRow(256, true, 200, 0d)]
+    [DataRow(256, true, 0, 0.75)]
+    [DataRow(512, true, 0, 0.75)]
+    public Task CoarseGeometryCoversSkippedZoomLevelsUntilEligibleDetailIsOpaque(
+        int tileSize,
+        bool zoomLimitedStyle,
+        int fadeMilliseconds,
+        double initialZoomOffset) =>
+        MapControlTestHost.LoadUIAsync(
+            () => new SwapChainPanel { Width = 640, Height = 480 },
+            async element =>
+            {
+                using RenderingEventListener listener = new(
+                    "TileSetActivated",
+                    "VectorLineFallbackSummary",
+                    "VectorPolygonRenderBatch",
+                    "VectorGeometryFallbackOpacitySummary");
+                using MapRenderer renderer = new();
+                const long sourceId = 42;
+                TileId coarseId = new(4, 8, 8);
+                double initialZoom = coarseId.Zoom + Math.Log2(tileSize / 256d);
+                string zoomRange = zoomLimitedStyle
+                    ? FormattableString.Invariant(
+                        $"\"minzoom\": {initialZoom + initialZoomOffset}, \"maxzoom\": {initialZoom + 1},")
+                    : "";
+                string detailStyleZoom = (initialZoom + 4.5)
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture);
+                byte[] coarse = new MapboxVectorTileBuilder()
+                    .AddPolygon("coarseLand",
+                        [[new(0, 0), new(4096, 0), new(4096, 4096), new(0, 4096)]])
+                    .AddLine("coarseRoad", [new(0, 2048), new(4096, 2048)])
+                    .Build();
+                byte[] detail = new MapboxVectorTileBuilder()
+                    .AddPolygon("detailLand",
+                        [[new(0, 0), new(4096, 0), new(4096, 4096), new(0, 4096)]])
+                    .Build();
+                TestVectorTileSource source = TestVectorTileSource.Create(
+                    coarseId, coarse,
+                    $$"""
+                    {
+                      "version": 8,
+                      "layers": [
+                        { "type": "fill", "source-layer": "coarseLand", {{zoomRange}}
+                          "paint": { "fill-color": "#00ff00" } },
+                        { "type": "fill", "source-layer": "detailLand",
+                          "paint": { "fill-color": [
+                            "step", ["zoom"], "#ff0000", {{detailStyleZoom}}, "#0000ff"
+                          ] } },
+                        { "type": "line", "source-layer": "coarseRoad", {{zoomRange}}
+                          "paint": { "line-color": "#ffff00", "line-width": 8 } }
+                      ]
+                    }
+                    """,
+                    "{}", [0, 0, 0, 0], 1, 1);
+                BasicGeoposition center = source.TileCenter;
+                renderer.Attach((SwapChainPanel)element);
+                renderer.SetLayerRenderPlan(
+                    [new LayerRenderSnapshot(LayerRenderKind.VectorPoints,
+                        0, sourceId, true, 1, TimeSpan.FromMilliseconds(fadeMilliseconds),
+                        0, 24, 0, tileSize)]);
+                using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+
+                void Activate(int sourceZoom, double longitude, long generation,
+                    Func<TileId, bool> includesTile, double zoomOffset = 0)
+                {
+                    double displayZoom = sourceZoom + Math.Log2(tileSize / 256d) + zoomOffset;
+                    renderer.SetCameraTargetImmediately(
+                        longitude, center.Latitude, displayZoom, 640, 480);
+                    renderer.ActivateRasterTileSet(sourceId, generation, generation,
+                        MapCamera.CreateScene(longitude, center.Latitude,
+                            displayZoom, sourceZoom, 640, 480, 0, 0),
+                        includesTile, RasterSourceKind.Custom,
+                        LayerRenderKind.VectorPoints, false);
+                }
+
+                async Task Queue(TileId id, byte[] data, long generation)
+                {
+                    Assert.IsTrue(await renderer.QueueVectorTileAsync(
+                        new VectorTileData(new RasterTileKey(sourceId, id),
+                            VectorTileDecoder.Decode(data), source.StyleAssets,
+                            [], null, generation, -1), timeout.Token));
+                }
+
+                Activate(4, center.Longitude, 1, id => id == coarseId, initialZoomOffset);
+                await Queue(coarseId, coarse, 1);
+                MapRenderFrame initial = await renderer.CaptureFrameAsync(timeout.Token);
+                Assert.IsNotEmpty(FindColor(initial, 0, 255, 0, minimumPixelCount: 20_000));
+                Assert.IsNotEmpty(FindColor(initial, 255, 255, 0, minimumPixelCount: 1_000));
+
+                Activate(8, center.Longitude, 2, _ => true);
+                MapRenderFrame pending = await renderer.CaptureFrameAsync(timeout.Token);
+                string resultsDirectory = Path.Combine(AppContext.BaseDirectory, "TestResults");
+                string scenario = FormattableString.Invariant(
+                    $"{tileSize}-{zoomLimitedStyle}-{fadeMilliseconds}-{initialZoomOffset}");
+                string artifact = Path.Combine(resultsDirectory,
+                    $"zoom-pending-{scenario}.png");
+                await pending.SavePngAsync(artifact);
+                foreach (CapturedRenderingEvent captured in listener.Events(
+                    "VectorGeometryFallbackOpacitySummary"))
+                {
+                    TestContext.WriteLine($"{captured.Name}: {string.Join(", ", captured.Payload)}");
+                }
+                Assert.IsNotEmpty(FindColor(pending, 0, 255, 0, minimumPixelCount: 100_000),
+                    "Coarse land must remain while all detailed requests are withheld.");
+                Assert.IsNotEmpty(FindColor(pending, 255, 255, 0, minimumPixelCount: 3_000),
+                    "Coarse roads must survive a four-level jump and style maxzoom.");
+                Assert.IsTrue(listener.Events("TileSetActivated").Any(captured =>
+                    Convert.ToInt32(captured.Payload[1]) == 8 &&
+                    Convert.ToInt32(captured.Payload[3]) == 1));
+                Assert.IsTrue(listener.Events("VectorGeometryFallbackOpacitySummary").Any(captured =>
+                    Convert.ToInt32(captured.Payload[2]) > 0 &&
+                    Convert.ToDouble(captured.Payload[5]) == 1));
+                Assert.IsTrue(listener.Events("VectorLineFallbackSummary").Any(captured =>
+                    Convert.ToInt32(captured.Payload[2]) > 0 &&
+                    Convert.ToInt32(captured.Payload[3]) == 0 &&
+                    Convert.ToDouble(captured.Payload[4]) >= 4));
+
+                // Interrupt the zoom and pan before any replacement can arrive.
+                Activate(7, center.Longitude + 0.1, 3, _ => true);
+                MapRenderFrame reversed = await renderer.CaptureFrameAsync(timeout.Token);
+                Assert.IsNotEmpty(FindColor(reversed, 0, 255, 0, minimumPixelCount: 100_000));
+                Activate(8, center.Longitude, 4, _ => true);
+                MapScene detailScene = MapCamera.CreateScene(center.Longitude, center.Latitude,
+                    initialZoom + 4, 8, 640, 480, 0, 0);
+                TileId firstDetail = detailScene.RequiredTiles
+                    .First(id => id.X == 136 && id.Y == 136);
+                await Queue(firstDetail, detail, 4);
+                MapRenderFrame partial = await renderer.CaptureFrameAsync(timeout.Token);
+                Assert.IsNotEmpty(FindColor(partial, 0, 255, 0, minimumPixelCount: 100_000));
+                Assert.IsNotEmpty(FindColor(partial, 255, 0, 0, minimumPixelCount: 20_000));
+
+                int completedCoverageEventStart =
+                    listener.Events("VectorGeometryFallbackOpacitySummary").Length;
+                foreach (TileId id in detailScene.RequiredTiles.Where(id => id != firstDetail))
+                {
+                    await Queue(id, detail, 4);
+                }
+                MapRenderFrame complete = await renderer.CaptureFrameAsync(timeout.Token);
+                Assert.IsNotEmpty(FindColor(complete, 255, 0, 0, minimumPixelCount: 300_000));
+                Assert.IsEmpty(FindColor(complete, 0, 255, 0, minimumPixelCount: 10));
+                Assert.IsEmpty(FindColor(complete, 255, 255, 0, minimumPixelCount: 10));
+                if (fadeMilliseconds > 0)
+                {
+                    CapturedRenderingEvent[] fadingEvents =
+                        listener.Events("VectorGeometryFallbackOpacitySummary")[completedCoverageEventStart..];
+                    Assert.IsTrue(fadingEvents.Any(captured =>
+                        Convert.ToInt32(captured.Payload[1]) == 1 &&
+                        Convert.ToDouble(captured.Payload[5]) > 0 &&
+                        Convert.ToDouble(captured.Payload[6]) < 1),
+                        "Roads should crossfade only after every replacement tile arrives.");
+                    Assert.IsTrue(fadingEvents.Any(captured =>
+                        Convert.ToInt32(captured.Payload[1]) == 2 &&
+                        Convert.ToDouble(captured.Payload[5]) == 1),
+                        "Land coverage must stay opaque while replacement tiles fade in.");
+                }
+                await complete.SavePngAsync(Path.Combine(resultsDirectory,
+                    $"zoom-complete-{scenario}.png"));
+
+                renderer.SetCameraTargetImmediately(
+                    center.Longitude, center.Latitude, initialZoom + 4.75, 640, 480);
+                MapRenderFrame overzoomed = await renderer.CaptureFrameAsync(timeout.Token);
+                Assert.IsNotEmpty(FindColor(overzoomed, 0, 0, 255, minimumPixelCount: 300_000),
+                    "Active tiles must continue evaluating styles at the displayed zoom.");
+
+                Activate(8, center.Longitude + 4, 5, _ => true);
+                MapRenderFrame panned = await renderer.CaptureFrameAsync(timeout.Token);
+                Assert.IsNotEmpty(FindColor(panned, 0, 255, 0, minimumPixelCount: 100_000),
+                    "A new viewport must recover cached coarse coverage after the previous one completed.");
+            });
+
     [TestMethod]
     public Task PitchedPanReusesRetainedVectorGeometry() =>
         MapControlTestHost.LoadMapControlAsync(async map =>
@@ -1007,7 +1183,302 @@ public sealed class VectorRenderingTests
         });
 
     [TestMethod]
-    public Task RepeatedGlyphTexturesBatchAcrossCollisionSafeLabels() =>
+    [DataRow(false, 0d, 0d, 0d)]
+    [DataRow(false, 0.75, 45d, 0d)]
+    [DataRow(false, 0.5, 90d, 40d)]
+    [DataRow(true, 0d, 0d, 0d)]
+    [DataRow(true, 0.75, 45d, 0d)]
+    public Task TileEdgeLabelsRenderEveryGlyphDuringZoomAndRotation(
+        bool linePlacement, double zoomOffset, double heading, double pitch) =>
+        MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            map.IsTextScaleFactorEnabled = false;
+            TileId tileId = new(4, 8, 8);
+            MapboxVectorTileBuilder builder = new();
+            if (linePlacement)
+            {
+                builder.AddLine("labels", [new(64, 256), new(64, 3840)]);
+            }
+            else
+            {
+                builder.AddPoint("labels", 64, 2048);
+            }
+            TestVectorTileSource source = TestVectorTileSource.Create(
+                tileId, builder.Build(),
+                $$$"""
+                {
+                  "version": 8,
+                  "layers": [
+                    {"type": "background", "paint": {"background-color": "#ffffff"}},
+                    {
+                      "type": "symbol",
+                      "source-layer": "labels",
+                      "layout": {
+                        "symbol-placement": "{{{(linePlacement ? "line" : "point")}}}",
+                        "symbol-spacing": 1000,
+                        "symbol-avoid-edges": true,
+                        "text-field": "ABCDEFG",
+                        "text-font": ["TestFont"],
+                        "text-size": 24,
+                        "text-max-width": 100,
+                        "text-rotation-alignment": "viewport"
+                      },
+                      "paint": {"text-color": "#000000"}
+                    }
+                  ]
+                }
+                """,
+                "{}", [0, 0, 0, 0], 1, 1);
+            source.AddGlyphs(
+                "TestFont",
+                [.. "ABCDEFG".Select(character => TestGlyph.Solid(character, advance: 18))]);
+            await RenderAsync(map, source);
+            Assert.IsTrue(await map.TrySetViewAsync(
+                new Geopoint(source.TileCenter),
+                tileId.Zoom + zoomOffset,
+                heading,
+                pitch,
+                MapAnimationKind.None));
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+            MapRenderFrame frame = await map.CaptureRenderedFrameAsync(timeout.Token);
+
+            Assert.HasCount(7, FindColor(frame, 0, 0, 0, minimumPixelCount: 40));
+        });
+
+    [TestMethod]
+    [DataRow("point", false, "ABBA")]
+    [DataRow("point", true, "ABBA")]
+    [DataRow("point", false, "AAAA")]
+    [DataRow("line", false, "ABBA")]
+    [DataRow("line", true, "ABBA")]
+    public Task TextHalosDoNotCoverNeighboringGlyphFills(
+        string placement,
+        bool allowOverlap,
+        string label) =>
+        MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            map.IsTextScaleFactorEnabled = false;
+            TileId tileId = new(4, 8, 8);
+            MapboxVectorTileBuilder builder = new();
+            Dictionary<string, object> properties = new() { ["label"] = label };
+            if (placement == "line")
+            {
+                builder.AddLine(
+                    "markers",
+                    [new(1000, 2048), new(3096, 2048)],
+                    properties);
+            }
+            else
+            {
+                builder.AddPoint("markers", 2048, 2048, properties);
+            }
+            byte[] tile = builder.Build();
+            TestVectorTileSource CreateSource(string haloColor)
+            {
+                TestVectorTileSource source = TestVectorTileSource.Create(
+                    tileId,
+                    tile,
+                    $$"""
+                    {
+                      "version": 8,
+                      "layers": [
+                        {
+                          "type": "background",
+                          "paint": {"background-color": "#0044cc"}
+                        },
+                        {
+                          "type": "symbol",
+                          "source-layer": "markers",
+                          "layout": {
+                            "symbol-placement": "{{placement}}",
+                            "text-field": ["get", "label"],
+                            "text-font": ["TestFont"],
+                            "text-size": 24,
+                            "text-allow-overlap": {{allowOverlap.ToString().ToLowerInvariant()}}
+                          },
+                          "paint": {
+                            "text-color": "#000000",
+                            "text-halo-color": "{{haloColor}}",
+                            "text-halo-width": 3
+                          }
+                        }
+                      ]
+                    }
+                    """,
+                    "{}",
+                    [0, 0, 0, 0],
+                    1,
+                    1);
+                source.AddGlyphs(
+                    "TestFont",
+                    TestGlyph.RectangleSdf('A'),
+                    TestGlyph.RectangleSdf('B'));
+                return source;
+            }
+
+            MapRenderFrame withoutHalo = await RenderAsync(
+                map, CreateSource("#00000000"));
+            ((TestVectorTileLayer)map.Layers[0]).ReplaceSource(CreateSource("#ffffff"));
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+            MapRenderFrame withHalo = await map.CaptureRenderedFrameAsync(timeout.Token);
+            int blackPixels = 0;
+            int coveredPixels = 0;
+            for (int y = 0; y < withoutHalo.Height; y++)
+            {
+                for (int x = 0; x < withoutHalo.Width; x++)
+                {
+                    var before = GetPixel(withoutHalo, x, y);
+                    if (before.Red > 8 || before.Green > 8 || before.Blue > 8)
+                    {
+                        continue;
+                    }
+                    blackPixels++;
+                    var after = GetPixel(withHalo, x, y);
+                    if (after.Red > 16 || after.Green > 16 || after.Blue > 16)
+                    {
+                        coveredPixels++;
+                    }
+                }
+            }
+            Assert.IsGreaterThan(100, blackPixels);
+            Assert.AreEqual(0, coveredPixels, "A neighboring halo covered a black glyph stroke.");
+            Assert.IsNotEmpty(FindColor(withHalo, 255, 255, 255, minimumPixelCount: 10));
+        });
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public Task TextHaloPassesPreserveOverlappingLabelOrder(bool separateStyleLayers) =>
+        MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            map.IsTextScaleFactorEnabled = false;
+            TileId tileId = new(4, 8, 8);
+            string CreateLayer(int? rank) =>
+                $$$"""
+                {
+                  "type": "symbol",
+                  "source-layer": "markers",
+                  {{{(rank is int value ? $"\"filter\": [\"==\", [\"get\", \"rank\"], {value}]," : "")}}}
+                  "layout": {
+                    "symbol-sort-key": ["get", "rank"],
+                    "text-field": ["get", "label"],
+                    "text-font": ["TestFont"],
+                    "text-size": 24,
+                    "text-allow-overlap": true
+                  },
+                  "paint": {
+                    "text-color": "#000000",
+                    "text-halo-color": "#ffffff",
+                    "text-halo-width": 3
+                  }
+                }
+                """;
+            string layers = separateStyleLayers
+                ? $"{CreateLayer(0)},{CreateLayer(1)}"
+                : CreateLayer(null);
+            TestVectorTileSource CreateSource(bool lower, bool upper)
+            {
+                MapboxVectorTileBuilder builder = new();
+                if (lower)
+                {
+                    builder.AddPoint("markers", 2048, 2048,
+                        new Dictionary<string, object> { ["label"] = "ABBA", ["rank"] = 0 });
+                }
+                if (upper)
+                {
+                    builder.AddPoint("markers", 2128, 2048,
+                        new Dictionary<string, object> { ["label"] = "ABBA", ["rank"] = 1 });
+                }
+                TestVectorTileSource source = TestVectorTileSource.Create(
+                    tileId, builder.Build(),
+                    $$$"""
+                    {
+                      "version": 8,
+                      "layers": [
+                        {"type": "background", "paint": {"background-color": "#0044cc"}},
+                        {{{layers}}}
+                      ]
+                    }
+                    """,
+                    "{}", [0, 0, 0, 0], 1, 1);
+                source.AddGlyphs("TestFont",
+                    TestGlyph.RectangleSdf('A'), TestGlyph.RectangleSdf('B'));
+                return source;
+            }
+
+            MapRenderFrame lowerOnly = await RenderAsync(map, CreateSource(true, false));
+            TestVectorTileLayer layer = (TestVectorTileLayer)map.Layers[0];
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+            layer.ReplaceSource(CreateSource(false, true));
+            MapRenderFrame upperOnly = await map.CaptureRenderedFrameAsync(timeout.Token);
+            layer.ReplaceSource(CreateSource(true, true));
+            MapRenderFrame combined = await map.CaptureRenderedFrameAsync(timeout.Token);
+            int overlapPixels = 0;
+            for (int y = 0; y < combined.Height; y++)
+            {
+                for (int x = 0; x < combined.Width; x++)
+                {
+                    var lower = GetPixel(lowerOnly, x, y);
+                    var upper = GetPixel(upperOnly, x, y);
+                    if (lower.Red < 8 && lower.Green < 8 && lower.Blue < 8 &&
+                        upper.Red > 247 && upper.Green > 247 && upper.Blue > 247)
+                    {
+                        overlapPixels++;
+                        var actual = GetPixel(combined, x, y);
+                        Assert.IsTrue(
+                            actual.Red > 240 && actual.Green > 240 && actual.Blue > 240,
+                            "A lower label's fill covered the upper label's halo.");
+                    }
+                }
+            }
+            Assert.IsGreaterThan(10, overlapPixels);
+        });
+
+    [TestMethod]
+    public Task TextHaloPreservesTranslucentFillAndOpacity() =>
+        MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            map.IsTextScaleFactorEnabled = false;
+            TileId tileId = new(4, 8, 8);
+            byte[] tile = new MapboxVectorTileBuilder()
+                .AddPoint("markers", 2048, 2048).Build();
+            TestVectorTileSource source = TestVectorTileSource.Create(
+                tileId, tile,
+                """
+                {
+                  "version": 8,
+                  "layers": [
+                    {"type": "background", "paint": {"background-color": "#0044cc"}},
+                    {
+                      "type": "symbol",
+                      "source-layer": "markers",
+                      "layout": {
+                        "text-field": "A",
+                        "text-font": ["TestFont"],
+                        "text-size": 48
+                      },
+                      "paint": {
+                        "text-color": "#00000080",
+                        "text-opacity": 0.5,
+                        "text-halo-color": "#ffffff",
+                        "text-halo-width": 6
+                      }
+                    }
+                  ]
+                }
+                """,
+                "{}", [0, 0, 0, 0], 1, 1);
+            source.AddGlyphs("TestFont", TestGlyph.RectangleSdf('A'));
+            MapRenderFrame frame = await RenderAsync(map, source);
+            Assert.IsNotEmpty(FindColor(frame, 0, 51, 153, minimumPixelCount: 100, tolerance: 2));
+            Assert.IsNotEmpty(FindColor(frame, 128, 162, 230, minimumPixelCount: 10, tolerance: 2));
+        });
+
+    [TestMethod]
+    [DataRow("#00000000", 2)]
+    [DataRow("#ffffff", 4)]
+    public Task RepeatedGlyphTexturesBatchAcrossCollisionSafeLabels(
+        string haloColor, int drawCallCount) =>
         MapControlTestHost.LoadMapControlAsync(async map =>
         {
             using RenderingEventListener listener =
@@ -1038,7 +1509,7 @@ public sealed class VectorRenderingTests
             TestVectorTileSource source = TestVectorTileSource.Create(
                 tileId,
                 tile,
-                """
+                $$"""
                 {
                   "version": 8,
                   "layers": [{
@@ -1050,7 +1521,9 @@ public sealed class VectorRenderingTests
                       "text-size": 18
                     },
                     "paint": {
-                      "text-color": "#ff00ff"
+                      "text-color": "#ff00ff",
+                      "text-halo-color": "{{haloColor}}",
+                      "text-halo-width": 2
                     }
                   }]
                 }
@@ -1071,7 +1544,7 @@ public sealed class VectorRenderingTests
                 .Last(captured =>
                     Convert.ToInt32(captured.Payload[2]) >= 8);
             Assert.AreEqual(2, Convert.ToInt32(batch.Payload[5]));
-            Assert.AreEqual(2, Convert.ToInt32(batch.Payload[6]));
+            Assert.AreEqual(drawCallCount, Convert.ToInt32(batch.Payload[6]));
         });
 
     [TestMethod]

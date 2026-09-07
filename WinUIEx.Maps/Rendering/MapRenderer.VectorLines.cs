@@ -12,6 +12,8 @@ internal sealed partial class MapRenderer
     private const double MinimumVectorLineRasterWidth = 1;
     private const double FullVectorGeometryFallbackZoomDifference = 1;
     private const double MaximumVectorGeometryFallbackZoomDifference = 2;
+    private static readonly MapScreenPoint[] s_vectorLineCircleOffsets =
+        CreateVectorLineCircleOffsets();
     private VectorLineFrameCache? _vectorLineFrameCache;
 
     private unsafe bool DrawVectorLineLayer(
@@ -451,7 +453,8 @@ internal sealed partial class MapRenderer
                     layer.RuntimeId,
                     key.Id,
                     activeScene,
-                    layer.FadeDuration));
+                    layer.FadeDuration,
+                    tileZooms));
             result.MinimumFallbackOpacity = Math.Min(
                 result.MinimumFallbackOpacity,
                 opacityMultiplier);
@@ -477,7 +480,8 @@ internal sealed partial class MapRenderer
                     batches,
                     batchOrder,
                     ref result,
-                    opacityMultiplier);
+                    opacityMultiplier,
+                    GetVectorFallbackStyleZoom(_displayZoom, key.Id.Zoom, layer.TileSize));
             }
         }
         return activeFade;
@@ -492,7 +496,9 @@ internal sealed partial class MapRenderer
         {
             return 0;
         }
-        double zoomDifference = Math.Abs(displayZoom - tileZoom);
+        // Coarser geometry is still coverage, even after several skipped levels.
+        // Keep the distance limit only for finer geometry retained while zooming out.
+        double zoomDifference = tileZoom - displayZoom;
         double distanceOpacity = zoomDifference <=
             FullVectorGeometryFallbackZoomDifference
             ? 1
@@ -503,40 +509,75 @@ internal sealed partial class MapRenderer
                 0,
                 1);
         return distanceOpacity *
-            (1 - Math.Clamp(replacementOpacity, 0, 1));
+            (1 - (double.IsNaN(replacementOpacity)
+                ? 0
+                : Math.Clamp(replacementOpacity, 0, 1)));
     }
 
-    private double GetVectorGeometryReplacementOpacity(
+    // Previously drawn fallback geometry keeps its last drawable style zoom. Tiles that
+    // were never drawn use their native tier so zoom-limited coarse layers remain available.
+    internal static double GetVectorFallbackStyleZoom(
+        double displayZoom,
+        int tileZoom,
+        int tileSize) =>
+        Math.Min(displayZoom, tileZoom + Math.Log2(tileSize / MapCamera.TileSize));
+
+    internal double GetVectorGeometryReplacementOpacity(
         long sourceId,
         TileId fallbackTile,
         MapScene? activeScene,
-        TimeSpan fadeDuration)
+        TimeSpan fadeDuration,
+        IReadOnlySet<int>? fallbackZooms = null)
     {
         if (activeScene is null)
         {
             return 0;
         }
+        _rasterLayers.TryGetValue(sourceId, out RasterLayerState? state);
         bool hasOverlap = false;
         double replacementOpacity = 1;
         foreach (TileId activeTile in activeScene.RequiredTiles)
         {
-            if (!TilesOverlap(fallbackTile, activeTile))
+            if ((state is not null && !state.IncludesTile(activeTile)) ||
+                !TilesOverlap(fallbackTile, activeTile))
             {
                 continue;
             }
             hasOverlap = true;
-            if (!_vectorTiles.TryGetValue(
+            double coveredOpacity = 0;
+            if (_vectorTiles.TryGetValue(
                     new RasterTileKey(sourceId, activeTile),
                     out VectorTileCacheEntry? tile))
+            {
+                coveredOpacity = ComputeLayerTileOpacity(
+                    Stopwatch.GetElapsedTime(tile.ReadyTimestamp), fadeDuration, 1);
+            }
+            // A nearer cached ancestor can replace older, more generalized coverage
+            // without waiting for the final zoom. Never count another source or finer tiles.
+            if (coveredOpacity < 1 && fallbackZooms is not null)
+            {
+                foreach (int zoom in fallbackZooms)
+                {
+                    if (zoom <= fallbackTile.Zoom || zoom >= activeTile.Zoom)
+                    {
+                        continue;
+                    }
+                    int shift = activeTile.Zoom - zoom;
+                    TileId ancestor = new(zoom, activeTile.X >> shift, activeTile.Y >> shift);
+                    if (_vectorTiles.TryGetValue(new RasterTileKey(sourceId, ancestor), out tile))
+                    {
+                        coveredOpacity = Math.Max(coveredOpacity, ComputeLayerTileOpacity(
+                            Stopwatch.GetElapsedTime(tile.ReadyTimestamp), fadeDuration, 1));
+                    }
+                }
+            }
+            if (coveredOpacity <= 0)
             {
                 return 0;
             }
             replacementOpacity = Math.Min(
                 replacementOpacity,
-                ComputeLayerTileOpacity(
-                    Stopwatch.GetElapsedTime(tile.ReadyTimestamp),
-                    fadeDuration,
-                    1));
+                coveredOpacity);
         }
         return hasOverlap ? replacementOpacity : 0;
     }
@@ -548,10 +589,12 @@ internal sealed partial class MapRenderer
         Dictionary<VectorLineBatchKey, PooledGeometryBuffer> batches,
         List<VectorLineBatchKey> batchOrder,
         ref VectorLineRenderResult result,
-        double opacityMultiplier)
+        double opacityMultiplier,
+        double? styleZoom = null)
     {
         tile.MarkUsed();
-        VectorLineResolution resolution = tile.GetLines(_displayZoom);
+        VectorLineResolution resolution = tile.GetLines(
+            styleZoom ?? _displayZoom, isFallback: styleZoom.HasValue);
         result.CandidateLineCount += resolution.Lines.Length;
         result.EvaluationFailureCount += resolution.EvaluationFailureCount;
         double tileOpacity = ComputeLayerTileOpacity(
@@ -1509,19 +1552,31 @@ internal sealed partial class MapRenderer
         return true;
     }
 
+    private static MapScreenPoint[] CreateVectorLineCircleOffsets()
+    {
+        const int segmentCount = 8;
+        MapScreenPoint[] offsets = new MapScreenPoint[segmentCount];
+        for (int index = 1; index <= segmentCount; index++)
+        {
+            double angle = index * Math.Tau / segmentCount;
+            offsets[index - 1] = new MapScreenPoint(
+                Math.Cos(angle),
+                Math.Sin(angle));
+        }
+        return offsets;
+    }
+
     private static void AddCircle(
         PooledGeometryBuffer triangles,
         MapScreenPoint center,
         double radius)
     {
-        const int segmentCount = 8;
         MapScreenPoint previous = new(center.X + radius, center.Y);
-        for (int index = 1; index <= segmentCount; index++)
+        foreach (MapScreenPoint offset in s_vectorLineCircleOffsets)
         {
-            double angle = index * Math.Tau / segmentCount;
             MapScreenPoint current = new(
-                center.X + (Math.Cos(angle) * radius),
-                center.Y + (Math.Sin(angle) * radius));
+                center.X + (offset.X * radius),
+                center.Y + (offset.Y * radius));
             triangles.Add(center);
             triangles.Add(previous);
             triangles.Add(current);

@@ -61,6 +61,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
     /// </summary>
     protected override void CreateRendererResources()
     {
+        _geometryStreamCursor.Reset();
+        _patternStreamCursor.Reset();
         Interlocked.Increment(ref _deviceEpoch);
         CreateShaders();
         CreateGeometry();
@@ -120,6 +122,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         Interlocked.Increment(ref _deviceEpoch);
         ReleaseRasterTileTextures();
         ReleaseVectorTiles();
+        _frameSourceScenes.Clear();
         _lastRequiredTiles.Clear();
         _pendingRasterTiles.Clear();
         while (_rasterPixelUploads.TryDequeue(out _))
@@ -156,6 +159,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
         ReleasePointer(ref _iconInstanceBufferPointer);
         ReleasePointer(ref _geometryVertexBufferPointer);
         ReleasePointer(ref _patternVertexBufferPointer);
+        _geometryStreamCursor.Reset();
+        _patternStreamCursor.Reset();
         ReleasePointer(ref _inputLayoutPointer);
         ReleasePointer(ref _iconInputLayoutPointer);
         ReleasePointer(ref _geometryInputLayoutPointer);

@@ -16,6 +16,9 @@ public class VectorRenderFrameBenchmarks
     private double _latitude;
     private int _zoom;
     private bool _cameraToggle;
+    private bool _zoomToggle;
+    private double _fractionalZoomLow;
+    private double _fractionalZoomHigh;
 
     [Params(
         VectorTileFixture.NewYorkZ10,
@@ -32,6 +35,10 @@ public class VectorRenderFrameBenchmarks
         VectorTileBenchmarkFixture fixture =
             VectorTileBenchmarkFixture.Load(Fixture);
         _zoom = fixture.Id.Zoom;
+        _cameraToggle = false;
+        _zoomToggle = false;
+        _fractionalZoomLow = _zoom + 0.25;
+        _fractionalZoomHigh = _fractionalZoomLow + 1.0 / 64;
         double scale = Math.Pow(2, fixture.Id.Zoom);
         _longitude =
             MapCamera.WorldXToLongitude((fixture.Id.X + 0.5) / scale);
@@ -105,6 +112,24 @@ public class VectorRenderFrameBenchmarks
             _longitude + (_cameraToggle ? 0.000001 : -0.000001),
             _latitude,
             _zoom,
+            Width,
+            Height,
+            targetHeading: 0,
+            targetPitch: Pitch);
+        return _renderer.RenderOffscreenFrameForBenchmark();
+    }
+
+    [Benchmark]
+    [BenchmarkCategory("Zoom")]
+    public long RenderVectorFrameWithFractionalZoomWithoutPresent()
+    {
+        // Alternate within one source level: each frame changes the exact style
+        // and geometry cache keys without drifting outside the warmed tile set.
+        _zoomToggle = !_zoomToggle;
+        _renderer.SetCameraTargetImmediately(
+            _longitude,
+            _latitude,
+            _zoomToggle ? _fractionalZoomLow : _fractionalZoomHigh,
             Width,
             Height,
             targetHeading: 0,

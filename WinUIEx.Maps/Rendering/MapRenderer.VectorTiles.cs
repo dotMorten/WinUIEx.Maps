@@ -280,6 +280,7 @@ internal sealed partial class MapRenderer
             if (HasCompleteVectorCoverage(
                 layer.RuntimeId,
                 scene,
+                state.IncludesTile,
                 layer.FadeDuration))
             {
                 state.FallbackTileZooms.Clear();
@@ -670,6 +671,7 @@ internal sealed partial class MapRenderer
         CollectionsMarshal.AsSpan(batch.Instances).CopyTo(instances);
         UpdatePreparedVectorBatchCounts(
             batch.Key.Batch.Kind,
+            batch.Key.Batch.Paint,
             batch.Instances.Count,
             batch.LinePlacementCount,
             ref renderResult);
@@ -682,6 +684,7 @@ internal sealed partial class MapRenderer
             batch.Key.Batch.Opacity,
             instances,
             batch.Instances.Count,
+            default,
             drawSequence);
     }
 
@@ -717,6 +720,7 @@ internal sealed partial class MapRenderer
         }
         UpdatePreparedVectorBatchCounts(
             kind,
+            paint,
             placementArray.Length,
             linePlacementCount,
             ref renderResult);
@@ -729,11 +733,13 @@ internal sealed partial class MapRenderer
             opacity,
             instances,
             placementArray.Length,
+            GetTextDrawGroup(placementArray[0]),
             drawSequence);
     }
 
     private static void UpdatePreparedVectorBatchCounts(
         VectorSymbolKind kind,
+        VectorTextPaint paint,
         int instanceCount,
         int linePlacementCount,
         ref VectorRenderResult renderResult)
@@ -744,8 +750,8 @@ internal sealed partial class MapRenderer
             renderResult.DrawableGlyphCount += instanceCount;
             renderResult.GlyphTextureBatchCount++;
             renderResult.GlyphDrawCallCount +=
-                (instanceCount + IconInstanceCapacity - 1) /
-                IconInstanceCapacity;
+                ((instanceCount + IconInstanceCapacity - 1) /
+                IconInstanceCapacity) * (paint.HaloColor.W > 0 ? 2 : 1);
         }
         else
         {
@@ -777,61 +783,93 @@ internal sealed partial class MapRenderer
             (uint)Marshal.SizeOf<IconInstance>());
         SetVertexShader(context, _iconVertexShaderPointer);
 
-        foreach (PreparedVectorSymbolBatch batch in batches)
+        for (int start = 0; start < batches.Count;)
         {
-            if (!_iconTextures.TryGetValue(
-                    batch.TextureId,
-                    out TileTexture? texture))
+            PreparedVectorSymbolBatch first = batches[start];
+            int end = start + 1;
+            if (first.Kind == VectorSymbolKind.Text)
             {
-                continue;
-            }
-            texture.MarkUsed();
-            TileConstants layerConstants = batch.Kind == VectorSymbolKind.Text
-                ? new TileConstants(
-                    new Vector4(1, 1, 0, 0),
-                    batch.Paint.Color,
-                    batch.Paint.HaloColor,
-                    new Vector4(
-                        (float)batch.Opacity,
-                        (float)batch.Paint.HaloOffset,
-                        (float)batch.Paint.HaloBlur,
-                        0))
-                : new TileConstants(
-                    new Vector4(1, 1, 0, 0),
-                    batch.IconPaint.Color,
-                    new Vector4(1, 0, 1, 0),
-                    new Vector4(
-                        (float)batch.Opacity,
-                        batch.IconPaint.IsTinted ? 1 : 0,
-                        0,
-                        0));
-            UpdateSubresource(context, _constantBufferPointer, &layerConstants);
-            SetPixelShader(
-                context,
-                batch.Kind == VectorSymbolKind.Text
-                    ? _glyphPixelShaderPointer
-                    : _iconPixelShaderPointer,
-                texture.ViewPointer,
-                _samplerPointer,
-                _constantBufferPointer);
-            ReadOnlySpan<IconInstance> remaining =
-                batch.Instances.AsSpan(0, batch.InstanceCount);
-            while (!remaining.IsEmpty)
-            {
-                ReadOnlySpan<IconInstance> chunk = remaining[..Math.Min(
-                    IconInstanceCapacity,
-                    remaining.Length)];
-                fixed (IconInstance* instancePointer = chunk)
+                while (end < batches.Count &&
+                    batches[end].Kind == VectorSymbolKind.Text &&
+                    batches[end].StyleLayerOrder == first.StyleLayerOrder &&
+                    batches[end].TextDrawGroup == first.TextDrawGroup)
                 {
-                    WriteDiscardBuffer(
-                        context,
-                        _iconInstanceBufferPointer,
-                        instancePointer,
-                        (nuint)(chunk.Length * Marshal.SizeOf<IconInstance>()));
+                    end++;
                 }
-                DrawIndexedInstanced(context, (uint)chunk.Length);
-                remaining = remaining[chunk.Length..];
+                // Collision-safe labels share texture batches; overlapping labels remain separate.
+                for (int index = start; index < end; index++)
+                {
+                    if (batches[index].Paint.HaloColor.W > 0)
+                    {
+                        DrawPreparedVectorBatch(context, batches[index], haloPass: true);
+                    }
+                }
             }
+            for (int index = start; index < end; index++)
+            {
+                DrawPreparedVectorBatch(context, batches[index], haloPass: false);
+            }
+            start = end;
+        }
+    }
+
+    private unsafe void DrawPreparedVectorBatch(
+        IntPtr context,
+        PreparedVectorSymbolBatch batch,
+        bool haloPass)
+    {
+        if (!_iconTextures.TryGetValue(
+                batch.TextureId,
+                out TileTexture? texture))
+        {
+            return;
+        }
+        texture.MarkUsed();
+        TileConstants layerConstants = batch.Kind == VectorSymbolKind.Text
+            ? new TileConstants(
+                new Vector4(1, 1, 0, 0),
+                batch.Paint.Color,
+                batch.Paint.HaloColor,
+                new Vector4(
+                    (float)batch.Opacity,
+                    (float)batch.Paint.HaloOffset,
+                    (float)batch.Paint.HaloBlur,
+                    haloPass ? 1 : 0))
+            : new TileConstants(
+                new Vector4(1, 1, 0, 0),
+                batch.IconPaint.Color,
+                new Vector4(1, 0, 1, 0),
+                new Vector4(
+                    (float)batch.Opacity,
+                    batch.IconPaint.IsTinted ? 1 : 0,
+                    0,
+                    0));
+        UpdateSubresource(context, _constantBufferPointer, &layerConstants);
+        SetPixelShader(
+            context,
+            batch.Kind == VectorSymbolKind.Text
+                ? _glyphPixelShaderPointer
+                : _iconPixelShaderPointer,
+            texture.ViewPointer,
+            _samplerPointer,
+            _constantBufferPointer);
+        ReadOnlySpan<IconInstance> remaining =
+            batch.Instances.AsSpan(0, batch.InstanceCount);
+        while (!remaining.IsEmpty)
+        {
+            ReadOnlySpan<IconInstance> chunk = remaining[..Math.Min(
+                IconInstanceCapacity,
+                remaining.Length)];
+            fixed (IconInstance* instancePointer = chunk)
+            {
+                WriteDiscardBuffer(
+                    context,
+                    _iconInstanceBufferPointer,
+                    instancePointer,
+                    (nuint)(chunk.Length * Marshal.SizeOf<IconInstance>()));
+            }
+            DrawIndexedInstanced(context, (uint)chunk.Length);
+            remaining = remaining[chunk.Length..];
         }
     }
 
@@ -898,11 +936,8 @@ internal sealed partial class MapRenderer
                 }
                 AddProjectedPointSymbolAtAnchor(
                     symbol,
-                    tile,
                     viewportWidth,
                     viewportHeight,
-                    heading,
-                    pitch,
                     anchorX,
                     anchorY,
                     projected);
@@ -1076,11 +1111,8 @@ internal sealed partial class MapRenderer
 
     private static void AddProjectedPointSymbolAtAnchor(
         VectorTileSymbol symbol,
-        VisibleTile tile,
         double viewportWidth,
         double viewportHeight,
-        double heading,
-        double pitch,
         double x,
         double y,
         List<VectorSymbolPlacement> projected)
@@ -1120,17 +1152,7 @@ internal sealed partial class MapRenderer
             {
                 return;
             }
-            if (placement.AvoidEdges &&
-                !IsPlacementWithinTile(
-                    placement,
-                    tile,
-                    viewportWidth,
-                    viewportHeight,
-                    heading,
-                    pitch))
-            {
-                return;
-            }
+            // Tile edges are not clip boundaries: collision handling spans visible tiles.
             projected.Add(placement);
     }
 
@@ -1190,6 +1212,16 @@ internal sealed partial class MapRenderer
         double firstCenter = continuousPlacement
             ? symbolLength / 2
             : (pathLength - ((placementCount - 1) * spacing)) / 2;
+        VectorTileSymbol? textSymbol = null;
+        foreach (VectorTileSymbol symbol in symbols)
+        {
+            if (symbol.Kind == VectorSymbolKind.Text)
+            {
+                textSymbol = symbol;
+                break;
+            }
+        }
+        List<VectorSymbolPlacement> candidate = new(symbols.Count);
         for (int placementIndex = 0;
             placementIndex < placementCount;
             placementIndex++)
@@ -1204,10 +1236,6 @@ internal sealed partial class MapRenderer
             {
                 continue;
             }
-            VectorTileSymbol? textSymbol = symbols
-                .Where(symbol => symbol.Kind == VectorSymbolKind.Text)
-                .Cast<VectorTileSymbol?>()
-                .FirstOrDefault();
             bool reverse = !continuousPlacement &&
                 (textSymbol?.KeepUpright ?? true) &&
                 centerTangent.X < 0;
@@ -1220,7 +1248,7 @@ internal sealed partial class MapRenderer
             {
                 centerRotation = NormalizeRadians(centerRotation + Math.PI);
             }
-            List<VectorSymbolPlacement> candidate = new(symbols.Count);
+            candidate.Clear();
             double? previousRotation = null;
             double? previousOffset = null;
             MapScreenPoint previousCenter = default;
@@ -1354,104 +1382,11 @@ internal sealed partial class MapRenderer
                 }
                 candidate.Add(placement);
             }
-            if (valid &&
-                (!candidate.Any(placement => placement.AvoidEdges) ||
-                 candidate.All(placement => IsPlacementWithinTile(
-                     placement,
-                     tile,
-                     viewportWidth,
-                     viewportHeight,
-                     heading,
-                     pitch))))
+            if (valid)
             {
                 projected.AddRange(candidate);
             }
         }
-    }
-
-    private static bool IsPlacementWithinTile(
-        VectorSymbolPlacement placement,
-        VisibleTile tile,
-        double viewportWidth,
-        double viewportHeight,
-        double heading,
-        double pitch)
-    {
-        GetVectorSymbolBounds(
-            placement,
-            out double left,
-            out double top,
-            out double right,
-            out double bottom);
-        MapScreenPoint[] tileCorners =
-        [
-            ProjectVectorPoint(
-                new VectorTilePoint(0, 0),
-                tile,
-                viewportWidth,
-                viewportHeight,
-                heading,
-                pitch),
-            ProjectVectorPoint(
-                new VectorTilePoint(1, 0),
-                tile,
-                viewportWidth,
-                viewportHeight,
-                heading,
-                pitch),
-            ProjectVectorPoint(
-                new VectorTilePoint(1, 1),
-                tile,
-                viewportWidth,
-                viewportHeight,
-                heading,
-                pitch),
-            ProjectVectorPoint(
-                new VectorTilePoint(0, 1),
-                tile,
-                viewportWidth,
-                viewportHeight,
-                heading,
-                pitch),
-        ];
-        return IsPointInsideConvexPolygon(
-                new MapScreenPoint(left, top),
-                tileCorners) &&
-            IsPointInsideConvexPolygon(
-                new MapScreenPoint(right, top),
-                tileCorners) &&
-            IsPointInsideConvexPolygon(
-                new MapScreenPoint(right, bottom),
-                tileCorners) &&
-            IsPointInsideConvexPolygon(
-                new MapScreenPoint(left, bottom),
-                tileCorners);
-    }
-
-    private static bool IsPointInsideConvexPolygon(
-        MapScreenPoint point,
-        IReadOnlyList<MapScreenPoint> polygon)
-    {
-        double? sign = null;
-        for (int index = 0; index < polygon.Count; index++)
-        {
-            MapScreenPoint first = polygon[index];
-            MapScreenPoint second = polygon[(index + 1) % polygon.Count];
-            double cross =
-                ((second.X - first.X) * (point.Y - first.Y)) -
-                ((second.Y - first.Y) * (point.X - first.X));
-            if (Math.Abs(cross) <= 1e-7)
-            {
-                continue;
-            }
-            double current = Math.Sign(cross);
-            if (sign is double expected && current != expected)
-            {
-                return false;
-            }
-            sign = current;
-        }
-        return true;
     }
 
     private static bool TryGetSmoothedPathPosition(
@@ -1565,8 +1500,8 @@ internal sealed partial class MapRenderer
     {
         double halfWidth = placement.Width / 2;
         double halfHeight = placement.Height / 2;
-        double cosine = Math.Abs(Math.Cos(placement.Rotation));
-        double sine = Math.Abs(Math.Sin(placement.Rotation));
+        double cosine = placement.Rotation == 0 ? 1 : Math.Abs(Math.Cos(placement.Rotation));
+        double sine = placement.Rotation == 0 ? 0 : Math.Abs(Math.Sin(placement.Rotation));
         double boundsHalfWidth =
             (halfWidth * cosine) + (halfHeight * sine);
         double boundsHalfHeight =
@@ -1701,12 +1636,18 @@ internal sealed partial class MapRenderer
                             cell,
                             out List<LabelCollisionRectangle>? occupied))
                     {
-                        overlaps = occupied.Any(existing =>
-                            existing.CollisionFamily != candidate.CollisionFamily &&
-                            bounds.Left < existing.Right &&
-                            bounds.Right > existing.Left &&
-                            bounds.Top < existing.Bottom &&
-                            bounds.Bottom > existing.Top);
+                        foreach (LabelCollisionRectangle existing in occupied)
+                        {
+                            if (existing.CollisionFamily != candidate.CollisionFamily &&
+                                bounds.Left < existing.Right &&
+                                bounds.Right > existing.Left &&
+                                bounds.Top < existing.Bottom &&
+                                bounds.Bottom > existing.Top)
+                            {
+                                overlaps = true;
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -1745,6 +1686,7 @@ internal sealed partial class MapRenderer
         List<VectorSymbolBatch> batches = [];
         VectorBatchKey? currentKey = null;
         int currentOrder = -1;
+        (long CollisionGroup, int LabelId, int PlacementIndex) currentTextGroup = default;
         List<VectorSymbolPlacement> currentPlacements = [];
         foreach (VectorSymbolPlacement placement in placements
             .OrderBy(placement => placement.StyleLayerOrder)
@@ -1758,7 +1700,9 @@ internal sealed partial class MapRenderer
                 placement.Opacity);
             if (currentKey is VectorBatchKey previous &&
                 (previous != key ||
-                 currentOrder != placement.StyleLayerOrder))
+                 currentOrder != placement.StyleLayerOrder ||
+                 (placement.Kind == VectorSymbolKind.Text &&
+                  currentTextGroup != GetTextDrawGroup(placement))))
             {
                 batches.Add(new VectorSymbolBatch(
                     currentOrder,
@@ -1772,6 +1716,7 @@ internal sealed partial class MapRenderer
             }
             currentKey = key;
             currentOrder = placement.StyleLayerOrder;
+            currentTextGroup = GetTextDrawGroup(placement);
             currentPlacements.Add(placement);
         }
         if (currentKey is VectorBatchKey final)
@@ -1788,13 +1733,24 @@ internal sealed partial class MapRenderer
         return batches.ToArray();
     }
 
-    private bool HasCompleteVectorCoverage(
+    private static (long CollisionGroup, int LabelId, int PlacementIndex)
+        GetTextDrawGroup(VectorSymbolPlacement placement) =>
+        (placement.CollisionGroup, placement.LabelId, placement.PlacementIndex);
+
+    internal bool HasCompleteVectorCoverage(
         long sourceId,
         MapScene scene,
+        Func<TileId, bool> includesTile,
         TimeSpan fadeDuration)
     {
+        bool hasEligibleTile = false;
         foreach (TileId id in scene.RequiredTiles)
         {
+            if (!includesTile(id))
+            {
+                continue;
+            }
+            hasEligibleTile = true;
             if (!_vectorTiles.TryGetValue(
                     new RasterTileKey(sourceId, id),
                     out VectorTileCacheEntry? tile) ||
@@ -1803,7 +1759,7 @@ internal sealed partial class MapRenderer
                 return false;
             }
         }
-        return scene.RequiredTiles.Count != 0;
+        return hasEligibleTile;
     }
 
     private void CollectVectorAccessibilityFeatures(
@@ -2088,8 +2044,10 @@ internal sealed partial class MapRenderer
         private VectorSymbolResolution _resolved =
             new([], 0, 0);
         private double _resolvedLineZoom = double.NaN;
+        private double _lastDrawableLineZoom = double.NaN;
         private VectorLineResolution _resolvedLines = new([], 0);
         private double _resolvedPolygonZoom = double.NaN;
+        private double _lastDrawablePolygonZoom = double.NaN;
         private VectorPolygonResolution _resolvedPolygons = new([], 0);
         private double _resolvedAccessibilityZoom = double.NaN;
         private VectorTileAccessibilityFeature[] _resolvedAccessibility = [];
@@ -2107,7 +2065,11 @@ internal sealed partial class MapRenderer
             double zoom,
             double textScaleFactor)
         {
-            if (_resolvedZoom != zoom ||
+            // Missing atlas assets may become available before the next zoom.
+            if ((_resolvedZoom != zoom &&
+                    (_resolved.UnavailableGlyphCount != 0 ||
+                     _resolved.UnavailableSpriteCount != 0 ||
+                     !styleAssets.CanReuseSymbols(_resolvedZoom, zoom))) ||
                 _resolvedTextScaleFactor != textScaleFactor)
             {
                 _resolved = styleAssets.ResolveSymbols(
@@ -2120,22 +2082,40 @@ internal sealed partial class MapRenderer
             return _resolved;
         }
 
-        internal VectorLineResolution GetLines(double zoom)
+        internal VectorLineResolution GetLines(double zoom, bool isFallback = false)
         {
-            if (_resolvedLineZoom != zoom)
+            if (isFallback && double.IsFinite(_lastDrawableLineZoom))
+            {
+                zoom = _lastDrawableLineZoom;
+            }
+            if (_resolvedLineZoom != zoom &&
+                !styleAssets.CanReuseLines(_resolvedLineZoom, zoom))
             {
                 _resolvedLines = styleAssets.ResolveLines(features, zoom);
                 _resolvedLineZoom = zoom;
             }
+            if (!isFallback && _resolvedLines.Lines.Length != 0)
+            {
+                _lastDrawableLineZoom = zoom;
+            }
             return _resolvedLines;
         }
 
-        internal VectorPolygonResolution GetPolygons(double zoom)
+        internal VectorPolygonResolution GetPolygons(double zoom, bool isFallback = false)
         {
-            if (_resolvedPolygonZoom != zoom)
+            if (isFallback && double.IsFinite(_lastDrawablePolygonZoom))
+            {
+                zoom = _lastDrawablePolygonZoom;
+            }
+            if (_resolvedPolygonZoom != zoom &&
+                !styleAssets.CanReusePolygons(_resolvedPolygonZoom, zoom))
             {
                 _resolvedPolygons = styleAssets.ResolvePolygons(features, zoom);
                 _resolvedPolygonZoom = zoom;
+            }
+            if (!isFallback && _resolvedPolygons.Polygons.Length != 0)
+            {
+                _lastDrawablePolygonZoom = zoom;
             }
             return _resolvedPolygons;
         }
@@ -2429,6 +2409,7 @@ internal sealed partial class MapRenderer
         double Opacity,
         IconInstance[] Instances,
         int InstanceCount,
+        (long CollisionGroup, int LabelId, int PlacementIndex) TextDrawGroup,
         int DrawSequence);
 
     private sealed class PreparedVectorSymbolBatchComparer :

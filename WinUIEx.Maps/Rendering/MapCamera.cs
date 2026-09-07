@@ -780,7 +780,7 @@ internal readonly record struct MapViewportPoint(double X, double Y);
 /// tiles nearest the viewport center, defining request batch order without changing
 /// draw-instance ordering.
 /// </remarks>
-internal sealed record MapScene(
+internal sealed class MapScene(
     double Zoom,
     int TileZoom,
     double Longitude,
@@ -791,30 +791,51 @@ internal sealed record MapScene(
     double Pitch,
     IReadOnlyList<VisibleTile> VisibleTiles)
 {
-    internal IReadOnlyList<TileId> RequiredTiles
+    internal double Zoom { get; } = Zoom;
+    internal int TileZoom { get; } = TileZoom;
+    internal double Longitude { get; } = Longitude;
+    internal double Latitude { get; } = Latitude;
+    internal double ViewportWidth { get; } = ViewportWidth;
+    internal double ViewportHeight { get; } = ViewportHeight;
+    internal double Heading { get; } = Heading;
+    internal double Pitch { get; } = Pitch;
+    internal IReadOnlyList<VisibleTile> VisibleTiles { get; } = VisibleTiles;
+    private IReadOnlyList<TileId>? _requiredTiles;
+
+    internal IReadOnlyList<TileId> RequiredTiles =>
+        Volatile.Read(ref _requiredTiles) ??
+        LazyInitializer.EnsureInitialized(ref _requiredTiles, CreateRequiredTiles);
+
+    private IReadOnlyList<TileId> CreateRequiredTiles()
     {
-        get
+        double viewportCenterX = ViewportWidth / 2;
+        double viewportCenterY = ViewportHeight / 2;
+        Dictionary<TileId, TilePriority> nearest = new(VisibleTiles.Count);
+        for (int index = 0; index < VisibleTiles.Count; index++)
         {
-            double viewportCenterX = ViewportWidth / 2;
-            double viewportCenterY = ViewportHeight / 2;
-            return VisibleTiles
-                .Select((tile, index) => new
-                {
-                    tile.Id,
-                    Index = index,
-                    DistanceSquared =
-                        Math.Pow((tile.Left + (tile.Size / 2)) - viewportCenterX, 2) +
-                        Math.Pow((tile.Top + (tile.Size / 2)) - viewportCenterY, 2),
-                })
-                .GroupBy(tile => tile.Id)
-                .Select(group => group
-                    .OrderBy(tile => tile.DistanceSquared)
-                    .ThenBy(tile => tile.Index)
-                    .First())
-                .OrderBy(tile => tile.DistanceSquared)
-                .ThenBy(tile => tile.Index)
-                .Select(tile => tile.Id)
-                .ToArray();
+            VisibleTile tile = VisibleTiles[index];
+            double x = tile.Left + (tile.Size / 2) - viewportCenterX;
+            double y = tile.Top + (tile.Size / 2) - viewportCenterY;
+            TilePriority candidate = new(tile.Id, index, (x * x) + (y * y));
+            if (!nearest.TryGetValue(tile.Id, out TilePriority previous) ||
+                candidate.DistanceSquared < previous.DistanceSquared)
+            {
+                nearest[tile.Id] = candidate;
+            }
         }
+        TilePriority[] priorities = [.. nearest.Values];
+        Array.Sort(priorities, static (left, right) =>
+        {
+            int distance = left.DistanceSquared.CompareTo(right.DistanceSquared);
+            return distance != 0 ? distance : left.Index.CompareTo(right.Index);
+        });
+        TileId[] required = new TileId[priorities.Length];
+        for (int index = 0; index < priorities.Length; index++)
+        {
+            required[index] = priorities[index].Id;
+        }
+        return required;
     }
+
+    private readonly record struct TilePriority(TileId Id, int Index, double DistanceSquared);
 }

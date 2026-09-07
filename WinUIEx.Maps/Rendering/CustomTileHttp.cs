@@ -177,8 +177,7 @@ internal static class CustomTileHttp
         CancellationToken cancellationToken)
     {
         using WinRtHttpRequestMessage request = new(WinRtHttpMethod.Get, uri);
-        headers.Apply(request);
-        request.Headers.Accept.ParseAdd(acceptMediaType);
+        ApplyRequestHeaders(request, acceptMediaType, headers);
         using Windows.Web.Http.HttpResponseMessage response = await HttpClient
             .SendRequestAsync(request, WinRtHttpCompletionOption.ResponseHeadersRead)
             .AsTask(cancellationToken)
@@ -198,6 +197,19 @@ internal static class CustomTileHttp
             .ConfigureAwait(false);
     }
 
+    internal static void ApplyRequestHeaders(
+        WinRtHttpRequestMessage request,
+        string acceptMediaType,
+        CustomRequestHeaders headers)
+    {
+        headers.Apply(request);
+        request.Headers.Accept.ParseAdd(acceptMediaType);
+        if (!request.Headers.ContainsKey("User-Agent"))
+        {
+            request.Headers.UserAgent.ParseAdd("WinUIEx.Maps/1.0");
+        }
+    }
+
     internal static HttpBaseProtocolFilter CreateHttpFilter()
     {
         HttpBaseProtocolFilter filter = new();
@@ -206,10 +218,9 @@ internal static class CustomTileHttp
         return filter;
     }
 
-    private static WinRtHttpClient CreateHttpClient()
+    internal static WinRtHttpClient CreateHttpClient()
     {
-        WinRtHttpClient client = new(CreateHttpFilter());
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("WinUIEx.Maps/1.0");
-        return client;
+        // WinRT default-header copying can race during concurrent SendRequestAsync calls.
+        return new(CreateHttpFilter());
     }
 }

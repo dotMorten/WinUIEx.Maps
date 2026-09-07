@@ -134,8 +134,9 @@ internal sealed class TouchInputInjector(InputTarget target)
             send(contacts);
             try
             {
-                const int steps = 20;
-                for (int step = 1; step <= steps && paths.Any(path => path.Count > 1); step++)
+                int steps = Math.Max(20, (int)Math.Ceiling(durationMilliseconds / 16d));
+                bool moves = paths.Any(path => path.Count > 1);
+                for (int step = 1; step <= steps && moves; step++)
                 {
                     if (durationMilliseconds > 0)
                     {

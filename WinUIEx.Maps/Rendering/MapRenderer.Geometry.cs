@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using WinUIEx.Maps.Rendering.Diagnostics;
@@ -16,6 +17,46 @@ internal sealed partial class MapRenderer
     private const int GeometryVertexCapacity = 65_535;
     private const double VectorGeometryCachePadding = 384;
     private const double VectorGeometryCachePanLimit = 320;
+    private DynamicGeometryStreamCursor _geometryStreamCursor = new(GeometryVertexCapacity);
+    private DynamicGeometryStreamCursor _patternStreamCursor = new(GeometryVertexCapacity);
+
+    private unsafe uint WriteGeometryVertices(
+        IntPtr context,
+        IntPtr resource,
+        ref DynamicGeometryStreamCursor cursor,
+        void* vertices,
+        int vertexCount,
+        int vertexStride)
+    {
+        DynamicGeometryStreamRange range = cursor.Reserve(vertexCount);
+        nuint byteCount = checked((nuint)vertexCount * (nuint)vertexStride);
+        long start = _traceGeometryUploads ? Stopwatch.GetTimestamp() : 0;
+        try
+        {
+            WriteDynamicVertexBuffer(
+                context,
+                resource,
+                vertices,
+                byteCount,
+                checked((nuint)GeometryVertexCapacity * (nuint)vertexStride),
+                checked((nuint)range.StartVertex * (nuint)vertexStride),
+                range.Discard);
+        }
+        catch
+        {
+            // A failed wrap may leave the previous allocation live. Never append to it.
+            cursor.Reset();
+            throw;
+        }
+        if (_traceGeometryUploads)
+        {
+            _geometryUploadTicks += Stopwatch.GetTimestamp() - start;
+            _geometryUploadCount++;
+            _geometryDiscardCount += range.Discard ? 1 : 0;
+            _geometryUploadBytes += (long)byteCount;
+        }
+        return (uint)range.StartVertex;
+    }
 
     private unsafe void DrawMapElements(
         IntPtr context,
@@ -208,15 +249,18 @@ internal sealed partial class MapRenderer
                     new Vector2((float)point.X, (float)point.Y));
             }
 
+            uint startVertex;
             fixed (GeometryVertex* vertexPointer = vertices)
             {
-                WriteDiscardBuffer(
+                startVertex = WriteGeometryVertices(
                     context,
                     _geometryVertexBufferPointer,
+                    ref _geometryStreamCursor,
                     vertexPointer,
-                    (nuint)(count * Marshal.SizeOf<GeometryVertex>()));
+                    count,
+                    Marshal.SizeOf<GeometryVertex>());
             }
-            DrawVertices(context, (uint)count);
+            DrawVertices(context, (uint)count, startVertex);
             startIndex += count;
         }
     }

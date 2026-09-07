@@ -32,11 +32,12 @@ Keywords:
 | `0x80` | custom-source classification within the unified raster pipeline |
 | `0x100` | Azure and custom vector-tile decoding, styles, sprites, and symbols |
 | `0x200` | accessibility semantic snapshots and announcement decisions |
-| `0x3FF` | all areas |
+| `0x400` | opt-in per-frame execution and stage timings |
+| `0x7FF` | all areas |
 
 Levels are Error (`2`), Warning (`3`), Informational (`4`), and Verbose (`5`).
-Informational is the normal diagnostic level. Verbose adds `SceneChanged` and the
-per-render `IconRenderBatch`; enable it only for short camera/icon investigations.
+Informational is the normal diagnostic level. Verbose adds scene, draw-batch, and
+opt-in frame timing events; enable it only for short investigations.
 
 From the repository root, build and launch the packaged sample for the current machine
 architecture with the repository workflow:
@@ -57,7 +58,7 @@ Informational events:
 
 ```powershell
 dotnet-trace collect --process-id <PID> `
-  --providers WinUIEx-Maps-Rendering:0x3FF:4 `
+  --providers WinUIEx-Maps-Rendering:0x7FF:4 `
   --output .\mapcontrol.nettrace
 ```
 
@@ -118,13 +119,13 @@ payload inspection is best in PerfView's Events view.
 | 50 | `VectorStyleAssetsLoaded` | Info/Tiles+VectorTiles | successful Style Spec/sprite load, supported and explicitly skipped layer counts, atlas dimensions, and duration |
 | 51 | `VectorSymbolRenderBatch` | Verbose/Icons+VectorTiles | aggregate point-symbol candidates, drawable instances, typed evaluation failures, unavailable sprites, texture batches, and draw calls |
 | 52 | `VectorGlyphRangeLoaded` | Info/Tiles+VectorTiles | successful bounded glyph-range acquisition and decode with sanitized glyph/byte counts and duration |
-| 53 | `VectorLabelRenderBatch` | Verbose/Icons+VectorTiles | aggregate point-label glyph candidates, drawable glyphs, evaluation failures, unavailable glyphs, texture batches, and draw calls |
+| 53 | `VectorLabelRenderBatch` | Verbose/Icons+VectorTiles | aggregate point-label glyph candidates, drawable glyphs, evaluation failures, unavailable glyphs, texture batches, and draw calls; visible halos add a separate draw pass without doubling glyph or texture-batch counts |
 | 54 | `VectorGlyphRangeUnavailable` | Warning/Tiles+VectorTiles+Errors | definitive 400/404 glyph-range response cached as unavailable so remaining tile imagery and symbols can continue |
 | 55 | `VectorLabelCollisionSummary` | Verbose/Icons+VectorTiles | screen-space label candidates accepted or suppressed by higher-priority overlapping labels, plus suppressed glyph count |
 | 56 | `VectorLineRenderBatch` | Verbose/Tiles+VectorTiles | style-resolved vector line candidates, drawable lines, generated triangle count, evaluation failures, and draw calls |
-| 57 | `VectorLineFallbackSummary` | Verbose/Tiles+VectorTiles | retained line-tile instances drawn from adjacent zooms versus distant fallback instances suppressed to prevent over-generalized cross-screen strokes |
-| 58 | `VectorPolygonRenderBatch` | Verbose/Tiles+VectorTiles | style-resolved polygon candidates, visible tessellated triangles, evaluation failures, distant fallback suppression, and draw calls |
-| 59 | `VectorGeometryFallbackOpacitySummary` | Verbose/Tiles+VectorTiles | retained line or polygon opacity during replacement; polygon fallback coverage remains until replacements are opaque, while line fallback also fades with replacement readiness |
+| 57 | `VectorLineFallbackSummary` | Verbose/Tiles+VectorTiles | retained line-tile instances versus replaced coverage or distant finer fallback suppressed during zoom-out; coarser coverage survives skipped zoom levels |
+| 58 | `VectorPolygonRenderBatch` | Verbose/Tiles+VectorTiles | style-resolved polygon candidates, visible tessellated triangles, evaluation failures, replaced coverage or distant finer fallback suppression, and draw calls |
+| 59 | `VectorGeometryFallbackOpacitySummary` | Verbose/Tiles+VectorTiles | retained line or polygon opacity during replacement; coarser coverage remains across skipped zoom levels, polygons until eligible replacements are opaque and lines crossfading with readiness; nearer cached ancestors can replace older coverage |
 | 60 | `VectorLineSymbolPlacementSummary` | Verbose/Icons+VectorTiles | line-following icon and glyph components resolved from tile geometry, successfully projected along screen-space paths, and drawn after collision suppression |
 | 61 | `VectorGeometryFrameCacheSummary` | Verbose/Tiles+VectorTiles | GPU line or polygon frame geometry built or reused for flat or projective panning, with retained vertex and native-buffer byte counts |
 | 62 | `VectorGeometryDeferredRebuildSummary` | Verbose/Tiles+VectorTiles | whole-scene line or polygon rebuild deferred during active panning while newly available tiles are rendered incrementally, with pending tile count and translated cache offset |
@@ -140,8 +141,67 @@ payload inspection is best in PerfView's Events view.
 | 72 | `AccessibilitySnapshotPublished` | Info/VectorTiles+Accessibility | displayed semantic candidates, deduplication, bounded publication count, and scene version |
 | 73 | `AccessibilityAnnouncementDecision` | Info/Accessibility | feature count and whether a settled semantic update raised or suppressed a live-region announcement |
 | 74 | `AnimationsEnabledChanged` | Info/Camera+Accessibility | effective system animation preference changed, suppressing camera interpolation, touch inertia, focus transitions, and layer fades when disabled |
-| 75 | `VectorStyleCompatibilityIssue` | Info/Tiles+VectorTiles | aggregate unsupported Style Spec layer type or sanitized layout/paint property and occurrence count; custom styles use `style = -1` |
+| 75 | `VectorStyleCompatibilityIssue` | Info/Tiles+VectorTiles | aggregate unsupported or intentionally ignored Style Spec construct and occurrence count; custom styles use `style = -1`; ignored `symbol-avoid-edges` uses issue kind 4 because collisions span visible tiles |
 | 76 | `VectorSymbolWorkingMemoryReleased` | Info/Icons+VectorTiles | renderer-owned symbol instance, placement, collision, and accessibility working capacities released when map resources become dormant |
+| 77 | `RenderFrameTiming` | Verbose/Frames | renderer/frame-correlated render-lock wait, CPU-side rendering, readback, Present, producer handoff, and total pass duration |
+| 78 | `MapFrameStageTiming` | Verbose/Frames | renderer/frame-correlated camera/scene, completion commits, raster, polygon, line, symbol, and remaining frame work |
+| 79 | `TilePipelineStageFailed` | Error/Tiles+Errors | supplements unexpected request failures with source kind, tile/generation, stage, exception type, and HRESULT; stage 0 is request admission, 1 acquisition (including decode/assets), 2 renderer admission |
+| 80 | `GeometryStreamUploadTiming` | Verbose/Frames | renderer/frame-correlated dynamic geometry upload, discard/no-overwrite and byte counts, and aggregate CPU-side map/copy/unmap duration |
+
+### Frame-time investigations
+
+Enable `WinUIEx-Maps-Rendering:0x400:5` to collect frame timings without enabling
+verbose tile/symbol events. Join IDs 77 and 78 by `rendererId` and `frameId`.
+These are process-local numeric identifiers, not public map or layer IDs. Offscreen
+benchmark rendering can emit ID 78, but never ID 77 because it does not Present.
+
+ID 77 measures a render pass after the render thread wakes; it excludes the idle wait
+for a render request. `renderMilliseconds` includes CPU-side D3D submission and any
+driver stalls, not a GPU timestamp-query duration. `presentMilliseconds` includes
+vsync/driver waits. ID 78 excludes readback and presentation; `otherMilliseconds`
+includes accessibility, map elements, cache maintenance, and pipeline setup.
+
+Join ID 80 by the same renderer/frame identifiers to isolate dynamic vertex uploads
+from line/polygon tessellation and draw submission. `uploadMilliseconds` measures the
+combined native Map, memory copy, and Unmap calls for successful streamed geometry
+uploads (including map elements and patterned polygons), not GPU execution or immutable
+geometry-buffer creation. `uploadCount = discardCount + noOverwriteCount`; `byteCount`
+is the total copied bytes, not retained GPU memory. The two fixed-capacity dynamic
+vertex buffers append without overwriting previous draws until a wrap discards the
+allocation. Their independent cursors persist across frames, so a frame can have zero
+discards, or no dynamic uploads when immutable frame caches are reused. ID 80 is emitted
+once per completed map frame alongside ID 78, including offscreen rendering, and adds no
+per-upload timestamps when Frames tracing is disabled. Compare upload duration against
+IDs 77/78 before attributing a long render pass to driver mapping stalls; this aggregate
+does not distinguish Map from copy or Unmap.
+
+Do not infer displayed FPS from event counts divided by trace length or from idle
+gaps between events. Correlate with presentation/DWM tracing for actual refresh
+deadlines and with input timestamps for input-to-display latency. Compare tracing
+off versus on before attributing small changes to production work.
+
+Long synthetic gestures must use time-scaled input steps: a fixed 20-step gesture
+spread across six seconds supplies input only every 300 ms and is not a continuous
+60 Hz navigation workload. The repository touch injector scales steps to the
+requested duration. Confirm effective input/render cadence, and use native input
+tests for repeatable pan/zoom while loading continues.
+`CameraTargetChanged` is rate-limited to one event per 100 ms; its event count is
+not an input-event counter. Use injector timestamps or input tracing for input cadence.
+
+Scheduler waves are publication cohorts, not barriers: a newer scene can start work
+in a freed slot while useful requests from an older scene remain in flight. Pair
+wave Start/Stop and scheduler summaries by generation and scene version, allowing
+overlapping intervals. Shared request/upload limits still apply across cohorts and
+sources. ID 79 distinguishes unexpected acquisition failures from renderer admission
+failures; it does not replace existing request-failure events or prove a network cause.
+
+An ID 79 investigation traced `E_CHANGED_STATE` (`0x8000000C`) thrown synchronously
+by WinRT `SendRequestAsync` to populated shared `DefaultRequestHeaders`. Azure and
+custom requests now set headers on each request, preserving shared-client caching and
+concurrency. The reproduction recorded five errors before the correction and zero
+across 172 requests in a three-route replay afterward. For recurrence, inspect request
+admission and header ownership before assuming a network failure; keep header values
+and request URLs out of traces.
 
 ## Reproduce and interpret
 
@@ -169,8 +229,9 @@ payload inspection is best in PerfView's Events view.
   `MapStyle` value for Azure. ID 52 reports glyph-range latency, ID 54 reports definitive unavailable
   ranges without font or label content, verbose IDs 51/53 summarize point-symbol and
   point-label batching, verbose ID 55 quantifies collision suppression, and verbose ID 56
-  reports direct line geometry generation and drawing, while ID 57 identifies distant
-  fallback suppression during zoom transitions, ID 58 summarizes polygon fills, and ID 59
+  reports direct line geometry generation and drawing, while ID 57 identifies replaced
+  fallback coverage or distant finer-level suppression during zoom-out (not distant coarser
+  coverage during zoom-in), ID 58 summarizes polygon fills, and ID 59
   quantifies polygon fallback coverage and line crossfading, ID 60 reports line-following
   symbol placement, and ID 61
   distinguishes geometry rebuilds from flat or pitched projective frame reuse, while ID 62 confirms
@@ -185,7 +246,10 @@ payload inspection is best in PerfView's Events view.
   exposing layer IDs, source-layer names, or property values. ID 76 confirms renderer-owned
   managed symbol working capacities were dropped during dormant-resource release. The
   compatibility event's `issueKind` is `1` for
-  layer types, `2` for layout properties, and `3` for paint properties.
+  layer types, `2` for unsupported layout properties, `3` for paint properties, and `4`
+  for intentionally ignored layout properties. Kind `4`, construct `symbol-avoid-edges`,
+  confirms the renderer allows complete symbols across tile boundaries and relies on
+  viewport-wide collision handling instead of tile-local edge rejection.
 - **Cache/dedup:** inspect ID 18 over time. A high `pendingDedupCount` is expected while a
   wave is active. Repeated misses for the same stable scene or evictions that cannot return
   below the viewport-aware budget reported by ID 19 indicate shared raster-cache behavior

@@ -53,4 +53,27 @@ public sealed class PendingTileTrackerTests
         Assert.IsFalse(tracker.Contains(first));
         Assert.IsTrue(tracker.Contains(second));
     }
+
+    [TestMethod]
+    public void LateRemovedSourceCompletionPreservesReplacementAndOtherSource()
+    {
+        PendingTileTracker tracker = new();
+        TileId id = new(12, 100, 200);
+        RasterTileKey removed = new(1, id);
+        RasterTileKey other = new(2, id);
+        long oldReservation = tracker.TryReserve(removed);
+        long otherReservation = tracker.TryReserve(other);
+        tracker.RemoveSource(1);
+        long replacementReservation = tracker.TryReserve(removed);
+
+        tracker.Release(removed, oldReservation);
+
+        Assert.IsTrue(tracker.Contains(removed));
+        Assert.IsTrue(tracker.Contains(other));
+        Assert.AreEqual(0, tracker.TryReserve(removed));
+        tracker.Release(removed, replacementReservation);
+        tracker.Release(other, otherReservation);
+        Assert.IsFalse(tracker.Contains(removed));
+        Assert.IsFalse(tracker.Contains(other));
+    }
 }

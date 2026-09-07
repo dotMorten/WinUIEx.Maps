@@ -549,7 +549,30 @@ internal static class DirectXInterop
         IntPtr resource,
         void* data,
         nuint byteCount)
+        => WriteDynamicVertexBuffer(context, resource, data, byteCount, byteCount, 0, true);
+
+    /// <summary>
+    /// Writes a bounded range of a dynamic vertex buffer. No-overwrite ranges must not
+    /// overlap earlier draws since the last discard; the caller owns that reservation.
+    /// </summary>
+    internal static unsafe void WriteDynamicVertexBuffer(
+        IntPtr context,
+        IntPtr resource,
+        void* data,
+        nuint byteCount,
+        nuint bufferByteCapacity,
+        nuint destinationByteOffset,
+        bool discard)
     {
+        if (byteCount == 0 || destinationByteOffset > bufferByteCapacity ||
+            byteCount > bufferByteCapacity - destinationByteOffset)
+        {
+            throw new ArgumentOutOfRangeException(nameof(byteCount));
+        }
+        if (discard && destinationByteOffset != 0)
+        {
+            throw new ArgumentException("Discard writes must start at offset zero.", nameof(destinationByteOffset));
+        }
         D3D11_MAPPED_SUBRESOURCE mapped = default;
         IntPtr* vtable = *(IntPtr**)context;
         var map = (delegate* unmanaged[Stdcall]<
@@ -565,13 +588,17 @@ internal static class DirectXInterop
                 context,
                 resource,
                 0,
-                D3D11_MAP.D3D11_MAP_WRITE_DISCARD,
+                discard ? D3D11_MAP.D3D11_MAP_WRITE_DISCARD : D3D11_MAP.D3D11_MAP_WRITE_NO_OVERWRITE,
                 0,
                 &mapped)),
-            "Failed to map the MapIcon instance buffer.");
+            "Failed to map the dynamic vertex buffer.");
         try
         {
-            Buffer.MemoryCopy(data, mapped.pData, byteCount, byteCount);
+            Buffer.MemoryCopy(
+                data,
+                (byte*)mapped.pData + destinationByteOffset,
+                bufferByteCapacity - destinationByteOffset,
+                byteCount);
         }
         finally
         {
@@ -581,6 +608,41 @@ internal static class DirectXInterop
                 0);
         }
     }
+
+    /// <summary>
+    /// Reserves nonoverlapping triangle-list ranges until wrapping requires a discard.
+    /// Retain across frames, and reset whenever its native buffer is released or a write fails.
+    /// </summary>
+    internal struct DynamicGeometryStreamCursor
+    {
+        private readonly int _capacity;
+        private int _nextVertex;
+
+        internal DynamicGeometryStreamCursor(int capacity)
+        {
+            if (capacity <= 0 || capacity % 3 != 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(capacity));
+            }
+            _capacity = capacity;
+            _nextVertex = 0;
+        }
+
+        internal DynamicGeometryStreamRange Reserve(int vertexCount)
+        {
+            if (vertexCount <= 0 || vertexCount > _capacity || vertexCount % 3 != 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(vertexCount));
+            }
+            int start = vertexCount > _capacity - _nextVertex ? 0 : _nextVertex;
+            _nextVertex = start + vertexCount;
+            return new(start, start == 0);
+        }
+
+        internal void Reset() => _nextVertex = 0;
+    }
+
+    internal readonly record struct DynamicGeometryStreamRange(int StartVertex, bool Discard);
 
     internal static unsafe byte[] ReadTextureBgra(
         IntPtr context,
@@ -853,13 +915,16 @@ internal static class DirectXInterop
     /// <summary>
     /// Draws the requested number of vertices from the currently bound triangle-list buffer.
     /// </summary>
-    internal static unsafe void DrawVertices(IntPtr context, uint vertexCount)
+    internal static unsafe void DrawVertices(
+        IntPtr context,
+        uint vertexCount,
+        uint startVertexLocation = 0)
     {
         IntPtr* vtable = *(IntPtr**)context;
         ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, void>)vtable[13])(
             context,
             vertexCount,
-            0);
+            startVertexLocation);
     }
 
     /// <summary>

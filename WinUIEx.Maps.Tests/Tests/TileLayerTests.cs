@@ -390,6 +390,30 @@ public sealed class TileLayerTests
     }
 
     [TestMethod]
+    [DataRow(null, "https://tiles.example.com/tile", "WinUIEx.Maps/1.0")]
+    [DataRow("CustomClient/2.0", "https://tiles.example.com/tile", "CustomClient/2.0")]
+    [DataRow("CustomClient/2.0", "https://external.example/tile", "WinUIEx.Maps/1.0")]
+    public void CustomUserAgentIsRequestLocalAndRespectsOrigin(
+        string? userAgent, string uri, string expected)
+    {
+        using Windows.Web.Http.HttpClient client = CustomTileHttp.CreateHttpClient();
+        Dictionary<string, string> values = [];
+        if (userAgent is not null)
+        {
+            values.Add("User-Agent", userAgent);
+        }
+        CustomRequestHeaders headers = new(values, "https://tiles.example.com/{z}/{x}/{y}");
+        using Windows.Web.Http.HttpRequestMessage request = new(
+            Windows.Web.Http.HttpMethod.Get, new Uri(uri));
+
+        CustomTileHttp.ApplyRequestHeaders(request, "image/png", headers);
+
+        Assert.AreEqual(0, client.DefaultRequestHeaders.Count);
+        Assert.AreEqual(expected, request.Headers.UserAgent.ToString());
+        Assert.AreEqual("image/png", request.Headers.Accept.ToString());
+    }
+
+    [TestMethod]
     public void CustomTileHttpClientReadsAndWritesTheResponseCache()
     {
         using HttpBaseProtocolFilter filter =

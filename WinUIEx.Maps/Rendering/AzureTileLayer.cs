@@ -919,22 +919,30 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         using WinRtHttpRequestMessage request = new(
             WinRtHttpMethod.Get,
             new Uri(AzureBaseUri, path));
-        if (!string.IsNullOrWhiteSpace(token))
-        {
-            request.Headers.TryAppendWithoutValidation("subscription-key", token);
-        }
-        request.Headers.Accept.ParseAdd(acceptMediaType);
+        ApplyRequestHeaders(request, token, acceptMediaType);
         return await HttpClient
             .SendRequestAsync(request, WinRtHttpCompletionOption.ResponseHeadersRead)
             .AsTask(cancellationToken)
             .ConfigureAwait(false);
     }
 
-    private static WinRtHttpClient CreateHttpClient()
+    internal static void ApplyRequestHeaders(
+        WinRtHttpRequestMessage request,
+        string token,
+        string acceptMediaType)
     {
-        WinRtHttpClient client = new(CreateHttpFilter());
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("WinUIEx.Maps/1.0");
-        return client;
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            request.Headers.TryAppendWithoutValidation("subscription-key", token);
+        }
+        request.Headers.Accept.ParseAdd(acceptMediaType);
+        request.Headers.UserAgent.ParseAdd("WinUIEx.Maps/1.0");
+    }
+
+    internal static WinRtHttpClient CreateHttpClient()
+    {
+        // WinRT default-header copying can race during concurrent SendRequestAsync calls.
+        return new(CreateHttpFilter());
     }
 
     internal static HttpBaseProtocolFilter CreateHttpFilter()

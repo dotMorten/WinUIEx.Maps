@@ -9,6 +9,7 @@ internal enum VectorStyleCompatibilityIssueKind
     UnsupportedLayerType = 1,
     UnsupportedLayoutProperty = 2,
     UnsupportedPaintProperty = 3,
+    IgnoredLayoutProperty = 4,
 }
 
 internal readonly record struct VectorStyleCompatibilityIssue(
@@ -235,6 +236,16 @@ internal static class VectorStyleCompatibility
         HashSet<string> supported = supportedByType[layerType];
         foreach (JsonProperty property in owner.EnumerateObject())
         {
+            if (ownerName == "layout" &&
+                layerType == "symbol" &&
+                property.Name == "symbol-avoid-edges")
+            {
+                Add(
+                    counts,
+                    VectorStyleCompatibilityIssueKind.IgnoredLayoutProperty,
+                    "symbol-avoid-edges");
+                continue;
+            }
             if (!supported.Contains(property.Name))
             {
                 Add(

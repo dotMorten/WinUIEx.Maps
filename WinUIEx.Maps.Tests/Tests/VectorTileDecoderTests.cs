@@ -657,7 +657,7 @@ public sealed class VectorTileDecoderTests
     }
 
     [TestMethod]
-    public void SymbolsCanAvoidTileEdges()
+    public void SymbolsCrossTileEdgesWithViewportWideCollisionHandling()
     {
         VisibleTile tile = new(
             new TileId(2, 1, 1),
@@ -682,13 +682,82 @@ public sealed class VectorTileDecoderTests
             480,
             0,
             0));
-        Assert.IsEmpty(MapRenderer.ProjectVectorSymbols(
+        Assert.ContainsSingle(MapRenderer.ProjectVectorSymbols(
             [crossing with { AvoidEdges = true }],
             tile,
             640,
             480,
             0,
             0));
+    }
+
+    [TestMethod]
+    [DataRow(false, 128d, 0d, 0d)]
+    [DataRow(false, 256d, 45d, 0d)]
+    [DataRow(false, 512d, 90d, 40d)]
+    [DataRow(true, 128d, 0d, 0d)]
+    [DataRow(true, 256d, 45d, 0d)]
+    [DataRow(true, 512d, 90d, 40d)]
+    public void CompleteLabelsCrossTileEdgesAtDifferentScalesAndRotations(
+        bool linePlacement, double tileSize, double heading, double pitch)
+    {
+        VisibleTile tile = new(
+            new TileId(2, 1, 1), 1,
+            640 - tileSize / 2, 480 - tileSize / 2, tileSize);
+        VectorTilePoint[]? path = linePlacement
+            ? [new(0.02, 0.05), new(0.02, 0.95)]
+            : null;
+        VectorTileSymbol[] glyphs = Enumerable.Range(0, 7)
+            .Select(index => new VectorTileSymbol(
+                3, 0.02, 0.5, -index - 1, 12, 20,
+                (index - 3) * 12, 0,
+                Kind: VectorSymbolKind.Text,
+                LabelId: 1,
+                LinePoints: path,
+                LineSpacing: 1000,
+                SymbolGroupId: 1,
+                ViewportAligned: true,
+                AvoidEdges: true))
+            .ToArray();
+
+        VectorSymbolPlacement[] projected = MapRenderer.ProjectVectorSymbols(
+            glyphs, tile, 1280, 960, heading, pitch);
+
+        Assert.AreEqual(glyphs.Length, projected.Length);
+        CollectionAssert.AreEqual(
+            glyphs.Select(glyph => glyph.TextureId).ToArray(),
+            projected.Select(glyph => glyph.TextureId).ToArray());
+    }
+
+    [TestMethod]
+    public void TileEdgeLabelsStillCollideAcrossNeighboringTiles()
+    {
+        VisibleTile left = new(new TileId(2, 1, 1), 1, 100, 100, 256);
+        VisibleTile right = new(new TileId(2, 2, 1), 2, 356, 100, 256);
+        VectorTileSymbol[] CreateGlyphs(double x) =>
+            Enumerable.Range(0, 7)
+                .Select(index => new VectorTileSymbol(
+                    3, x, 0.5, -index - 1, 12, 20, (index - 3) * 12, 0,
+                    Kind: VectorSymbolKind.Text,
+                    LabelId: 1,
+                    SymbolGroupId: 1,
+                    AvoidEdges: true))
+                .ToArray();
+        VectorSymbolPlacement[] leftLabel = MapRenderer.ProjectVectorSymbols(
+            CreateGlyphs(0.98), left, 800, 600, 0, 0);
+        VectorSymbolPlacement[] rightLabel = MapRenderer.ProjectVectorSymbols(
+            CreateGlyphs(0.02), right, 800, 600, 0, 0);
+        long nextGroup = 0;
+        MapRenderer.AssignSymbolCollisionGroups(leftLabel, ref nextGroup);
+        MapRenderer.AssignSymbolCollisionGroups(rightLabel, ref nextGroup);
+
+        MapRenderer.LabelCollisionResult result = MapRenderer.ResolveLabelCollisions(
+            [.. leftLabel, .. rightLabel]);
+
+        Assert.AreEqual(7, leftLabel.Length);
+        Assert.AreEqual(7, rightLabel.Length);
+        Assert.AreEqual(1, result.SuppressedLabelCount);
+        Assert.AreEqual(7, result.SuppressedGlyphCount);
     }
 
     [TestMethod]
@@ -980,24 +1049,38 @@ public sealed class VectorTileDecoderTests
     }
 
     [TestMethod]
-    public void VectorGeometryFallbackCrossfadesByDistanceAndReplacement()
+    public void VectorGeometryFallbackRetainsCoarserLevelsAndLimitsFinerLevels()
     {
         Assert.AreEqual(
             1,
             MapRenderer.ComputeVectorGeometryFallbackOpacity(13, 12, 0),
             0.000001);
         Assert.AreEqual(
-            0.5,
+            1,
             MapRenderer.ComputeVectorGeometryFallbackOpacity(11.5, 10, 0),
             0.000001);
         Assert.AreEqual(
-            0.25,
+            0.5,
             MapRenderer.ComputeVectorGeometryFallbackOpacity(11.5, 10, 0.5),
             0.000001);
         Assert.AreEqual(
-            0,
+            1,
             MapRenderer.ComputeVectorGeometryFallbackOpacity(13, 10, 0),
             0.000001);
+        Assert.AreEqual(0.5,
+            MapRenderer.ComputeVectorGeometryFallbackOpacity(10.5, 12, 0));
+        Assert.AreEqual(0,
+            MapRenderer.ComputeVectorGeometryFallbackOpacity(10, 12, 0));
+        Assert.AreEqual(1,
+            MapRenderer.ComputeVectorGeometryFallbackOpacity(24, 0, -1));
+        Assert.AreEqual(0,
+            MapRenderer.ComputeVectorGeometryFallbackOpacity(24, 0, 2));
+        Assert.AreEqual(1,
+            MapRenderer.ComputeVectorGeometryFallbackOpacity(24, 0, double.NaN));
+        Assert.AreEqual(0,
+            MapRenderer.ComputeVectorGeometryFallbackOpacity(double.PositiveInfinity, 0, 0));
+        Assert.AreEqual(0,
+            MapRenderer.ComputeVectorGeometryFallbackOpacity(double.NegativeInfinity, 0, 0));
         Assert.AreEqual(
             0,
             MapRenderer.ComputeVectorGeometryFallbackOpacity(10.86, 10, 1),
@@ -1019,7 +1102,7 @@ public sealed class VectorTileDecoderTests
             MapRenderer.ComputeVectorPolygonFallbackOpacity(13, 12, 0.5),
             0.000001);
         Assert.AreEqual(
-            0.5,
+            1,
             MapRenderer.ComputeVectorPolygonFallbackOpacity(11.5, 10, 0.5),
             0.000001);
         Assert.AreEqual(
@@ -1033,7 +1116,23 @@ public sealed class VectorTileDecoderTests
             0,
             MapRenderer.ComputeVectorPolygonFallbackOpacity(13, 12, 1),
             0.000001);
+        Assert.AreEqual(1,
+            MapRenderer.ComputeVectorPolygonFallbackOpacity(24, 0, 0.999));
+        Assert.AreEqual(0,
+            MapRenderer.ComputeVectorPolygonFallbackOpacity(24, 0, 1));
+        Assert.AreEqual(0.5,
+            MapRenderer.ComputeVectorPolygonFallbackOpacity(10.5, 12, 0));
     }
+
+    [TestMethod]
+    [DataRow(8d, 4, 256, 4d)]
+    [DataRow(9d, 4, 512, 5d)]
+    [DataRow(3.5d, 4, 256, 3.5d)]
+    [DataRow(3d, 4, 128, 3d)]
+    public void CoarseFallbackStyleUsesNativeDisplayZoom(
+        double displayZoom, int tileZoom, int tileSize, double expected) =>
+        Assert.AreEqual(expected,
+            MapRenderer.GetVectorFallbackStyleZoom(displayZoom, tileZoom, tileSize));
 
     [TestMethod]
     public void VectorPolygonTrianglesProjectAndCullOutsideViewport()

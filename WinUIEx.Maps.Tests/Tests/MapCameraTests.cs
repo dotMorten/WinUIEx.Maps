@@ -8,6 +8,50 @@ namespace WinUIEx.Maps.Tests;
 public sealed class MapCameraTests
 {
     [TestMethod]
+    public void RequiredTilesAreCachedPerImmutableScene()
+    {
+        MapScene scene = MapCamera.CreateScene(179, 0, 1, 1600, 512);
+        IReadOnlyList<TileId> required = scene.RequiredTiles;
+        Assert.AreSame(required, scene.RequiredTiles);
+        MapScene changed = MapCamera.CreateScene(0, 0, 2, 1600, 512);
+        Assert.AreNotSame(required, changed.RequiredTiles);
+        Assert.IsTrue(changed.RequiredTiles.All(tile => tile.Zoom == 2));
+    }
+
+    [TestMethod]
+    public void RequiredTilesPreserveNearestWrapAndStableTies()
+    {
+        MapScene scene = MapCamera.CreateScene(179, 0, 1, 2400, 512);
+        TileId[] expected = scene.VisibleTiles
+            .Select((tile, index) => new
+            {
+                tile.Id,
+                Index = index,
+                Distance = Math.Pow(tile.Left + tile.Size / 2 - scene.ViewportWidth / 2, 2) +
+                    Math.Pow(tile.Top + tile.Size / 2 - scene.ViewportHeight / 2, 2),
+            })
+            .OrderBy(tile => tile.Distance)
+            .ThenBy(tile => tile.Index)
+            .DistinctBy(tile => tile.Id)
+            .Select(tile => tile.Id)
+            .ToArray();
+        Assert.AreSequenceEqual(expected, scene.RequiredTiles);
+    }
+
+    [TestMethod]
+    public async Task RequiredTilesPublishOneSnapshotToConcurrentReaders()
+    {
+        MapScene scene = MapCamera.CreateScene(179, 0, 1, 2400, 512);
+        IReadOnlyList<TileId>[] results = await Task.WhenAll(
+            Enumerable.Range(0, 16).Select(_ => Task.Run(() => scene.RequiredTiles)));
+        foreach (IReadOnlyList<TileId> result in results)
+        {
+            Assert.AreSame(results[0], result);
+            Assert.AreEqual(result.Count, result.Distinct().Count());
+        }
+    }
+
+    [TestMethod]
     [DataRow(2, 1)]
     [DataRow(0.5, -1)]
     [DataRow(1, 0)]

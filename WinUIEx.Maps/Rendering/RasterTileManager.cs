@@ -162,81 +162,194 @@ internal sealed class RasterTileManager : IDisposable
         attemptedSceneVersion == workSceneVersion;
 
     /// <summary>
-    /// Processes ordered work with a bounded set of continuously fed workers, stopping new
-    /// starts when the caller reports that a newer scene superseded the input.
+    /// Keeps a fixed worker set alive across scene publications. Only unstarted work is
+    /// replaced; shared in-flight keys retain their original ownership until completion.
     /// </summary>
-    internal static async Task<ContinuousWorkResult> RunContinuouslyAsync<T>(
-        IReadOnlyList<T> items,
-        int maximumConcurrency,
-        Func<bool> canStart,
-        Func<T, Task> processAsync)
+    internal sealed class LatestWorkScheduler<T> where T : notnull
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumConcurrency);
-        ArgumentNullException.ThrowIfNull(canStart);
-        ArgumentNullException.ThrowIfNull(processAsync);
-        if (items.Count == 0)
+        private readonly object _sync = new();
+        private readonly HashSet<T> _active = [];
+        private readonly Task[] _workers;
+        private TaskCompletionSource _changed = NewSignal();
+        private Batch? _latest;
+        private bool _stopped;
+
+        internal LatestWorkScheduler(int maximumConcurrency)
         {
-            return new ContinuousWorkResult(0, 0, 0, 0);
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumConcurrency);
+            _workers = Enumerable.Range(0, maximumConcurrency)
+                .Select(_ => WorkerAsync()).ToArray();
         }
 
-        object gate = new();
-        int nextIndex = 0;
-        int startedCount = 0;
-        int completedCount = 0;
-        int activeCount = 0;
-        int maximumActiveCount = 0;
+        internal Task<ContinuousWorkResult> Publish(
+            IReadOnlyList<T> items,
+            Func<bool> canStart,
+            Func<T, Task> processAsync)
+        {
+            ArgumentNullException.ThrowIfNull(items);
+            ArgumentNullException.ThrowIfNull(canStart);
+            ArgumentNullException.ThrowIfNull(processAsync);
+            lock (_sync)
+            {
+                ObjectDisposedException.ThrowIf(_stopped, this);
+                _latest?.StopFeeding();
+                _latest = new Batch(
+                    items.Where(item => !_active.Contains(item)).ToArray(),
+                    items.Count,
+                    canStart,
+                    processAsync);
+                PulseLocked();
+                return _latest.Completion.Task;
+            }
+        }
 
-        async Task ProcessWorkerAsync()
+        internal Task CompleteAsync()
+        {
+            lock (_sync)
+            {
+                _stopped = true;
+                _latest?.StopFeeding();
+                PulseLocked();
+            }
+            return Task.WhenAll(_workers);
+        }
+
+        private async Task WorkerAsync()
         {
             while (true)
             {
-                T item;
-                lock (gate)
+                Batch? batch = null;
+                T item = default!;
+                Task changed;
+                lock (_sync)
                 {
-                    if (nextIndex >= items.Count || !canStart())
+                    if (_stopped)
                     {
                         return;
                     }
-                    item = items[nextIndex++];
-                    startedCount++;
-                }
-
-                int active = Interlocked.Increment(ref activeCount);
-                int peak = Volatile.Read(ref maximumActiveCount);
-                while (active > peak)
-                {
-                    int observed = Interlocked.CompareExchange(
-                        ref maximumActiveCount,
-                        active,
-                        peak);
-                    if (observed == peak)
+                    if (_latest is { Feeding: true } latest)
                     {
-                        break;
+                        bool canStart;
+                        try
+                        {
+                            canStart = latest.CanStart();
+                        }
+                        catch (Exception exception)
+                        {
+                            latest.Exceptions.Add(exception);
+                            canStart = false;
+                        }
+                        if (!canStart)
+                        {
+                            latest.StopFeeding();
+                        }
+                        else
+                        {
+                            while (latest.NextIndex < latest.Items.Count)
+                            {
+                                item = latest.Items[latest.NextIndex++];
+                                if (_active.Add(item))
+                                {
+                                    batch = latest;
+                                    batch.StartedCount++;
+                                    batch.ActiveCount++;
+                                    batch.MaximumConcurrency = Math.Max(
+                                        batch.MaximumConcurrency, batch.ActiveCount);
+                                    break;
+                                }
+                            }
+                            if (latest.NextIndex == latest.Items.Count)
+                            {
+                                latest.StopFeeding();
+                            }
+                        }
                     }
-                    peak = observed;
+                    changed = _changed.Task;
+                }
+                if (batch is null)
+                {
+                    await changed.ConfigureAwait(false);
+                    continue;
                 }
                 try
                 {
-                    await processAsync(item).ConfigureAwait(false);
+                    await batch.ProcessAsync(item).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    lock (_sync)
+                    {
+                        batch.Exceptions.Add(exception);
+                    }
                 }
                 finally
                 {
-                    Interlocked.Decrement(ref activeCount);
-                    Interlocked.Increment(ref completedCount);
+                    lock (_sync)
+                    {
+                        _active.Remove(item);
+                        batch.ActiveCount--;
+                        batch.CompletedCount++;
+                        batch.TryComplete();
+                    }
                 }
             }
         }
 
-        Task[] workers = Enumerable
-            .Range(0, Math.Min(maximumConcurrency, items.Count))
-            .Select(_ => ProcessWorkerAsync())
-            .ToArray();
-        await Task.WhenAll(workers).ConfigureAwait(false);
-        return new ContinuousWorkResult(
-            startedCount,
-            completedCount,
-            maximumActiveCount,
-            items.Count - startedCount);
+        private void PulseLocked()
+        {
+            TaskCompletionSource changed = _changed;
+            _changed = NewSignal();
+            changed.TrySetResult();
+        }
+
+        private static TaskCompletionSource NewSignal() =>
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private sealed class Batch(
+            IReadOnlyList<T> items,
+            int requestedCount,
+            Func<bool> canStart,
+            Func<T, Task> processAsync)
+        {
+            internal IReadOnlyList<T> Items { get; } = items;
+            internal Func<bool> CanStart { get; } = canStart;
+            internal Func<T, Task> ProcessAsync { get; } = processAsync;
+            internal TaskCompletionSource<ContinuousWorkResult> Completion { get; } =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+            internal List<Exception> Exceptions { get; } = [];
+            internal bool Feeding = true;
+            internal int NextIndex;
+            internal int StartedCount;
+            internal int CompletedCount;
+            internal int ActiveCount;
+            internal int MaximumConcurrency;
+
+            internal void StopFeeding()
+            {
+                Feeding = false;
+                TryComplete();
+            }
+
+            internal void TryComplete()
+            {
+                if (Feeding || ActiveCount != 0)
+                {
+                    return;
+                }
+                if (Exceptions.Count != 0)
+                {
+                    Completion.TrySetException(Exceptions);
+                }
+                else
+                {
+                    Completion.TrySetResult(new ContinuousWorkResult(
+                        StartedCount,
+                        CompletedCount,
+                        MaximumConcurrency,
+                        requestedCount - StartedCount));
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -516,7 +629,7 @@ internal sealed class RasterTileManager : IDisposable
         private TileLayerSnapshot _layer;
         private object _sourceKey;
         private MapScene? _scene;
-        private CancellationTokenSource? _waveCancellation;
+        private readonly HashSet<CancellationTokenSource> _waveCancellations = [];
         private CancellationTokenSource? _attributionCancellation;
         private long _generation;
         private long _sceneVersion;
@@ -578,7 +691,7 @@ internal sealed class RasterTileManager : IDisposable
                         _scene is null ||
                         !ShouldAcquire(_layer, _scene.Zoom) ||
                         (!_pending &&
-                            _waveCancellation is null &&
+                            _waveCancellations.Count == 0 &&
                             _attemptedSceneVersion == _sceneVersion);
                 }
             }
@@ -737,7 +850,7 @@ internal sealed class RasterTileManager : IDisposable
         public void Dispose()
         {
             ProcessingRun[] processingRuns;
-            CancellationTokenSource? waveCancellation;
+            CancellationTokenSource[] waveCancellations;
             CancellationTokenSource? attributionCancellation;
             lock (_sync)
             {
@@ -747,7 +860,7 @@ internal sealed class RasterTileManager : IDisposable
                 }
                 _disposed = true;
                 _pending = false;
-                waveCancellation = _waveCancellation;
+                waveCancellations = _waveCancellations.ToArray();
                 attributionCancellation = _attributionCancellation;
                 processingRuns = _retiredProcessingRuns
                     .Append(_processingRun)
@@ -771,7 +884,16 @@ internal sealed class RasterTileManager : IDisposable
             }
             try
             {
-                waveCancellation?.CancelAsync().GetAwaiter().GetResult();
+                foreach (CancellationTokenSource waveCancellation in waveCancellations)
+                {
+                    try
+                    {
+                        waveCancellation.CancelAsync().GetAwaiter().GetResult();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                    }
+                }
                 attributionCancellation?.CancelAsync().GetAwaiter().GetResult();
             }
             catch (ObjectDisposedException)
@@ -799,7 +921,6 @@ internal sealed class RasterTileManager : IDisposable
             {
             }
 
-            _waveCancellation?.Dispose();
             _lifetime.Dispose();
             _work.Dispose();
         }
@@ -819,7 +940,7 @@ internal sealed class RasterTileManager : IDisposable
                 CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             ProcessingRun run = new(cancellation);
             _processingRun = run;
-            run.Task = Task.Run(() => ProcessAsync(cancellation.Token));
+            run.Task = Task.Run(() => ProcessAsync(cancellation));
             _ = run.Task.ContinueWith(
                 _ => OnProcessingRunCompleted(run),
                 CancellationToken.None,
@@ -867,18 +988,25 @@ internal sealed class RasterTileManager : IDisposable
         /// <remarks>The caller must hold the worker synchronization lock.</remarks>
         private void CancelWaveLocked(string reason)
         {
-            CancellationTokenSource? cancellation = _waveCancellation;
-            if (cancellation is null || cancellation.IsCancellationRequested)
+            bool traced = false;
+            foreach (CancellationTokenSource cancellation in _waveCancellations)
             {
-                return;
-            }
-            MapControlEventSource.Log.TileRequestsCanceled(_generation, reason);
-            try
-            {
-                _ = cancellation.CancelAsync();
-            }
-            catch (ObjectDisposedException)
-            {
+                if (cancellation.IsCancellationRequested)
+                {
+                    continue;
+                }
+                if (!traced)
+                {
+                    MapControlEventSource.Log.TileRequestsCanceled(_generation, reason);
+                    traced = true;
+                }
+                try
+                {
+                    _ = cancellation.CancelAsync();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
             }
         }
 
@@ -910,10 +1038,51 @@ internal sealed class RasterTileManager : IDisposable
         /// Each wave owns a linked cancellation source. The scheduler requests only the
         /// active level; fallback cache generation and ordering remain renderer-owned.
         /// </remarks>
-        private async Task ProcessAsync(CancellationToken processingToken)
+        private async Task ProcessAsync(CancellationTokenSource processingCancellation)
+        {
+            LatestWorkScheduler<(long Generation, TileId Id)> scheduler =
+                new(MaximumConcurrentLoads);
+            List<Task> waves = [];
+            try
+            {
+                await ProcessScenesAsync(scheduler, waves, processingCancellation.Token)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                try
+                {
+                    await processingCancellation.CancelAsync().ConfigureAwait(false);
+                }
+                finally
+                {
+                    try
+                    {
+                        await scheduler.CompleteAsync().ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        await Task.WhenAll(waves).ConfigureAwait(false);
+                    }
+                }
+            }
+        }
+
+        private async Task ProcessScenesAsync(
+            LatestWorkScheduler<(long Generation, TileId Id)> scheduler,
+            List<Task> waves,
+            CancellationToken processingToken)
         {
             while (true)
             {
+                for (int index = waves.Count - 1; index >= 0; index--)
+                {
+                    if (waves[index].IsCompleted)
+                    {
+                        await waves[index].ConfigureAwait(false);
+                        waves.RemoveAt(index);
+                    }
+                }
                 await _work.WaitAsync(processingToken).ConfigureAwait(false);
                 processingToken.ThrowIfCancellationRequested();
 
@@ -929,12 +1098,14 @@ internal sealed class RasterTileManager : IDisposable
                 HashSet<TileId> attempted;
                 lock (_sync)
                 {
-                    if (!_pending || _suspended || _scene is null)
+                    bool pending = _pending;
+                    _pending = false;
+                    if (!pending || _suspended || _scene is null ||
+                        !ShouldAcquire(_layer, _scene.Zoom))
                     {
                         continue;
                     }
 
-                    _pending = false;
                     layer = _layer;
                     scene = _scene;
                     sceneVersion = _sceneVersion;
@@ -981,8 +1152,7 @@ internal sealed class RasterTileManager : IDisposable
                             scene.Pitch);
                         waveCancellation = CancellationTokenSource.CreateLinkedTokenSource(
                             processingToken);
-                        _waveCancellation?.Dispose();
-                        _waveCancellation = waveCancellation;
+                        _waveCancellations.Add(waveCancellation);
                     }
                 }
 
@@ -1029,12 +1199,8 @@ internal sealed class RasterTileManager : IDisposable
                     processingToken);
                 long started = Stopwatch.GetTimestamp();
                 TileWaveResult result = new();
-                ContinuousWorkResult schedulingResult = default;
-                try
-                {
-                    schedulingResult = await RunContinuouslyAsync(
-                        unattempted,
-                        MaximumConcurrentLoads,
+                Task<ContinuousWorkResult> scheduling = scheduler.Publish(
+                        unattempted.Select(id => (generation, id)).ToArray(),
                         () =>
                         {
                             lock (_sync)
@@ -1047,8 +1213,9 @@ internal sealed class RasterTileManager : IDisposable
                                     sceneVersion == _sceneVersion;
                             }
                         },
-                        async id =>
+                        async work =>
                         {
+                            TileId id = work.Id;
                             lock (_sync)
                             {
                                 if (CanRecordAttempt(
@@ -1060,47 +1227,63 @@ internal sealed class RasterTileManager : IDisposable
                                     _attempted.Add(id);
                                 }
                             }
+                            if (_renderer.GetMissingRasterTiles(
+                                RuntimeId, generation, [id]).MissingTiles.Count == 0)
+                            {
+                                return;
+                            }
                             await LoadTileAsync(
                                 layer.Acquisition,
                                 id,
                                 generation,
                                 result,
                                 cancellationToken).ConfigureAwait(false);
-                        }).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                }
-                finally
-                {
-                    TraceWaveStop(
-                        layer.Acquisition.SourceKind,
-                        generation,
-                        sceneVersion,
-                        Stopwatch.GetElapsedTime(started).TotalMilliseconds,
-                        result.CompletedCount,
-                        result.FailedCount,
-                        result.CanceledCount,
-                        schedulingResult.DeferredCount);
-                    MapControlEventSource.Log.TileSchedulerSummary(
-                        (int)layer.Acquisition.SourceKind,
-                        generation,
-                        sceneVersion,
-                        unattempted.Length,
-                        schedulingResult.StartedCount,
-                        schedulingResult.CompletedCount,
-                        schedulingResult.MaximumConcurrency,
-                        schedulingResult.DeferredCount,
-                        Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                        });
+                waves.Add(CompleteWaveAsync());
 
-                    lock (_sync)
+                async Task CompleteWaveAsync()
+                {
+                    ContinuousWorkResult schedulingResult = default;
+                    try
                     {
-                        if (ReferenceEquals(_waveCancellation, waveCancellation))
-                        {
-                            _waveCancellation = null;
-                        }
+                        schedulingResult = await scheduling.ConfigureAwait(false);
                     }
-                    waveCancellation.Dispose();
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                    }
+                    finally
+                    {
+                        TraceWaveStop(
+                            layer.Acquisition.SourceKind,
+                            generation,
+                            sceneVersion,
+                            Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                            result.CompletedCount,
+                            result.FailedCount,
+                            result.CanceledCount,
+                            schedulingResult.DeferredCount);
+                        MapControlEventSource.Log.TileSchedulerSummary(
+                            (int)layer.Acquisition.SourceKind,
+                            generation,
+                            sceneVersion,
+                            unattempted.Length,
+                            schedulingResult.StartedCount,
+                            schedulingResult.CompletedCount,
+                            schedulingResult.MaximumConcurrency,
+                            schedulingResult.DeferredCount,
+                            Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+
+                        lock (_sync)
+                        {
+                            _waveCancellations.Remove(waveCancellation);
+                            if (schedulingResult.StartedCount > 0 &&
+                                sceneVersion != _sceneVersion)
+                            {
+                                QueueLocked();
+                            }
+                        }
+                        waveCancellation.Dispose();
+                    }
                 }
             }
         }
@@ -1123,6 +1306,7 @@ internal sealed class RasterTileManager : IDisposable
             bool entered = false;
             bool requestActive = false;
             int activeRequests = 0;
+            int stage = 0;
             long started = Stopwatch.GetTimestamp();
             try
             {
@@ -1134,6 +1318,7 @@ internal sealed class RasterTileManager : IDisposable
                 double downloadMilliseconds;
                 double decodeMilliseconds;
                 bool accepted;
+                stage = 1;
                 if (acquisition.RenderKind is
                     LayerRenderKind.VectorPoints or LayerRenderKind.HybridTiles)
                 {
@@ -1144,6 +1329,7 @@ internal sealed class RasterTileManager : IDisposable
                     downloadMilliseconds = decoded.DownloadMilliseconds;
                     decodeMilliseconds = decoded.DecodeMilliseconds;
                     uploadWaitStarted = Stopwatch.GetTimestamp();
+                    stage = 2;
                     RasterTileKey key = new(RuntimeId, decoded.Id);
                     RasterTileData? background = decoded.Background is
                         DecodedRasterTile raster
@@ -1180,6 +1366,7 @@ internal sealed class RasterTileManager : IDisposable
                     downloadMilliseconds = decoded.DownloadMilliseconds;
                     decodeMilliseconds = decoded.DecodeMilliseconds;
                     uploadWaitStarted = Stopwatch.GetTimestamp();
+                    stage = 2;
                     accepted = await _renderer.QueueRasterUploadAsync(
                         new RasterTileData(
                             new RasterTileKey(RuntimeId, decoded.Id),
@@ -1243,6 +1430,9 @@ internal sealed class RasterTileManager : IDisposable
             catch (Exception exception)
             {
                 Interlocked.Increment(ref result.FailedCount);
+                MapControlEventSource.Log.TilePipelineStageFailed(
+                    (int)acquisition.SourceKind, id.Zoom, id.X, id.Y,
+                    generation, stage, exception.GetType().Name, exception.HResult);
                 TraceRequestFailure(
                     acquisition,
                     id,

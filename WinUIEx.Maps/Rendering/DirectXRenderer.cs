@@ -42,6 +42,9 @@ namespace WinUIEx.Maps.Rendering;
 /// </remarks>
 internal abstract class DirectXRenderer : IDisposable
 {
+    private static long _nextRendererId;
+    private readonly long _rendererId = Interlocked.Increment(ref _nextRendererId);
+    private long _frameId;
     private readonly object _renderLock = new();
     private readonly AutoResetEvent _renderRequested = new(false);
     private readonly ManualResetEvent _shutdownRequested = new(false);
@@ -70,6 +73,8 @@ internal abstract class DirectXRenderer : IDisposable
     protected IntPtr ContextPointer => _contextPointer;
     protected D3D11_VIEWPORT Viewport => _viewport;
     protected bool IsInitialized => _initialized;
+    protected long DiagnosticRendererId => _rendererId;
+    protected long DiagnosticFrameId => _frameId;
     internal bool HasDeviceResources => _initialized;
 
     protected void WaitForGpuCompletion()
@@ -172,6 +177,7 @@ internal abstract class DirectXRenderer : IDisposable
                 [0.94f, 0.94f, 0.94f, 1]);
             SetRenderTarget(_contextPointer, _renderTargetPointer);
             SetViewport(_contextPointer, _viewport);
+            _frameId++;
             RenderFrame();
             WaitForGpu(_contextPointer, _gpuCompletionQueryPointer);
             return ++_offscreenFrameCount;
@@ -643,6 +649,14 @@ internal abstract class DirectXRenderer : IDisposable
         try
         {
             bool rendered = false;
+            bool traceFrame = MapControlEventSource.Log.IsEnabled(
+                System.Diagnostics.Tracing.EventLevel.Verbose,
+                MapControlEventSource.Keywords.Frames);
+            long start = traceFrame ? Stopwatch.GetTimestamp() : 0;
+            long acquired = 0;
+            long drawn = 0;
+            long captured = 0;
+            long presented = 0;
             lock (_renderLock)
             {
                 if (_contextPointer == IntPtr.Zero ||
@@ -654,21 +668,39 @@ internal abstract class DirectXRenderer : IDisposable
                 }
 
                 _needsRender = false;
+                _frameId++;
+                acquired = traceFrame ? Stopwatch.GetTimestamp() : 0;
                 Clear(_contextPointer, _renderTargetPointer, [0.94f, 0.94f, 0.94f, 1]);
                 SetRenderTarget(_contextPointer, _renderTargetPointer);
                 SetViewport(_contextPointer, _viewport);
                 RenderFrame();
+                drawn = traceFrame ? Stopwatch.GetTimestamp() : 0;
                 if (!_frameCaptureRequests.IsEmpty &&
                     CanCompleteFrameCaptures())
                 {
                     CompleteFrameCaptures();
                 }
+                captured = traceFrame ? Stopwatch.GetTimestamp() : 0;
                 Present(_swapChainPointer);
+                presented = traceFrame ? Stopwatch.GetTimestamp() : 0;
                 rendered = true;
             }
             if (rendered)
             {
                 OnRenderPassCompleted();
+                if (traceFrame)
+                {
+                    long completed = Stopwatch.GetTimestamp();
+                    MapControlEventSource.Log.RenderFrameTiming(
+                        _rendererId,
+                        _frameId,
+                        Stopwatch.GetElapsedTime(start, acquired).TotalMilliseconds,
+                        Stopwatch.GetElapsedTime(acquired, drawn).TotalMilliseconds,
+                        Stopwatch.GetElapsedTime(drawn, captured).TotalMilliseconds,
+                        Stopwatch.GetElapsedTime(captured, presented).TotalMilliseconds,
+                        Stopwatch.GetElapsedTime(presented, completed).TotalMilliseconds,
+                        Stopwatch.GetElapsedTime(start, completed).TotalMilliseconds);
+                }
             }
         }
         catch (Exception exception)

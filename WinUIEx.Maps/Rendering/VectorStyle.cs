@@ -280,6 +280,62 @@ internal sealed class VectorStyleAssets
 
     internal VectorGlyphAtlas GlyphAtlas => _glyphAtlas;
 
+    internal bool CanReuseSymbols(double previousZoom, double zoom)
+    {
+        if (!double.IsFinite(previousZoom) || !double.IsFinite(zoom))
+        {
+            return false;
+        }
+        foreach (VectorIconStyleLayer layer in _style.IconLayers)
+        {
+            if (!layer.CanReuseZoom(previousZoom, zoom))
+            {
+                return false;
+            }
+        }
+        foreach (VectorTextStyleLayer layer in _style.TextLayers)
+        {
+            if (!layer.CanReuseZoom(previousZoom, zoom))
+            {
+                return false;
+            }
+        }
+        // Patterned lines are resolved into symbols rather than styled lines.
+        return CanReuseLines(previousZoom, zoom);
+    }
+
+    internal bool CanReuseLines(double previousZoom, double zoom)
+    {
+        if (!double.IsFinite(previousZoom) || !double.IsFinite(zoom))
+        {
+            return false;
+        }
+        foreach (VectorLineStyleLayer layer in _style.LineLayers)
+        {
+            if (!layer.CanReuseZoom(previousZoom, zoom))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    internal bool CanReusePolygons(double previousZoom, double zoom)
+    {
+        if (!double.IsFinite(previousZoom) || !double.IsFinite(zoom))
+        {
+            return false;
+        }
+        foreach (VectorFillStyleLayer layer in _style.FillLayers)
+        {
+            if (!layer.CanReuseZoom(previousZoom, zoom))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     internal async Task<VectorSpriteTextureData[]> PrepareTexturesAsync(
         VectorTileFeatureCollection features,
         int tileZoom,
@@ -2813,6 +2869,23 @@ internal sealed class VectorIconStyleLayer(
     VectorStyleExpression iconOpacity,
     VectorStyleExpression iconColor)
 {
+    private readonly bool _dependsOnZoom =
+        visibility.DependsOnZoom || filter.DependsOnZoom ||
+        symbolSpacing.DependsOnZoom || iconImage.DependsOnZoom ||
+        iconSize.DependsOnZoom || iconOffset.DependsOnZoom ||
+        iconAnchor.DependsOnZoom || iconRotate.DependsOnZoom ||
+        iconRotationAlignment.DependsOnZoom || iconTextFit.DependsOnZoom ||
+        iconTextFitPadding.DependsOnZoom || iconPadding.DependsOnZoom ||
+        symbolAvoidEdges.DependsOnZoom || symbolSortKey.DependsOnZoom ||
+        iconAllowOverlap.DependsOnZoom || iconIgnorePlacement.DependsOnZoom ||
+        iconOptional.DependsOnZoom || iconOpacity.DependsOnZoom ||
+        iconColor.DependsOnZoom;
+
+    internal bool CanReuseZoom(double previousZoom, double zoom) =>
+        !_dependsOnZoom &&
+        (previousZoom < minimumZoom || previousZoom >= maximumZoom) ==
+        (zoom < minimumZoom || zoom >= maximumZoom);
+
     internal int Order { get; } = order;
 
     internal string SourceLayer { get; } = sourceLayer;
@@ -3200,6 +3273,18 @@ internal sealed class VectorFillStyleLayer(
     VectorStyleExpression fillTranslateAnchor,
     VectorStyleExpression fillAntialias)
 {
+    private readonly bool _dependsOnZoom =
+        visibility.DependsOnZoom || filter.DependsOnZoom ||
+        fillColor.DependsOnZoom || fillOpacity.DependsOnZoom ||
+        fillOutlineColor.DependsOnZoom || fillPattern.DependsOnZoom ||
+        fillTranslate.DependsOnZoom || fillTranslateAnchor.DependsOnZoom ||
+        fillAntialias.DependsOnZoom;
+
+    internal bool CanReuseZoom(double previousZoom, double zoom) =>
+        !_dependsOnZoom &&
+        (previousZoom < minimumZoom || previousZoom >= maximumZoom) ==
+        (zoom < minimumZoom || zoom >= maximumZoom);
+
     internal int Order { get; } = order;
 
     internal string SourceLayer { get; } = sourceLayer;
@@ -3392,6 +3477,20 @@ internal sealed class VectorLineStyleLayer(
     VectorStyleExpression lineMiterLimit,
     ImmutableArray<VectorLineGradientStop> lineGradient)
 {
+    private readonly bool _dependsOnZoom =
+        visibility.DependsOnZoom || filter.DependsOnZoom ||
+        lineColor.DependsOnZoom || lineOpacity.DependsOnZoom ||
+        lineWidth.DependsOnZoom || lineCap.DependsOnZoom ||
+        lineJoin.DependsOnZoom || lineDashArray.DependsOnZoom ||
+        linePattern.DependsOnZoom || lineOffset.DependsOnZoom ||
+        lineGapWidth.DependsOnZoom || lineBlur.DependsOnZoom ||
+        lineMiterLimit.DependsOnZoom;
+
+    internal bool CanReuseZoom(double previousZoom, double zoom) =>
+        !_dependsOnZoom &&
+        (previousZoom < minimumZoom || previousZoom >= maximumZoom) ==
+        (zoom < minimumZoom || zoom >= maximumZoom);
+
     internal int Order { get; } = order;
 
     internal string SourceLayer { get; } = sourceLayer;
@@ -3661,6 +3760,28 @@ internal sealed class VectorTextStyleLayer(
     VectorStyleExpression textIgnorePlacement,
     VectorStyleExpression textOptional)
 {
+    private readonly bool _dependsOnZoom =
+        visibility.DependsOnZoom || filter.DependsOnZoom ||
+        symbolSpacing.DependsOnZoom || textField.DependsOnZoom ||
+        textFont.DependsOnZoom || textSize.DependsOnZoom ||
+        textMaxWidth.DependsOnZoom || textLineHeight.DependsOnZoom ||
+        textJustify.DependsOnZoom || textPadding.DependsOnZoom ||
+        textKeepUpright.DependsOnZoom || textMaxAngle.DependsOnZoom ||
+        symbolAvoidEdges.DependsOnZoom || textOffset.DependsOnZoom ||
+        textAnchor.DependsOnZoom || textVariableAnchor.DependsOnZoom ||
+        textRadialOffset.DependsOnZoom || textLetterSpacing.DependsOnZoom ||
+        textTransform.DependsOnZoom || textRotationAlignment.DependsOnZoom ||
+        textColor.DependsOnZoom || textHaloColor.DependsOnZoom ||
+        textHaloWidth.DependsOnZoom || textHaloBlur.DependsOnZoom ||
+        textOpacity.DependsOnZoom || symbolSortKey.DependsOnZoom ||
+        textAllowOverlap.DependsOnZoom || textIgnorePlacement.DependsOnZoom ||
+        textOptional.DependsOnZoom;
+
+    internal bool CanReuseZoom(double previousZoom, double zoom) =>
+        !_dependsOnZoom &&
+        (previousZoom < minimumZoom || previousZoom >= maximumZoom) ==
+        (zoom < minimumZoom || zoom >= maximumZoom);
+
     internal int Order { get; } = order;
 
     internal string SourceLayer { get; } = sourceLayer;
@@ -4325,6 +4446,7 @@ internal enum VectorStyleExpressionOperator
     ToString,
     Multiply,
     Number,
+    Add,
 }
 
 /// <summary>
@@ -4359,6 +4481,8 @@ internal sealed class VectorStyleExpression
 
     internal static VectorStyleExpression Literal(VectorStyleValue value) =>
         new(VectorStyleExpressionOperator.Literal, value, null, []);
+
+    internal bool DependsOnZoom => _containsZoom;
 
     internal static bool TryParse(
         JsonElement element,
@@ -5356,12 +5480,13 @@ internal sealed class VectorStyleExpression
             "step" => VectorStyleExpressionOperator.Step,
             "to-string" => VectorStyleExpressionOperator.ToString,
             "*" => VectorStyleExpressionOperator.Multiply,
+            "+" => VectorStyleExpressionOperator.Add,
             "number" => VectorStyleExpressionOperator.Number,
             _ => default,
         };
         return operation is "==" or "!" or "all" or "any" or "in" or
             "case" or "coalesce" or "concat" or "match" or "step" or
-            "to-string" or "*" or "number";
+            "to-string" or "*" or "+" or "number";
     }
 
     private static bool HasValidArgumentCount(
@@ -5380,7 +5505,8 @@ internal sealed class VectorStyleExpression
             VectorStyleExpressionOperator.Match => count >= 4 && (count & 1) == 0,
             VectorStyleExpressionOperator.Step => count >= 4 && (count & 1) == 0,
             VectorStyleExpressionOperator.ToString => count == 1,
-            VectorStyleExpressionOperator.Multiply => count >= 2,
+            VectorStyleExpressionOperator.Multiply or VectorStyleExpressionOperator.Add =>
+                count >= 2,
             VectorStyleExpressionOperator.Number => count >= 1,
             _ => false,
         };
@@ -5464,7 +5590,8 @@ internal sealed class VectorStyleExpression
             case VectorStyleExpressionOperator.ToString:
                 return TryEvaluateToString(context, variables, out value);
             case VectorStyleExpressionOperator.Multiply:
-                return TryEvaluateMultiply(context, variables, out value);
+            case VectorStyleExpressionOperator.Add:
+                return TryEvaluateArithmetic(context, variables, out value);
             case VectorStyleExpressionOperator.Number:
                 return TryEvaluateNumber(context, variables, out value);
             default:
@@ -5722,31 +5849,32 @@ internal sealed class VectorStyleExpression
         return true;
     }
 
-    private bool TryEvaluateMultiply(
+    private bool TryEvaluateArithmetic(
         VectorStyleEvaluationContext context,
         Dictionary<string, VectorStyleValue>? variables,
         out VectorStyleValue value)
     {
-        double product = 1;
+        bool multiply = _operator == VectorStyleExpressionOperator.Multiply;
+        double result = multiply ? 1 : 0;
         foreach (VectorStyleExpression argument in _arguments)
         {
             if (!argument.TryEvaluate(
                     context,
                     variables,
-                    out VectorStyleValue factor) ||
-                !factor.TryGetNumber(out double number))
+                    out VectorStyleValue operand) ||
+                !operand.TryGetNumber(out double number))
             {
                 value = default;
                 return false;
             }
-            product *= number;
-            if (!double.IsFinite(product))
+            result = multiply ? result * number : result + number;
+            if (!double.IsFinite(result))
             {
                 value = default;
                 return false;
             }
         }
-        value = VectorStyleValue.FromNumber(product);
+        value = VectorStyleValue.FromNumber(result);
         return true;
     }
 

@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -1139,6 +1140,105 @@ public sealed class VectorStyleTests
     }
 
     [TestMethod]
+    [DataRow(7, true, false)]
+    [DataRow(7, true, true)]
+    [DataRow(10, false, false)]
+    [DataRow(10, false, true)]
+    public async Task AzurePlaceLabelsResolveWithPropertyDrivenMaximumWidth(
+        int zoom, bool hasIcon, bool hasMaximumWidth)
+    {
+        const string textLayout = """
+            "text-field": ["get", "name"],
+            "text-font": ["Roboto-Regular"],
+            "text-size": ["get", "name-f"],
+            "text-max-width": ["+", ["number", ["get", "max-text-width"], 9], 1],
+            "text-justify": "auto",
+            "text-padding": 0,
+            "symbol-sort-key": ["coalesce", ["get", "st-lblimp"], ["get", "label-importance"], 255]
+            """;
+        string styleJson = $$"""
+            {
+              "version": 8,
+              "layers": [
+                {
+                  "type": "symbol",
+                  "source-layer": "populated_place",
+                  "minzoom": 3,
+                  "maxzoom": 9,
+                  "filter": ["has", "has-icon"],
+                  "layout": {
+                    "icon-image": "marker",
+                    "text-variable-anchor": ["bottom-left", "bottom-right", "top-left", "top-right"],
+                    "text-radial-offset": 0.29,
+                    {{textLayout}}
+                  }
+                },
+                {
+                  "type": "symbol",
+                  "source-layer": "populated_place",
+                  "minzoom": 8,
+                  "maxzoom": 16,
+                  "filter": ["!", ["has", "has-icon"]],
+                  "layout": {
+                    {{textLayout}}
+                  }
+                }
+              ]
+            }
+            """;
+        VectorStyle style = VectorStyle.Parse(Encoding.UTF8.GetBytes(styleJson));
+        Assert.AreEqual(0, style.UnsupportedLayerCount);
+        Assert.HasCount(2, style.TextLayers);
+        VectorStyleAssets assets = CreateAssets(
+            styleJson,
+            """{"marker":{"x":0,"y":0,"width":1,"height":1,"pixelRatio":1,"visible":true}}""",
+            PixelBytes(0),
+            1,
+            1);
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
+            "Roboto-Regular",
+            0,
+            new Dictionary<int, VectorGlyph>
+            {
+                ['L'] = new('L', GlyphBitmap(8, 128), 2, 2, 0, 2, 3),
+                ['A'] = new('A', GlyphBitmap(8, 128), 2, 2, 0, 2, 3),
+            }));
+        List<VectorTileProperty> properties =
+        [
+            new("name", VectorTileValue.FromString("LA")),
+            new("name-f", VectorTileValue.FromDouble(24)),
+        ];
+        if (hasIcon)
+        {
+            properties.Add(new("has-icon", VectorTileValue.FromBool(true)));
+        }
+        if (hasMaximumWidth)
+        {
+            properties.Add(new("max-text-width", VectorTileValue.FromDouble(4)));
+        }
+        VectorTileFeatureCollection features = new(
+        [
+            new VectorTileFeature(
+                "populated_place",
+                VectorTileGeometryType.Point,
+                [new VectorTilePoint(0.5, 0.5)],
+                properties.ToArray(),
+                [],
+                []),
+        ]);
+
+        await assets.PrepareTexturesAsync(features, zoom, CancellationToken.None);
+        VectorSymbolResolution resolution = assets.ResolveSymbols(features, zoom);
+
+        Assert.AreEqual(0, resolution.EvaluationFailureCount);
+        Assert.AreEqual(0, resolution.UnavailableGlyphCount);
+        Assert.AreEqual(2, resolution.ResolvedGlyphCount);
+        Assert.HasCount(2, resolution.Symbols.Where(symbol => symbol.Kind == VectorSymbolKind.Text));
+        Assert.HasCount(hasIcon ? 1 : 0,
+            resolution.Symbols.Where(symbol => symbol.Kind == VectorSymbolKind.Icon));
+    }
+
+    [TestMethod]
     public async Task PointTextResolvesSharedGlyphTexturesAndStylePlacement()
     {
         VectorStyleAssets assets = CreateAssets(
@@ -1681,6 +1781,40 @@ public sealed class VectorStyleTests
     }
 
     [TestMethod]
+    [DataRow("[\"+\",1,2]", 3d)]
+    [DataRow("[\"+\",1,2,3,4]", 10d)]
+    [DataRow("[\"+\",-2.5,0.5]", -2d)]
+    [DataRow("[\"+\",[\"*\",2,3],4]", 10d)]
+    [DataRow("[\"+\",[\"zoom\"],0.5]", 11d)]
+    [DataRow("[\"+\",[\"number\",[\"get\",\"missing\"],9],1]", 10d)]
+    [DataRow("[\"let\",\"width\",4,[\"+\",[\"var\",\"width\"],1]]", 5d)]
+    public void AdditionExpressionsEvaluateNumericOperands(string json, double expected)
+    {
+        AssertExpressionNumber(json, new VectorStyleEvaluationContext(null, 10.5), expected);
+    }
+
+    [TestMethod]
+    [DataRow("[\"+\",1,\"2\"]")]
+    [DataRow("[\"+\",1,null]")]
+    [DataRow("[\"+\",1,true]")]
+    [DataRow("[\"+\",1,[\"literal\",[2]]]")]
+    [DataRow("[\"+\",1,[\"get\",\"missing\"]]")]
+    [DataRow("[\"+\",1e308,1e308]")]
+    public void AdditionRejectsInvalidOperandsAndOverflow(string json)
+    {
+        AssertExpressionFails(json, new VectorStyleEvaluationContext(null, 10));
+    }
+
+    [TestMethod]
+    [DataRow("[\"+\"]")]
+    [DataRow("[\"+\",1]")]
+    public void AdditionRequiresAtLeastTwoOperands(string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.IsFalse(VectorStyleExpression.TryParse(document.RootElement, out _));
+    }
+
+    [TestMethod]
     public void SupportedExpressionsEvaluateValuesAndRejectTypeMismatches()
     {
         VectorTileFeature feature = CreateFeatures(
@@ -2081,6 +2215,10 @@ public sealed class VectorStyleTests
                     VectorStyleCompatibilityIssueKind.UnsupportedLayoutProperty,
                     "other",
                     1),
+                new VectorStyleCompatibilityIssue(
+                    VectorStyleCompatibilityIssueKind.IgnoredLayoutProperty,
+                    "symbol-avoid-edges",
+                    1),
             },
             issues);
     }
@@ -2175,6 +2313,291 @@ public sealed class VectorStyleTests
             Assert.ContainsSingle(
                 assets.ResolveAccessibilityFeatures(features, 12)).Name);
     }
+
+    [TestMethod]
+    [DataRow("line")]
+    [DataRow("fill")]
+    [DataRow("symbol")]
+    public async Task StaticResolutionCacheReusesFractionalZoomUntilVisibilityChanges(
+        string family)
+    {
+        (VectorStyleAssets assets, VectorTileFeatureCollection features) =
+            CreateCacheTestStyle(family, """
+                "minzoom": 14.25, "maxzoom": 14.28125,
+                """);
+        await assets.PrepareTexturesAsync(features, 14, CancellationToken.None);
+        object cache = CreateResolutionCache(features, assets);
+
+        object below = GetCachedResolution(cache, family, 14.24);
+        object visible = GetCachedResolution(cache, family, 14.25);
+        Assert.AreNotSame(below, visible);
+        Assert.AreEqual(0, GetResolvedItemCount(below));
+        Assert.AreEqual(1, GetResolvedItemCount(visible));
+        Assert.AreSame(visible, GetCachedResolution(cache, family, 14.265625));
+        object above = GetCachedResolution(cache, family, 14.28125);
+        Assert.AreNotSame(visible, above);
+        Assert.AreEqual(0, GetResolvedItemCount(above));
+        Assert.AreSame(above, GetCachedResolution(cache, family, 14.3));
+        object visibleAgain = GetCachedResolution(cache, family, 14.265625);
+        Assert.AreNotSame(above, visibleAgain);
+        Assert.AreEqual(1, GetResolvedItemCount(visibleAgain));
+    }
+
+    [TestMethod]
+    [DataRow("line", "\"paint\":{\"line-width\":[\"interpolate\",[\"linear\"],[\"zoom\"],14,1,15,9]},")]
+    [DataRow("fill", "\"paint\":{\"fill-opacity\":[\"interpolate\",[\"linear\"],[\"zoom\"],14,0.1,15,1]},")]
+    [DataRow("symbol", "\"layout\":{\"icon-image\":\"marker\",\"icon-size\":[\"let\",\"z\",[\"zoom\"],[\"interpolate\",[\"linear\"],[\"var\",\"z\"],14,1,15,9]]},")]
+    [DataRow("line", "\"paint\":{\"line-width\":{\"stops\":[[14,1],[15,9]]}},")]
+    [DataRow("line", "\"filter\":[\"step\",[\"zoom\"],true,14.26,false],")]
+    [DataRow("fill", "\"filter\":[\"step\",[\"zoom\"],true,14.26,false],")]
+    [DataRow("symbol", "\"filter\":[\"step\",[\"zoom\"],true,14.26,false],")]
+    [DataRow("line", "\"layout\":{\"visibility\":[\"step\",[\"zoom\"],\"visible\",14.26,\"none\"]},")]
+    [DataRow("symbol", "\"layout\":{\"icon-image\":\"marker\",\"icon-rotation-alignment\":[\"step\",[\"zoom\"],\"map\",14.26,\"viewport\"]},")]
+    public async Task ZoomDependentResolutionCacheRecomputesAtExactFractionalZoom(
+        string family,
+        string properties)
+    {
+        (VectorStyleAssets assets, VectorTileFeatureCollection features) =
+            CreateCacheTestStyle(family, properties);
+        await assets.PrepareTexturesAsync(features, 14, CancellationToken.None);
+        object cache = CreateResolutionCache(features, assets);
+        object first = GetCachedResolution(cache, family, 14.25);
+        object next = GetCachedResolution(cache, family, 14.265625);
+
+        Assert.AreEqual(1, GetResolvedItemCount(first));
+        Assert.AreNotSame(first, next);
+        Assert.AreSame(next, GetCachedResolution(cache, family, 14.265625));
+        switch (first, next)
+        {
+            case (VectorLineResolution a, VectorLineResolution b)
+                when b.Lines.Length != 0:
+                Assert.AreNotEqual(a.Lines[0].Style.Width, b.Lines[0].Style.Width);
+                break;
+            case (VectorPolygonResolution a, VectorPolygonResolution b)
+                when b.Polygons.Length != 0:
+                Assert.AreNotEqual(a.Polygons[0].Style, b.Polygons[0].Style);
+                break;
+            case (VectorSymbolResolution a, VectorSymbolResolution b)
+                when b.Symbols.Length != 0:
+                Assert.AreNotEqual(a.Symbols[0], b.Symbols[0]);
+                break;
+            default:
+                Assert.AreEqual(0, GetResolvedItemCount(next));
+                break;
+        }
+    }
+
+    [TestMethod]
+    public async Task StaticSymbolResolutionCacheRetainsTextScaleInvalidation()
+    {
+        (VectorStyleAssets assets, VectorTileFeatureCollection features) =
+            CreateCacheTestStyle("symbol", """
+                "layout":{"text-field":"R"},
+                """);
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
+            "Roboto-Regular",
+            0,
+            new Dictionary<int, VectorGlyph>
+            {
+                ['R'] = new('R', GlyphBitmap(8, 128), 2, 2, 0, 2, 3),
+            }));
+        await assets.PrepareTexturesAsync(features, 14, CancellationToken.None);
+        object cache = CreateResolutionCache(features, assets);
+        var first = (VectorSymbolResolution)GetCachedResolution(
+            cache, "symbol", 14.25);
+        Assert.AreSame(first, GetCachedResolution(cache, "symbol", 14.265625));
+        var scaled = (VectorSymbolResolution)GetCachedResolution(
+            cache, "symbol", 14.265625, 2);
+        Assert.AreNotSame(first, scaled);
+        Assert.AreEqual(
+            Assert.ContainsSingle(first.Symbols).Width * 2,
+            Assert.ContainsSingle(scaled.Symbols).Width,
+            0.000001);
+        Assert.AreSame(scaled, GetCachedResolution(cache, "symbol", 14.27, 2));
+    }
+
+    [TestMethod]
+    public void MissingGlyphsPreventCrossZoomSymbolReuse()
+    {
+        (VectorStyleAssets assets, VectorTileFeatureCollection features) =
+            CreateCacheTestStyle("symbol", """
+                "layout":{"text-field":"R"},
+                """);
+        object cache = CreateResolutionCache(features, assets);
+        var missing = (VectorSymbolResolution)GetCachedResolution(
+            cache, "symbol", 14.25);
+        Assert.AreEqual(1, missing.UnavailableGlyphCount);
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
+            "Roboto-Regular",
+            0,
+            new Dictionary<int, VectorGlyph>
+            {
+                ['R'] = new('R', GlyphBitmap(8, 128), 2, 2, 0, 2, 3),
+            }));
+
+        var available = (VectorSymbolResolution)GetCachedResolution(
+            cache, "symbol", 14.265625);
+        Assert.AreNotSame(missing, available);
+        Assert.AreEqual(0, available.UnavailableGlyphCount);
+        Assert.ContainsSingle(available.Symbols);
+    }
+
+    [TestMethod]
+    public async Task MissingSpritesPreventCrossZoomSymbolReuse()
+    {
+        (VectorStyleAssets assets, VectorTileFeatureCollection features) =
+            CreateCacheTestStyle("symbol", string.Empty);
+        object cache = CreateResolutionCache(features, assets);
+        var missing = (VectorSymbolResolution)GetCachedResolution(
+            cache, "symbol", 14.25);
+        Assert.AreEqual(1, missing.UnavailableSpriteCount);
+        await assets.PrepareTexturesAsync(features, 14, CancellationToken.None);
+
+        var available = (VectorSymbolResolution)GetCachedResolution(
+            cache, "symbol", 14.265625);
+        Assert.AreNotSame(missing, available);
+        Assert.AreEqual(0, available.UnavailableSpriteCount);
+        Assert.ContainsSingle(available.Symbols);
+    }
+
+    [TestMethod]
+    public async Task PatternedLineSymbolsRetainFractionalVisibilityBoundaries()
+    {
+        (VectorStyleAssets assets, VectorTileFeatureCollection features) =
+            CreateCacheTestStyle("line", """
+                "minzoom":14.25, "maxzoom":14.28125,
+                "paint":{"line-pattern":"marker"},
+                """);
+        await assets.PrepareTexturesAsync(features, 14, CancellationToken.None);
+        object cache = CreateResolutionCache(features, assets);
+        object below = GetCachedResolution(cache, "symbol", 14.24);
+        object visible = GetCachedResolution(cache, "symbol", 14.25);
+        Assert.AreEqual(0, GetResolvedItemCount(below));
+        Assert.AreEqual(1, GetResolvedItemCount(visible));
+        Assert.AreSame(visible, GetCachedResolution(cache, "symbol", 14.265625));
+        object above = GetCachedResolution(cache, "symbol", 14.28125);
+        Assert.AreNotSame(visible, above);
+        Assert.AreEqual(0, GetResolvedItemCount(above));
+    }
+
+    [TestMethod]
+    public void ZoomDependentTextAndLinePatternsInvalidateSymbolsOnlyAsNeeded()
+    {
+        (VectorStyleAssets text, _) = CreateCacheTestStyle("symbol", """
+            "layout":{"text-field":"R"},
+            "paint":{"text-opacity":["interpolate",["linear"],["zoom"],14,0,15,1]},
+            """);
+        Assert.IsFalse(text.CanReuseSymbols(14.25, 14.265625));
+        Assert.IsTrue(text.CanReuseLines(14.25, 14.265625));
+        Assert.IsTrue(text.CanReusePolygons(14.25, 14.265625));
+
+        (VectorStyleAssets line, _) = CreateCacheTestStyle("line", """
+            "paint":{"line-pattern":["step",["zoom"],"marker",14.26,"other"]},
+            """);
+        Assert.IsFalse(line.CanReuseSymbols(14.25, 14.265625));
+        Assert.IsFalse(line.CanReuseLines(14.25, 14.265625));
+        Assert.IsTrue(line.CanReusePolygons(14.25, 14.265625));
+    }
+
+    [TestMethod]
+    [DataRow("[\"literal\",[\"zoom\"]]", false)]
+    [DataRow("[\"get\",\"zoom\"]", false)]
+    [DataRow("[\"let\",\"z\",[\"zoom\"],[\"var\",\"z\"]]", true)]
+    [DataRow("{\"stops\":[[14,1],[15,2]]}", true)]
+    [DataRow("{\"property\":\"width\",\"stops\":[[1,1],[2,2]]}", false)]
+    [DataRow("[\"case\",false,[\"zoom\"],1]", true)]
+    [DataRow("[\"+\",[\"zoom\"],1]", true)]
+    [DataRow("[\"+\",[\"get\",\"width\"],1]", false)]
+    public void ParsedExpressionsTrackTransitiveZoomDependency(
+        string json,
+        bool expected)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.IsTrue(VectorStyleExpression.TryParseStyleValue(
+            document.RootElement,
+            out VectorStyleExpression expression));
+        Assert.AreEqual(expected, expression.DependsOnZoom);
+    }
+
+    private static (VectorStyleAssets Assets, VectorTileFeatureCollection Features)
+        CreateCacheTestStyle(string family, string properties)
+    {
+        string sourceLayer = family switch
+        {
+            "line" => "road",
+            "fill" => "land",
+            _ => "poi",
+        };
+        string defaultLayout = family == "symbol" &&
+            !properties.Contains("\"layout\"", StringComparison.Ordinal)
+                ? "\"layout\":{\"icon-image\":\"marker\"},"
+                : string.Empty;
+        VectorStyleAssets assets = CreateAssets(
+            $$"""
+            {
+              "version":8,
+              "layers":[{
+                {{properties}}
+                {{defaultLayout}}
+                "type":"{{family}}",
+                "source-layer":"{{sourceLayer}}"
+              }]
+            }
+            """,
+            """
+            {"marker":{"x":0,"y":0,"width":1,"height":1,"pixelRatio":1,"visible":true}}
+            """,
+            PixelBytes(9),
+            1,
+            1);
+        return (assets, family switch
+        {
+            "line" => CreateLineFeatures(),
+            "fill" => CreatePolygonFeatures("park"),
+            _ => CreateFeatures(),
+        });
+    }
+
+    private static object CreateResolutionCache(
+        VectorTileFeatureCollection features,
+        VectorStyleAssets assets)
+    {
+        Type type = typeof(MapRenderer).GetNestedType(
+            "VectorTileCacheEntry", BindingFlags.NonPublic)!;
+        return Activator.CreateInstance(
+            type,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [features, assets, (int)MapStyle.Road],
+            culture: null)!;
+    }
+
+    private static object GetCachedResolution(
+        object cache,
+        string family,
+        double zoom,
+        double textScaleFactor = 1)
+    {
+        string method = family switch
+        {
+            "line" => "GetLines",
+            "fill" => "GetPolygons",
+            _ => "GetSymbols",
+        };
+        return cache.GetType().GetMethod(
+            method,
+            BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(
+                cache,
+                family == "symbol" ? [zoom, textScaleFactor] : [zoom])!;
+    }
+
+    private static int GetResolvedItemCount(object resolution) => resolution switch
+    {
+        VectorLineResolution lines => lines.Lines.Length,
+        VectorPolygonResolution polygons => polygons.Polygons.Length,
+        VectorSymbolResolution symbols => symbols.Symbols.Length,
+        _ => throw new InvalidOperationException(),
+    };
 
     private static VectorStyleAssets CreateAssets(
         string style,

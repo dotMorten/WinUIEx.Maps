@@ -1,4 +1,5 @@
 using System.Diagnostics.Tracing;
+using System.Diagnostics.CodeAnalysis;
 
 namespace WinUIEx.Maps.Rendering.Diagnostics;
 
@@ -46,6 +47,7 @@ internal sealed class MapControlEventSource : EventSource
         public const EventKeywords CustomTiles = (EventKeywords)0x80;
         public const EventKeywords VectorTiles = (EventKeywords)0x100;
         public const EventKeywords Accessibility = (EventKeywords)0x200;
+        public const EventKeywords Frames = (EventKeywords)0x400;
     }
 
     /// <summary>
@@ -65,6 +67,7 @@ internal sealed class MapControlEventSource : EventSource
         public const EventTask CustomTiles = (EventTask)9;
         public const EventTask VectorTiles = (EventTask)10;
         public const EventTask Accessibility = (EventTask)11;
+        public const EventTask Frame = (EventTask)12;
     }
 
     /// <summary>
@@ -1309,7 +1312,8 @@ internal sealed class MapControlEventSource : EventSource
     }
 
     /// <summary>
-    /// Records retained vector-line fallback instances and distant-level suppression.
+    /// Records retained vector-line fallback instances and suppression of replaced coverage
+    /// or distant finer levels. Coarser coverage is not suppressed by zoom distance.
     /// </summary>
     [Event(
         57,
@@ -1372,7 +1376,8 @@ internal sealed class MapControlEventSource : EventSource
 
     /// <summary>
     /// Records retained vector geometry opacity during active-tile replacement. Polygon
-    /// fallbacks retain coverage until replacements are opaque; lines crossfade.
+    /// fallbacks retain coverage until eligible replacements are opaque; lines crossfade.
+    /// Coarser fallback coverage survives skipped zoom levels.
     /// </summary>
     [Event(
         59,
@@ -1780,7 +1785,8 @@ internal sealed class MapControlEventSource : EventSource
     }
 
     /// <summary>
-    /// Records aggregate unsupported Style Spec constructs without layer or source names.
+    /// Records aggregate unsupported or intentionally ignored Style Spec constructs without
+    /// layer or source names.
     /// </summary>
     [Event(
         75,
@@ -1832,6 +1838,113 @@ internal sealed class MapControlEventSource : EventSource
                 placementCapacity,
                 collisionCapacity,
                 accessibilityCapacity);
+        }
+    }
+
+    /// <summary>
+    /// Separates frame execution from render-lock, readback, presentation, and producer waits.
+    /// </summary>
+    [Event(77, Level = EventLevel.Verbose, Keywords = Keywords.Frames, Task = Tasks.Frame)]
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The fixed event payload contains only Int64 and Double primitives.")]
+    public unsafe void RenderFrameTiming(
+        long rendererId,
+        long frameId,
+        double renderLockMilliseconds,
+        double renderMilliseconds,
+        double captureMilliseconds,
+        double presentMilliseconds,
+        double handoffMilliseconds,
+        double totalMilliseconds)
+    {
+        if (IsEnabled(EventLevel.Verbose, Keywords.Frames))
+        {
+            EventData* data = stackalloc EventData[8];
+            data[0] = new() { DataPointer = (IntPtr)(&rendererId), Size = sizeof(long) };
+            data[1] = new() { DataPointer = (IntPtr)(&frameId), Size = sizeof(long) };
+            data[2] = new() { DataPointer = (IntPtr)(&renderLockMilliseconds), Size = sizeof(double) };
+            data[3] = new() { DataPointer = (IntPtr)(&renderMilliseconds), Size = sizeof(double) };
+            data[4] = new() { DataPointer = (IntPtr)(&captureMilliseconds), Size = sizeof(double) };
+            data[5] = new() { DataPointer = (IntPtr)(&presentMilliseconds), Size = sizeof(double) };
+            data[6] = new() { DataPointer = (IntPtr)(&handoffMilliseconds), Size = sizeof(double) };
+            data[7] = new() { DataPointer = (IntPtr)(&totalMilliseconds), Size = sizeof(double) };
+            WriteEventCore(77, 8, data);
+        }
+    }
+
+    /// <summary>
+    /// Reports CPU-side map work for a frame, excluding presentation and readback.
+    /// </summary>
+    [Event(78, Level = EventLevel.Verbose, Keywords = Keywords.Frames, Task = Tasks.Frame)]
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The fixed event payload contains only Int64 and Double primitives.")]
+    public unsafe void MapFrameStageTiming(
+        long rendererId,
+        long frameId,
+        double cameraMilliseconds,
+        double commitMilliseconds,
+        double rasterMilliseconds,
+        double polygonMilliseconds,
+        double lineMilliseconds,
+        double symbolMilliseconds,
+        double otherMilliseconds)
+    {
+        if (IsEnabled(EventLevel.Verbose, Keywords.Frames))
+        {
+            EventData* data = stackalloc EventData[9];
+            data[0] = new() { DataPointer = (IntPtr)(&rendererId), Size = sizeof(long) };
+            data[1] = new() { DataPointer = (IntPtr)(&frameId), Size = sizeof(long) };
+            data[2] = new() { DataPointer = (IntPtr)(&cameraMilliseconds), Size = sizeof(double) };
+            data[3] = new() { DataPointer = (IntPtr)(&commitMilliseconds), Size = sizeof(double) };
+            data[4] = new() { DataPointer = (IntPtr)(&rasterMilliseconds), Size = sizeof(double) };
+            data[5] = new() { DataPointer = (IntPtr)(&polygonMilliseconds), Size = sizeof(double) };
+            data[6] = new() { DataPointer = (IntPtr)(&lineMilliseconds), Size = sizeof(double) };
+            data[7] = new() { DataPointer = (IntPtr)(&symbolMilliseconds), Size = sizeof(double) };
+            data[8] = new() { DataPointer = (IntPtr)(&otherMilliseconds), Size = sizeof(double) };
+            WriteEventCore(78, 9, data);
+        }
+    }
+
+    /// <summary>
+    /// Localizes unexpected pipeline failures without recording service content or stack text.
+    /// </summary>
+    [Event(79, Level = EventLevel.Error, Keywords = Keywords.Tiles | Keywords.Errors, Task = Tasks.TileRequest)]
+    public void TilePipelineStageFailed(
+        int sourceKind, int zoom, int x, int y, long generation,
+        int stage, string exceptionType, int hresult)
+    {
+        if (IsEnabled(EventLevel.Error, Keywords.Tiles | Keywords.Errors))
+        {
+            WriteEvent(79, sourceKind, zoom, x, y, generation, stage, exceptionType, hresult);
+        }
+    }
+
+    /// <summary>
+    /// Aggregates dynamic geometry vertex-buffer map/copy/unmap work within one frame.
+    /// </summary>
+    [Event(80, Level = EventLevel.Verbose, Keywords = Keywords.Frames, Task = Tasks.Frame)]
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The fixed event payload contains only Int32, Int64 and Double primitives.")]
+    public unsafe void GeometryStreamUploadTiming(
+        long rendererId,
+        long frameId,
+        int uploadCount,
+        int discardCount,
+        int noOverwriteCount,
+        long byteCount,
+        double uploadMilliseconds)
+    {
+        if (IsEnabled(EventLevel.Verbose, Keywords.Frames))
+        {
+            EventData* data = stackalloc EventData[7];
+            data[0] = new() { DataPointer = (IntPtr)(&rendererId), Size = sizeof(long) };
+            data[1] = new() { DataPointer = (IntPtr)(&frameId), Size = sizeof(long) };
+            data[2] = new() { DataPointer = (IntPtr)(&uploadCount), Size = sizeof(int) };
+            data[3] = new() { DataPointer = (IntPtr)(&discardCount), Size = sizeof(int) };
+            data[4] = new() { DataPointer = (IntPtr)(&noOverwriteCount), Size = sizeof(int) };
+            data[5] = new() { DataPointer = (IntPtr)(&byteCount), Size = sizeof(long) };
+            data[6] = new() { DataPointer = (IntPtr)(&uploadMilliseconds), Size = sizeof(double) };
+            WriteEventCore(80, 7, data);
         }
     }
 }

@@ -147,14 +147,19 @@ float4 main(PixelInput input) : SV_TARGET
         0.75f - smoothing,
         0.75f + smoothing,
         distance);
-    float haloSmoothing = smoothing + Opacity.z;
-    float haloCoverage = smoothstep(
-        0.75f - Opacity.y - haloSmoothing,
-        0.75f - Opacity.y + haloSmoothing,
-        distance);
-    float4 fill = Rotation * fillCoverage;
-    float4 halo = Pitch * haloCoverage * (1.0f - fillCoverage);
-    return (fill + halo) * Opacity.x;
+    float4 fill = Rotation * fillCoverage * Opacity.x;
+    if (Opacity.w > 0.5f)
+    {
+        float haloSmoothing = smoothing + Opacity.z;
+        float haloCoverage = smoothstep(
+            0.75f - Opacity.y - haloSmoothing,
+            0.75f - Opacity.y + haloSmoothing,
+            distance);
+        float4 halo = Pitch * haloCoverage * (1.0f - fillCoverage) * Opacity.x;
+        // Compensate for the later fill's source-over blend, preserving opacity and antialiasing.
+        return halo / max(1.0f - fill.a, 0.000001f);
+    }
+    return fill;
 }
 """;
 

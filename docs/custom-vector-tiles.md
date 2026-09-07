@@ -59,10 +59,22 @@ from the application and use provider-authorized origins.
 
 WinUIEx.Maps intentionally implements a subset of the Style Specification. It supports the
 background, fill, line, circle, and symbol behavior used by its renderer, including many
-expressions, legacy stop functions, text and icon tokens, sprites, glyphs, collision, line
+expressions (including numeric `+` and `*`), legacy stop functions, text and icon tokens,
+sprites, glyphs, collision, line
 decorations, and common advanced line and symbol properties. Unsupported layer types,
 properties, or expressions are skipped rather than treated as full Mapbox compatibility.
 Test every style used by the application.
+
+Symbols and complete labels may cross tile boundaries. Collision handling is shared across
+the visible tiles, so `symbol-avoid-edges` is parsed for compatibility but its tile-local
+restriction is ignored. This prevents city names and other labels from losing individual
+letters or disappearing at tile edges as the map zooms or rotates. Viewport clipping and
+the style's overlap, placement, and priority rules still apply.
+
+When zooming into unloaded areas, cached coarse fills and roads remain visible until
+replacement coverage arrives. Previously drawn fallback geometry retains its last drawable
+styling, while active tiles continue evaluating styles at the current zoom. Tile loading
+continues during navigation; fallback retention does not increase the cache budgets.
 
 ## 3. Add headers and source limits
 

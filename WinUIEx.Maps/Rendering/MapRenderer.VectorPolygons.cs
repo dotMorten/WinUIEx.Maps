@@ -527,7 +527,8 @@ internal sealed partial class MapRenderer
                     layer.RuntimeId,
                     key.Id,
                     activeScene,
-                    layer.FadeDuration));
+                    layer.FadeDuration,
+                    tileZooms));
             result.MinimumFallbackOpacity = Math.Min(
                 result.MinimumFallbackOpacity,
                 opacityMultiplier);
@@ -553,7 +554,8 @@ internal sealed partial class MapRenderer
                     patternBatches,
                     batchOrder,
                     ref result,
-                    opacityMultiplier);
+                    opacityMultiplier,
+                    GetVectorFallbackStyleZoom(_displayZoom, key.Id.Zoom, layer.TileSize));
             }
         }
         return activeFade;
@@ -582,10 +584,12 @@ internal sealed partial class MapRenderer
         Dictionary<VectorPolygonBatchKey, List<TileVertex>> patternBatches,
         List<VectorPolygonBatchKey> batchOrder,
         ref VectorPolygonRenderResult result,
-        double opacityMultiplier)
+        double opacityMultiplier,
+        double? styleZoom = null)
     {
         tile.MarkUsed();
-        VectorPolygonResolution resolution = tile.GetPolygons(_displayZoom);
+        VectorPolygonResolution resolution = tile.GetPolygons(
+            styleZoom ?? _displayZoom, isFallback: styleZoom.HasValue);
         result.CandidatePolygonCount += resolution.Polygons.Length;
         result.EvaluationFailureCount += resolution.EvaluationFailureCount;
         double tileOpacity = ComputeLayerTileOpacity(
@@ -1307,15 +1311,18 @@ internal sealed partial class MapRenderer
             {
                 break;
             }
+            uint startVertex;
             fixed (TileVertex* vertexPointer = remaining)
             {
-                WriteDiscardBuffer(
+                startVertex = WriteGeometryVertices(
                     context,
                     _patternVertexBufferPointer,
+                    ref _patternStreamCursor,
                     vertexPointer,
-                    (nuint)(count * Marshal.SizeOf<TileVertex>()));
+                    count,
+                    Marshal.SizeOf<TileVertex>());
             }
-            DrawVertices(context, (uint)count);
+            DrawVertices(context, (uint)count, startVertex);
             drawCallCount++;
             remaining = remaining[count..];
         }

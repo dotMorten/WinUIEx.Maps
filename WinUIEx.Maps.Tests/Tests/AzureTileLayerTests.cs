@@ -9,6 +9,27 @@ namespace WinUIEx.Maps.Tests;
 public sealed class AzureTileLayerTests
 {
     [TestMethod]
+    public void ConcurrentAzureRequestsHaveNoSharedDefaultHeaders()
+    {
+        using Windows.Web.Http.HttpClient client =
+            AzureTileAcquisitionSession.CreateHttpClient();
+        using Windows.Web.Http.HttpRequestMessage first = new(
+            Windows.Web.Http.HttpMethod.Get, new Uri("https://example.com/first"));
+        using Windows.Web.Http.HttpRequestMessage second = new(
+            Windows.Web.Http.HttpMethod.Get, new Uri("https://example.com/second"));
+
+        AzureTileAcquisitionSession.ApplyRequestHeaders(first, "test-token", "*/*");
+        AzureTileAcquisitionSession.ApplyRequestHeaders(second, "", "application/json");
+        first.Headers.UserAgent.Clear();
+
+        Assert.AreEqual(0, client.DefaultRequestHeaders.Count);
+        Assert.AreEqual("WinUIEx.Maps/1.0", second.Headers.UserAgent.ToString());
+        Assert.AreEqual("test-token", first.Headers["subscription-key"]);
+        Assert.IsFalse(second.Headers.ContainsKey("subscription-key"));
+        Assert.AreEqual("application/json", second.Headers.Accept.ToString());
+    }
+
+    [TestMethod]
     public void AzureHttpClientReadsAndWritesTheResponseCache()
     {
         using HttpBaseProtocolFilter filter =

@@ -54,6 +54,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private int _uploadPassActive;
     private bool _hasActiveFrameFade;
     private MapScene? _scene;
+    private readonly Dictionary<int, MapScene> _frameSourceScenes = [];
     private double _displayLongitude;
     private double _displayLatitude;
     private double _displayZoom;
@@ -98,6 +99,11 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private LayerRenderSnapshot[] _layerRenderPlan = [];
     private long _layerRenderPlanVersion;
     private bool[] _visibleMapElementLayers = [];
+    private bool _traceGeometryUploads;
+    private int _geometryUploadCount;
+    private int _geometryDiscardCount;
+    private long _geometryUploadBytes;
+    private long _geometryUploadTicks;
 
     public event Action<MapScene>? SceneChanged;
 
@@ -478,10 +484,25 @@ internal sealed partial class MapRenderer : DirectXRenderer
     /// </remarks>
     protected override unsafe void RenderFrame()
     {
+        bool traceFrame = MapControlEventSource.Log.IsEnabled(
+            System.Diagnostics.Tracing.EventLevel.Verbose,
+            MapControlEventSource.Keywords.Frames);
+        _traceGeometryUploads = traceFrame;
+        if (traceFrame)
+        {
+            _geometryUploadCount = 0;
+            _geometryDiscardCount = 0;
+            _geometryUploadBytes = 0;
+            _geometryUploadTicks = 0;
+        }
+        long frameStart = traceFrame ? Stopwatch.GetTimestamp() : 0;
         UpdateCameraScene();
+        long cameraEnd = traceFrame ? Stopwatch.GetTimestamp() : 0;
         ProcessCompletedRasterUploads();
         ProcessCompletedVectorTiles();
         ProcessCompletedIconUploads();
+        long commitEnd = traceFrame ? Stopwatch.GetTimestamp() : 0;
+        long rasterTicks = 0, polygonTicks = 0, lineTicks = 0, symbolTicks = 0;
 
         IntPtr context = ContextPointer;
         SetRasterizer(context, _rasterizerPointer);
@@ -521,6 +542,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             if (layer.Kind is
                 LayerRenderKind.RasterTiles or LayerRenderKind.HybridTiles)
             {
+                long stageStart = traceFrame ? Stopwatch.GetTimestamp() : 0;
                 SetBlendState(context, _blendStatePointer);
                 SetInputLayout(context, _inputLayoutPointer);
                 SetVertexBuffer(
@@ -533,13 +555,34 @@ internal sealed partial class MapRenderer : DirectXRenderer
                     _vertexShaderPointer,
                     _constantBufferPointer);
                 hasRasterFade |= DrawRasterTileLayer(context, layer);
+                if (traceFrame)
+                {
+                    rasterTicks += Stopwatch.GetTimestamp() - stageStart;
+                }
             }
             if (layer.Kind is
                 LayerRenderKind.VectorPoints or LayerRenderKind.HybridTiles)
             {
+                long stageStart = traceFrame ? Stopwatch.GetTimestamp() : 0;
                 hasRasterFade |= DrawVectorPolygonLayer(context, layer);
+                if (traceFrame)
+                {
+                    long end = Stopwatch.GetTimestamp();
+                    polygonTicks += end - stageStart;
+                    stageStart = end;
+                }
                 hasRasterFade |= DrawVectorLineLayer(context, layer);
+                if (traceFrame)
+                {
+                    long end = Stopwatch.GetTimestamp();
+                    lineTicks += end - stageStart;
+                    stageStart = end;
+                }
                 hasRasterFade |= DrawVectorPointLayer(context, layer);
+                if (traceFrame)
+                {
+                    symbolTicks += Stopwatch.GetTimestamp() - stageStart;
+                }
                 if (updateAccessibility)
                 {
                     CollectVectorAccessibilityFeatures(
@@ -569,6 +612,30 @@ internal sealed partial class MapRenderer : DirectXRenderer
         if (hasRasterFade)
         {
             RequestRender();
+        }
+        if (traceFrame)
+        {
+            long otherTicks = Stopwatch.GetTimestamp() - commitEnd -
+                rasterTicks - polygonTicks - lineTicks - symbolTicks;
+            double millisecondsPerTick = 1000d / Stopwatch.Frequency;
+            MapControlEventSource.Log.MapFrameStageTiming(
+                DiagnosticRendererId,
+                DiagnosticFrameId,
+                (cameraEnd - frameStart) * millisecondsPerTick,
+                (commitEnd - cameraEnd) * millisecondsPerTick,
+                rasterTicks * millisecondsPerTick,
+                polygonTicks * millisecondsPerTick,
+                lineTicks * millisecondsPerTick,
+                symbolTicks * millisecondsPerTick,
+                otherTicks * millisecondsPerTick);
+            MapControlEventSource.Log.GeometryStreamUploadTiming(
+                DiagnosticRendererId,
+                DiagnosticFrameId,
+                _geometryUploadCount,
+                _geometryDiscardCount,
+                _geometryUploadCount - _geometryDiscardCount,
+                _geometryUploadBytes,
+                _geometryUploadTicks * millisecondsPerTick);
         }
     }
 
@@ -614,6 +681,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     /// </summary>
     private void UpdateCameraScene()
     {
+        _frameSourceScenes.Clear();
         ApplyPublishedCameraTarget();
         if (!_cameraInitialized || _viewportWidth <= 0 || _viewportHeight <= 0)
         {
@@ -658,22 +726,36 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _hasPublishedCamera = true;
         }
         int tileZoom = Math.Min((int)Math.Floor(_displayZoom), _maximumTileZoom);
-        MapScene scene = MapCamera.CreateScene(
-            _displayLongitude,
-            _displayLatitude,
-            _displayZoom,
-            tileZoom,
-            _viewportWidth,
-            _viewportHeight,
-            _displayHeading,
-            _displayPitch);
+        MapScene? scene = _scene;
+        if (scene is null ||
+            scene.Longitude != _displayLongitude ||
+            scene.Latitude != _displayLatitude ||
+            scene.Zoom != _displayZoom ||
+            scene.TileZoom != tileZoom ||
+            scene.ViewportWidth != _viewportWidth ||
+            scene.ViewportHeight != _viewportHeight ||
+            scene.Heading != _displayHeading ||
+            scene.Pitch != _displayPitch)
+        {
+            scene = MapCamera.CreateScene(
+                _displayLongitude,
+                _displayLatitude,
+                _displayZoom,
+                tileZoom,
+                _viewportWidth,
+                _viewportHeight,
+                _displayHeading,
+                _displayPitch);
+        }
         _scene = scene;
+        _frameSourceScenes.Add(tileZoom, scene);
         DisplayedCameraChanged?.Invoke(scene);
 
-        HashSet<TileId> requiredTiles = scene.RequiredTiles.ToHashSet();
+        IReadOnlyList<TileId> requiredTiles = scene.RequiredTiles;
         if (!_lastRequiredTiles.SetEquals(requiredTiles))
         {
-            _lastRequiredTiles = requiredTiles;
+            _lastRequiredTiles.Clear();
+            _lastRequiredTiles.UnionWith(requiredTiles);
             MapControlEventSource.Log.SceneChanged(
                 scene.TileZoom,
                 scene.RequiredTiles.Count,

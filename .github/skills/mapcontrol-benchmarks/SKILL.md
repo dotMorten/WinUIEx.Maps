@@ -28,6 +28,9 @@ The project is `WinUIEx.Maps.Benchmarks`.
 - `VectorRenderFrameBenchmarks` measures steady-state production vector rendering from
   retained GPU line and polygon caches. Fixture parsing, style creation, initial geometry
   preparation, and cache warmup occur in `GlobalSetup`.
+  Its fractional-zoom case alternates exact zoom values within one source level to
+  exercise zoom-dependent style/geometry invalidation. It excludes tile arrivals and
+  Present; do not equate this case with integer-level replacement or displayed FPS.
 - `VectorSymbolResolutionBenchmarks` measures text/icon style resolution and label
   construction using deterministic generated point features, glyph bitmaps, and a sprite
   atlas at two symbol densities.

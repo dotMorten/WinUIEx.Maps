@@ -262,6 +262,75 @@ public sealed class MapElementRenderingTests
         };
 
     [TestMethod]
+    public Task GeometryStreamingWrapPreservesEarlierDrawsAndLayerOrder() =>
+        MapControlTestHost.LoadMapControlAsync(new BasicGeoposition(), 5, async map =>
+        {
+            BasicGeoposition center = new();
+            MapElementsLayer lowerLayer = ConfigureBlankMap(map, center);
+            using RenderingEventListener listener = new(
+                "GeometryStreamUploadTiming", "MapFrameStageTiming");
+            lowerLayer.MapElements.Add(new MapPolygon
+            {
+                Path = CreateViewportRectanglePath(center, 5, 100, 100, 380, 300),
+                FillColor = Microsoft.UI.Colors.Red,
+                StrokeColor = Microsoft.UI.Colors.Transparent,
+            });
+            // More than one fixed-capacity upload between differently colored draws
+            // exercises both append and discard while earlier GPU ranges remain live.
+            lowerLayer.MapElements.Add(new MapPolyline
+            {
+                Path = CreateViewportPath(
+                    center,
+                    5,
+                    Enumerable.Range(0, 11_001)
+                        .Select(index => new Point(index % 2 == 0 ? 300 : 340, 400))
+                        .ToArray()),
+                StrokeColor = Microsoft.UI.Colors.Lime,
+                StrokeThickness = 4,
+            });
+            MapPolygon upperPolygon = new()
+            {
+                Path = CreateViewportRectanglePath(center, 5, 260, 180, 500, 350),
+                FillColor = Microsoft.UI.Colors.Blue,
+                StrokeColor = Microsoft.UI.Colors.Transparent,
+            };
+            MapElementsLayer upperLayer = new();
+            upperLayer.MapElements.Add(upperPolygon);
+            map.Layers.Add(upperLayer);
+
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+            foreach (Color upperColor in new[] { Microsoft.UI.Colors.Blue, Microsoft.UI.Colors.Magenta })
+            {
+                upperPolygon.FillColor = upperColor;
+                MapRenderFrame frame = await CaptureUntilAndSaveAsync(
+                    map,
+                    timeout.Token,
+                    $"stream-wrap-{upperColor.B}-{upperColor.R}",
+                    frame =>
+                        HasColorNear(frame, Microsoft.UI.Colors.Red, new Point(180, 160), 1) &&
+                        HasColorNear(frame, upperColor, new Point(320, 240), 1) &&
+                        HasColorNear(frame, upperColor, new Point(440, 260), 1) &&
+                        HasColorNear(frame, Microsoft.UI.Colors.Lime, new Point(320, 400), 1));
+                Assert.IsFalse(HasColorNear(frame, Microsoft.UI.Colors.Lime, new Point(320, 410), 1));
+            }
+
+            CapturedRenderingEvent upload = listener.Events("GeometryStreamUploadTiming")
+                .Last(captured => Convert.ToInt32(captured.Payload[2]) >= 4);
+            int uploadCount = Convert.ToInt32(upload.Payload[2]);
+            int discardCount = Convert.ToInt32(upload.Payload[3]);
+            int noOverwriteCount = Convert.ToInt32(upload.Payload[4]);
+            Assert.AreEqual(uploadCount, discardCount + noOverwriteCount);
+            Assert.IsTrue(discardCount >= 2);
+            Assert.IsTrue(noOverwriteCount >= 1);
+            Assert.IsTrue(Convert.ToInt64(upload.Payload[5]) > 65_535L * 8);
+            double milliseconds = Convert.ToDouble(upload.Payload[6]);
+            Assert.IsTrue(double.IsFinite(milliseconds) && milliseconds >= 0);
+            Assert.IsTrue(listener.Events("MapFrameStageTiming").Any(stage =>
+                Equals(stage.Payload[0], upload.Payload[0]) &&
+                Equals(stage.Payload[1], upload.Payload[1])));
+        });
+
+    [TestMethod]
     public Task MapPolygon_PathRendersAndUpdatesProjectedFillBounds() =>
         MapControlTestHost.LoadMapControlAsync(new BasicGeoposition(), 5, async map =>
         {
