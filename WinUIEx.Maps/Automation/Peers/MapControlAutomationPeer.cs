@@ -15,7 +15,7 @@ namespace WinUIEx.Maps.Automation.Peers;
 /// patterns as the UWP <c>MapControlAutomationPeer</c>. Provider operations
 /// update the map immediately without camera animation.
 /// </remarks>
-public sealed class MapControlAutomationPeer :
+public sealed partial class MapControlAutomationPeer :
     FrameworkElementAutomationPeer,
     IScrollProvider,
     ITransformProvider,

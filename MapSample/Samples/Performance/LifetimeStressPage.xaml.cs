@@ -153,11 +153,21 @@ public sealed partial class LifetimeStressPage : Page
         base.OnNavigatedFrom(e);
     }
 
-    private sealed record MapPickerItem(string Name, MapStyle? Style = null)
+}
+public sealed class MapPickerItem
+{
+    internal MapPickerItem(string name, MapStyle? style = null)
     {
-        internal MapPickerItem(MapStyle style)
-            : this(style.ToString(), style)
-        {
-        }
+        Name = name;
+        Style = style;
     }
+
+    internal MapPickerItem(MapStyle style)
+        : this(style.ToString(), style)
+    {
+    }
+
+    public string Name { get; }
+
+    public MapStyle? Style { get; }
 }

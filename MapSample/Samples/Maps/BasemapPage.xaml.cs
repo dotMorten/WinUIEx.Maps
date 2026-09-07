@@ -1,6 +1,7 @@
 using MapSample.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using System.Collections.Generic;
 using Windows.Devices.Geolocation;
 using WinUIEx.Maps;
 
@@ -11,7 +12,7 @@ public sealed partial class BasemapPage : Page
     public BasemapPage()
     {
         InitializeComponent();
-        StylePicker.ItemsSource = new[]
+        StylePicker.ItemsSource = new List<MapStyle>
         {
             MapStyle.Road,
             MapStyle.GrayscaleDark,
@@ -89,8 +90,16 @@ public sealed partial class BasemapPage : Page
             app.MainWindow?.NavigateHome();
         }
     }
+}
 
-    private sealed record LanguagePickerItem(
-        string Name,
-        string? Language);
+public sealed class LanguagePickerItem
+{
+    public string Name { get; }
+    public string? Language { get; }
+
+    public LanguagePickerItem(string name, string? language)
+    {
+        Name = name;
+        Language = language;
+    }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Text.Json;
@@ -37,7 +38,7 @@ public sealed partial class CustomVectorTilesPage : Page
             _layer = await ArcGISTileLayer.CreateAsync(
                 ArcGISTileLayer.DefaultServiceUrl);
             Map.Layers.Add(_layer);
-            StylePicker.ItemsSource = new[]
+            StylePicker.ItemsSource = new List<StyleItem>
             {
                 new StyleItem("Default", _layer.StyleUrl!),
                 new StyleItem("Night", ArcGISTileLayer.NightStyleUrl),
@@ -69,6 +70,17 @@ public sealed partial class CustomVectorTilesPage : Page
             _layer.StyleUrl = style.Url;
         }
     }
+}
 
-    private sealed record StyleItem(string Name, string Url);
+public sealed partial class StyleItem
+{
+    public StyleItem(string name, string url)
+    {
+        Name = name;
+        Url = url;
+    }
+
+    public string Name { get; }
+
+    public string Url { get; }
 }

@@ -21,7 +21,7 @@ namespace WinUIEx.Maps;
 /// or added; later changes to external position storage do not affect the polygon.
 /// </para>
 /// </remarks>
-public sealed class MapPolygon : MapElement
+public sealed partial class MapPolygon : MapElement
 {
     private const double MaximumStrokeThickness = 4096;
     private readonly object _sync = new();
@@ -223,7 +223,7 @@ public sealed class MapPolygon : MapElement
         }
     }
 
-    private sealed class PolygonPathCollection(MapPolygon owner) : IList<Geopath>
+    private sealed partial class PolygonPathCollection(MapPolygon owner) : IList<Geopath>
     {
         public Geopath this[int index]
         {

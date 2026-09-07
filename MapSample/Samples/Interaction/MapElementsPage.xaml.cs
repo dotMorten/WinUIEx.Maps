@@ -16,8 +16,9 @@ using MapElementsLayer = WinUIEx.Maps.MapElementsLayer;
 using MapPolygon = WinUIEx.Maps.MapPolygon;
 using MapPolyline = WinUIEx.Maps.MapPolyline;
 
-namespace MapSample.Samples.Interaction;
+[assembly: WinRT.GeneratedWinRTExposedExternalType(typeof(List<BasicGeoposition>))] // Fix for https://github.com/microsoft/CsWinRT/issues/1839
 
+namespace MapSample.Samples.Interaction;
 public sealed partial class MapElementsPage : Page
 {
     private readonly MapElementsLayer _elementsLayer = new();
@@ -221,7 +222,7 @@ public sealed partial class MapElementsPage : Page
         {
             Longitude = position.Longitude,
             Latitude = position.Latitude,
-        }));
+        }).ToList());
 
     private static bool TryGetStrokeColor(
         MapElement element,

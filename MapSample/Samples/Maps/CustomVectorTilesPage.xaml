@@ -4,6 +4,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:map="using:WinUIEx.Maps"
+    xmlns:local="using:MapSample.Samples.Maps"
     Loaded="Page_Loaded">
 
     <Grid RowDefinitions="Auto,Auto,*">
@@ -20,10 +21,15 @@
                 Grid.Column="1"
                 MinWidth="190"
                 AutomationProperties.AutomationId="CustomVectorTilesStyleInput"
-                DisplayMemberPath="Name"
                 Header="Vector style"
                 IsEnabled="False"
-                SelectionChanged="StylePicker_SelectionChanged" />
+                SelectionChanged="StylePicker_SelectionChanged" >
+                <ComboBox.ItemTemplate>
+                    <DataTemplate x:DataType="local:StyleItem">
+                        <TextBlock Text="{x:Bind Name}" />
+                    </DataTemplate>
+                </ComboBox.ItemTemplate>
+            </ComboBox>
         </Grid>
         <InfoBar
             x:Name="LoadError"

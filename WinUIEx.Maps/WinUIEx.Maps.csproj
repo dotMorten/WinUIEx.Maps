@@ -17,6 +17,7 @@
     <WarningsAsErrors>$(WarningsAsErrors);IL2026;IL2050;IL2070;IL2075;IL2104</WarningsAsErrors>
     <ILLinkTreatWarningsAsErrors>true</ILLinkTreatWarningsAsErrors>
     <IsTrimmable>true</IsTrimmable>
+    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
   <PropertyGroup Label="PackageInfo">
