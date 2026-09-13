@@ -57,6 +57,8 @@ internal abstract class DirectXRenderer : IDisposable
     private IntPtr _contextPointer;
     private IntPtr _renderTargetPointer;
     private IntPtr _offscreenTargetPointer;
+    private IntPtr _offscreenMultisampleTargetPointer;
+    private IntPtr _presentationMultisampleTargetPointer;
     private IntPtr _gpuCompletionQueryPointer;
     private long _swapChainMemoryPressure;
     private long _offscreenFrameCount;
@@ -68,14 +70,25 @@ internal abstract class DirectXRenderer : IDisposable
     private bool _attachmentReconciliationQueued;
     private volatile bool _needsRender;
     private D3D11_VIEWPORT _viewport;
+    private RenderSurfaceSize _surfaceSize = new(1, 1, 1, 1);
     protected object RenderLock => _renderLock;
     protected IntPtr DevicePointer => _devicePointer;
     protected IntPtr ContextPointer => _contextPointer;
-    protected D3D11_VIEWPORT Viewport => _viewport;
+    // Draw constants stay in DIPs; only the native rasterizer and readback use pixels.
+    protected D3D11_VIEWPORT Viewport => new()
+    {
+        Width = (float)_surfaceSize.LogicalWidth,
+        Height = (float)_surfaceSize.LogicalHeight,
+        MinDepth = 0,
+        MaxDepth = 1,
+    };
     protected bool IsInitialized => _initialized;
     protected long DiagnosticRendererId => _rendererId;
     protected long DiagnosticFrameId => _frameId;
     internal bool HasDeviceResources => _initialized;
+    internal int RenderSampleCount { get; private set; } = 1;
+    internal static bool IsPresentationAntialiasingEnabled =>
+        !AppContext.TryGetSwitch("WinUIEx.Maps.DisableMultisampleAntialiasing", out bool disabled) || !disabled;
 
     protected void WaitForGpuCompletion()
     {
@@ -91,8 +104,12 @@ internal abstract class DirectXRenderer : IDisposable
     /// <summary>
     /// Creates renderer resources against an offscreen texture without a swap chain.
     /// </summary>
-    internal unsafe void InitializeOffscreenForBenchmark(int width, int height)
+    internal unsafe void InitializeOffscreenForBenchmark(int width, int height, int sampleCount = 1)
     {
+        if (sampleCount is not (1 or 4))
+        {
+            throw new ArgumentOutOfRangeException(nameof(sampleCount));
+        }
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(width);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -108,6 +125,7 @@ internal abstract class DirectXRenderer : IDisposable
             CreateDeviceResources();
             lock (_renderLock)
             {
+                _surfaceSize = new(width, height, 1, 1);
                 D3D11_TEXTURE2D_DESC description = new()
                 {
                     Width = checked((uint)width),
@@ -124,9 +142,18 @@ internal abstract class DirectXRenderer : IDisposable
                     &description,
                     null,
                     "Failed to create the offscreen benchmark target.");
+                RenderSampleCount = sampleCount == 4 && SupportsFourSampleTarget(_devicePointer) ? 4 : 1;
+                if (RenderSampleCount == 4)
+                {
+                    description.SampleDesc.Count = 4;
+                    _offscreenMultisampleTargetPointer = CreateTexture(
+                        _devicePointer, &description, null,
+                        "Failed to create the offscreen multisample benchmark target.");
+                }
                 _renderTargetPointer = CreateView(
                     _devicePointer,
-                    _offscreenTargetPointer,
+                    _offscreenMultisampleTargetPointer != IntPtr.Zero
+                        ? _offscreenMultisampleTargetPointer : _offscreenTargetPointer,
                     9,
                     "Failed to create the offscreen benchmark render target.");
                 _gpuCompletionQueryPointer = CreateEventQuery(_devicePointer);
@@ -138,6 +165,10 @@ internal abstract class DirectXRenderer : IDisposable
                     MaxDepth = 1,
                 };
                 CreateRendererResources();
+                long targetBytes = checked((long)width * height * 4 * (RenderSampleCount == 4 ? 5 : 1));
+                SetSwapChainMemoryPressure(targetBytes);
+                MapControlEventSource.Log.RenderSurfaceChanged(
+                    _rendererId, width, height, 1, 1, width, height, targetBytes, RenderSampleCount);
                 _initialized = true;
             }
         }
@@ -179,8 +210,49 @@ internal abstract class DirectXRenderer : IDisposable
             SetViewport(_contextPointer, _viewport);
             _frameId++;
             RenderFrame();
+            if (_offscreenMultisampleTargetPointer != IntPtr.Zero)
+            {
+                UnsetRenderTarget(_contextPointer);
+                ResolveColorTarget(_contextPointer, _offscreenTargetPointer, _offscreenMultisampleTargetPointer);
+            }
             WaitForGpu(_contextPointer, _gpuCompletionQueryPointer);
             return ++_offscreenFrameCount;
+        }
+    }
+
+    /// <summary>
+    /// Reads the resolved offscreen target for deterministic quality comparisons.
+    /// </summary>
+    internal unsafe MapRenderFrame CaptureOffscreenFrameForBenchmark()
+    {
+        lock (_renderLock)
+        {
+            RenderOffscreenFrameForBenchmark();
+            uint width = _surfaceSize.PixelWidth;
+            uint height = _surfaceSize.PixelHeight;
+            D3D11_TEXTURE2D_DESC description = new()
+            {
+                Width = width,
+                Height = height,
+                MipLevels = 1,
+                ArraySize = 1,
+                Format = DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc = new DXGI_SAMPLE_DESC { Count = 1 },
+                Usage = D3D11_USAGE.D3D11_USAGE_STAGING,
+                CPUAccessFlags = D3D11_CPU_ACCESS_FLAG.D3D11_CPU_ACCESS_READ,
+            };
+            IntPtr staging = CreateTexture(_devicePointer, &description, null,
+                "Failed to create the offscreen readback texture.");
+            try
+            {
+                return new MapRenderFrame(
+                    ReadTextureBgra(_contextPointer, _offscreenTargetPointer, staging, (int)width, (int)height),
+                    (int)width, (int)height);
+            }
+            finally
+            {
+                ReleasePointer(ref staging);
+            }
         }
     }
 
@@ -228,6 +300,7 @@ internal abstract class DirectXRenderer : IDisposable
         panel.Loaded += OnPanelLoaded;
         panel.Unloaded += OnPanelUnloaded;
         panel.SizeChanged += OnPanelSizeChanged;
+        panel.CompositionScaleChanged += OnPanelCompositionScaleChanged;
         if (panel.XamlRoot is not null)
         {
             Resume();
@@ -362,6 +435,12 @@ internal abstract class DirectXRenderer : IDisposable
     /// the renderer is not yet ready.
     /// </summary>
     private void OnPanelSizeChanged(object sender, SizeChangedEventArgs e)
+        => UpdatePanelSurface();
+
+    private void OnPanelCompositionScaleChanged(SwapChainPanel sender, object args)
+        => UpdatePanelSurface();
+
+    private void UpdatePanelSurface()
     {
         if (_initialized)
         {
@@ -423,6 +502,10 @@ internal abstract class DirectXRenderer : IDisposable
 
         EnsureRenderThread();
         EnsureInitialized();
+        if (_initialized)
+        {
+            UpdatePanelSurface();
+        }
     }
 
     /// <summary>
@@ -463,6 +546,7 @@ internal abstract class DirectXRenderer : IDisposable
         }
 
         _initializing = true;
+        CaptureSurfaceSize();
         long startTimestamp = Stopwatch.GetTimestamp();
         bool succeeded = false;
         MapControlEventSource.Log.DeviceResourcesCreateStart(
@@ -475,9 +559,10 @@ internal abstract class DirectXRenderer : IDisposable
             CreateSwapChain();
             lock (_renderLock)
             {
+                // Rasterizer creation depends on the selected target sample count.
+                CreateSizeDependentResources();
                 CreateRendererResources();
             }
-            CreateSizeDependentResources();
             _initialized = true;
             succeeded = true;
             RequestRender();
@@ -563,11 +648,19 @@ internal abstract class DirectXRenderer : IDisposable
                 return;
             }
 
+            RenderSurfaceSize previous = _surfaceSize;
+            CaptureSurfaceSize();
+            if (_renderTargetPointer != IntPtr.Zero && previous == _surfaceSize)
+            {
+                return;
+            }
+
             if (_contextPointer != IntPtr.Zero)
             {
                 UnsetRenderTarget(_contextPointer);
             }
             ReleasePointer(ref _renderTargetPointer);
+            ReleasePointer(ref _presentationMultisampleTargetPointer);
             uint width = GetPixelWidth();
             uint height = GetPixelHeight();
             ResizeBuffers(
@@ -576,14 +669,35 @@ internal abstract class DirectXRenderer : IDisposable
                 width,
                 height,
                 DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM);
-            SetSwapChainMemoryPressure(checked((long)width * height * 4 * 2));
+            RenderSampleCount = IsPresentationAntialiasingEnabled && SupportsFourSampleTarget(_devicePointer) ? 4 : 1;
+            long targetBytes = checked((long)width * height * 4 * (2 + (RenderSampleCount == 4 ? 4 : 0)));
+            SetSwapChainMemoryPressure(targetBytes);
+            SetSwapChainScale(_swapChainPointer, _surfaceSize.ScaleX, _surfaceSize.ScaleY);
 
             IntPtr bufferPointer = GetBackBuffer(_swapChainPointer);
             try
             {
+                if (RenderSampleCount == 4)
+                {
+                    D3D11_TEXTURE2D_DESC description = new()
+                    {
+                        Width = width,
+                        Height = height,
+                        MipLevels = 1,
+                        ArraySize = 1,
+                        Format = DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
+                        SampleDesc = new DXGI_SAMPLE_DESC { Count = 4 },
+                        Usage = D3D11_USAGE.D3D11_USAGE_DEFAULT,
+                        BindFlags = D3D11_BIND_FLAG.D3D11_BIND_RENDER_TARGET,
+                    };
+                    _presentationMultisampleTargetPointer = CreateTexture(
+                        _devicePointer, &description, null,
+                        "Failed to create the map multisample render target.");
+                }
                 _renderTargetPointer = CreateView(
                     _devicePointer,
-                    bufferPointer,
+                    _presentationMultisampleTargetPointer != IntPtr.Zero
+                        ? _presentationMultisampleTargetPointer : bufferPointer,
                     9,
                     "Failed to create the map render target.");
             }
@@ -594,23 +708,42 @@ internal abstract class DirectXRenderer : IDisposable
 
             _viewport = new D3D11_VIEWPORT
             {
-                Width = width,
-                Height = height,
+                Width = (float)(_surfaceSize.LogicalWidth * _surfaceSize.ScaleX),
+                Height = (float)(_surfaceSize.LogicalHeight * _surfaceSize.ScaleY),
                 MinDepth = 0,
                 MaxDepth = 1,
             };
+            MapControlEventSource.Log.RenderSurfaceChanged(
+                _rendererId, _surfaceSize.LogicalWidth, _surfaceSize.LogicalHeight,
+                _surfaceSize.ScaleX, _surfaceSize.ScaleY, (int)width, (int)height,
+                targetBytes, RenderSampleCount);
+        }
+    }
+
+    private void CaptureSurfaceSize()
+    {
+        if (_panel is not null)
+        {
+            lock (_renderLock)
+            {
+                _surfaceSize = new(
+                    Math.Max(1, _panel.ActualWidth),
+                    Math.Max(1, _panel.ActualHeight),
+                    _panel.CompositionScaleX,
+                    _panel.CompositionScaleY);
+            }
         }
     }
 
     /// <summary>
     /// Gets a nonzero integral swap-chain width from the attached panel.
     /// </summary>
-    private uint GetPixelWidth() => (uint)Math.Max(1, Math.Ceiling(_panel?.ActualWidth ?? 1));
+    private uint GetPixelWidth() => _surfaceSize.PixelWidth;
 
     /// <summary>
     /// Gets a nonzero integral swap-chain height from the attached panel.
     /// </summary>
-    private uint GetPixelHeight() => (uint)Math.Max(1, Math.Ceiling(_panel?.ActualHeight ?? 1));
+    private uint GetPixelHeight() => _surfaceSize.PixelHeight;
 
     /// <summary>
     /// Waits on render and shutdown signals and dispatches requested frames on the dedicated
@@ -674,6 +807,19 @@ internal abstract class DirectXRenderer : IDisposable
                 SetRenderTarget(_contextPointer, _renderTargetPointer);
                 SetViewport(_contextPointer, _viewport);
                 RenderFrame();
+                if (_presentationMultisampleTargetPointer != IntPtr.Zero)
+                {
+                    UnsetRenderTarget(_contextPointer);
+                    IntPtr backBuffer = GetBackBuffer(_swapChainPointer);
+                    try
+                    {
+                        ResolveColorTarget(_contextPointer, backBuffer, _presentationMultisampleTargetPointer);
+                    }
+                    finally
+                    {
+                        ReleasePointer(ref backBuffer);
+                    }
+                }
                 drawn = traceFrame ? Stopwatch.GetTimestamp() : 0;
                 if (!_frameCaptureRequests.IsEmpty &&
                     CanCompleteFrameCaptures())
@@ -730,8 +876,8 @@ internal abstract class DirectXRenderer : IDisposable
             return;
         }
 
-        int width = checked((int)_viewport.Width);
-        int height = checked((int)_viewport.Height);
+        int width = checked((int)_surfaceSize.PixelWidth);
+        int height = checked((int)_surfaceSize.PixelHeight);
         IntPtr backBuffer = GetBackBuffer(_swapChainPointer);
         IntPtr staging = IntPtr.Zero;
         try
@@ -828,6 +974,9 @@ internal abstract class DirectXRenderer : IDisposable
             ReleasePointer(ref _renderTargetPointer);
             ReleasePointer(ref _gpuCompletionQueryPointer);
             ReleasePointer(ref _offscreenTargetPointer);
+            ReleasePointer(ref _offscreenMultisampleTargetPointer);
+            ReleasePointer(ref _presentationMultisampleTargetPointer);
+            RenderSampleCount = 1;
             ReleasePointer(ref _swapChainPointer);
             ReleasePointer(ref _contextPointer);
             TrimDevice(_devicePointer);
@@ -863,6 +1012,7 @@ internal abstract class DirectXRenderer : IDisposable
         _panel.Loaded -= OnPanelLoaded;
         _panel.Unloaded -= OnPanelUnloaded;
         _panel.SizeChanged -= OnPanelSizeChanged;
+        _panel.CompositionScaleChanged -= OnPanelCompositionScaleChanged;
         _panel = null;
     }
 

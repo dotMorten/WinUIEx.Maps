@@ -12,6 +12,55 @@ namespace WinUIEx.Maps;
 public sealed partial class MapControl
 {
     private readonly TouchRotationState _touchRotation = new();
+    private readonly TouchPitchState _touchPitch = new();
+
+    private void OnTouchContactPressed(object sender, PointerRoutedEventArgs e)
+    {
+        if (e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Touch)
+        {
+            // XAML manipulation tracking does not capture routed pointer events.
+            // Own the contact so release outside the map still retires it.
+            _touchPitch.Press(e.Pointer.PointerId, CapturePointer(e.Pointer),
+                e.GetCurrentPoint(this).Position);
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPointerMoved(PointerRoutedEventArgs e)
+    {
+        base.OnPointerMoved(e);
+        if (e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Touch)
+        {
+            // Intermediate points are newest first. Pair only samples from the
+            // same platform frame, never one new contact with one stale contact.
+            var points = e.GetIntermediatePoints(this);
+            for (int i = points.Count - 1; i >= 0; i--)
+            {
+                var point = points[i];
+                _touchPitch.Move(point.PointerId, point.Position, point.FrameId);
+            }
+        }
+    }
+
+    private void OnTouchContactReleased(object sender, PointerRoutedEventArgs e)
+    {
+        _touchPitch.Release(e.Pointer.PointerId);
+    }
+
+    private void OnTouchContactCanceled(object sender, PointerRoutedEventArgs e)
+    {
+        if (e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Touch &&
+            _touchPitch.Cancel(e.Pointer.PointerId))
+        {
+            _touchRotation.Reset();
+        }
+    }
+
+    private void ResetTouchManipulation(bool preserveContactEvidence = false)
+    {
+        _touchRotation.Reset();
+        _touchPitch.Reset(preserveContactEvidence);
+    }
 
     private const VirtualKey PlusKey = (VirtualKey)187;
     private const VirtualKey MinusKey = (VirtualKey)189;
@@ -655,7 +704,9 @@ public sealed partial class MapControl
         CancelPendingViewChange();
         if (e.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Touch)
         {
-            _touchRotation.Reset();
+            // Started can arrive between the routed moves for one native frame.
+            // Keep the pair baseline established by capture, not a half-updated pair.
+            ResetTouchManipulation(preserveContactEvidence: true);
         }
     }
 
@@ -706,7 +757,7 @@ public sealed partial class MapControl
         }
 
         bool rotated = _touchRotation.IsActive;
-        _touchRotation.Reset();
+        ResetTouchManipulation();
         if (rotated &&
             Math.Abs(MapCamera.ShortestHeadingDelta(Heading, 0)) <=
                 TouchRotationState.SnapThreshold)
@@ -754,6 +805,11 @@ public sealed partial class MapControl
 
     private void ApplyTouchManipulation(ManipulationDeltaRoutedEventArgs e)
     {
+        if (TryApplyTouchPitch(e, out Point translation, out double scale))
+        {
+            return;
+        }
+
         BasicGeoposition position = Center?.Position ?? new BasicGeoposition();
         double currentZoom = ZoomLevel;
         double currentHeading = Heading;
@@ -761,14 +817,14 @@ public sealed partial class MapControl
             position.Longitude,
             position.Latitude,
             currentZoom,
-            e.Delta.Translation.X,
-            e.Delta.Translation.Y,
+            translation.X,
+            translation.Y,
             currentHeading,
             Pitch,
             _panel?.ActualHeight ?? ActualHeight);
         double targetZoom = currentZoom;
         if (MapCamera.TryGetZoomDeltaFromScale(
-                e.Delta.Scale,
+                scale,
                 out double zoomDelta))
         {
             targetZoom = Math.Clamp(currentZoom + zoomDelta, 0, MapCamera.MaximumTileZoom);
@@ -837,6 +893,44 @@ public sealed partial class MapControl
         }
     }
 
+    private bool TryApplyTouchPitch(
+        ManipulationDeltaRoutedEventArgs e,
+        out Point translation,
+        out double scale)
+    {
+        if (!_touchPitch.TryGetPitchDelta(
+                e.Delta.Translation, e.Delta.Scale, e.Delta.Expansion,
+                e.Delta.Rotation, e.IsInertial,
+                out translation, out scale, out double pitchDelta))
+        {
+            return false;
+        }
+        if (pitchDelta == 0)
+        {
+            return true;
+        }
+
+        _suppressCameraUpdate = true;
+        try
+        {
+            // Up increases pitch, consistent with Shift+Up. XAML distances are DIPs.
+            Pitch = MapCamera.NormalizePitch(Pitch + pitchDelta);
+            if (!_runtimeResourcesReleased)
+            {
+                BasicGeoposition position = Center?.Position ?? new BasicGeoposition();
+                _renderer.SetCameraTargetImmediately(
+                    position.Longitude, position.Latitude, ZoomLevel,
+                    _panel?.ActualWidth ?? ActualWidth,
+                    _panel?.ActualHeight ?? ActualHeight, Heading, Pitch);
+            }
+        }
+        finally
+        {
+            _suppressCameraUpdate = false;
+        }
+        return true;
+    }
+
     private void PanByPixels(double horizontalDelta, double verticalDelta)
     {
         if (horizontalDelta == 0 && verticalDelta == 0)
@@ -862,9 +956,223 @@ public sealed partial class MapControl
     }
 }
 
+// Kept independent of routed events so native contact ordering and classifier
+// decisions can also be covered without an interactive desktop.
+internal sealed class TouchPitchState
+{
+    private const double ActivationDistance = 16;
+    private const double DegreesPerPixel = 0.25;
+    private readonly HashSet<uint> _contacts = [];
+    private readonly Dictionary<uint, Point> _starts = [];
+    private readonly Dictionary<uint, Point> _current = [];
+    private readonly Dictionary<uint, Dictionary<uint, Point>> _frames = [];
+    private readonly Queue<uint> _frameOrder = [];
+    private Point _firstMotion;
+    private Point _secondMotion;
+    private double _separationChange;
+    private double _angleChange;
+    private bool _hasPair;
+    private uint? _lastPairedFrame;
+    private Point _translation;
+    private double _scale = 1;
+    private bool _isPitch;
+    private bool _isRejected;
+    private bool _isCanceled;
+
+    internal void Press(uint id, bool isCaptured = true, Point position = default)
+    {
+        // Only captured contacts have a guaranteed release/capture-lost route.
+        if (isCaptured && _contacts.Add(id))
+        {
+            _current[id] = position;
+            ResetContactEvidence();
+            if (_contacts.Count > 2)
+            {
+                _isRejected = true;
+            }
+        }
+    }
+
+    internal void Move(uint id, Point position, uint frame)
+    {
+        if (!_contacts.Contains(id))
+        {
+            return;
+        }
+        _current[id] = position;
+        // A late release can leave the previous normal-mode lock set before
+        // the next ManipulationStarted. Still collect its new pair's evidence;
+        // the manipulation callback, not raw moves, owns mode changes.
+        if (_contacts.Count != 2 || _isPitch || _isCanceled)
+        {
+            return;
+        }
+        if (!_frames.TryGetValue(frame, out var samples))
+        {
+            // Bounded coalescing history; missing a matching sample delays
+            // classification, it never manufactures parallel movement.
+            if (_frames.Count == 16)
+            {
+                _frames.Remove(_frameOrder.Dequeue());
+            }
+            _frames[frame] = samples = [];
+            _frameOrder.Enqueue(frame);
+        }
+        samples[id] = position;
+        if (samples.Count != 2 ||
+            (_lastPairedFrame is uint last && unchecked((int)(frame - last)) <= 0))
+        {
+            return;
+        }
+        _lastPairedFrame = frame;
+        uint first = _contacts.First();
+        uint second = _contacts.Last();
+        Point a = samples[first], b = samples[second];
+        Point startA = _starts[first], startB = _starts[second];
+        _firstMotion = new(a.X - startA.X, a.Y - startA.Y);
+        _secondMotion = new(b.X - startB.X, b.Y - startB.Y);
+        double dx = b.X - a.X, dy = b.Y - a.Y;
+        double startDx = startB.X - startA.X, startDy = startB.Y - startA.Y;
+        _separationChange = Math.Sqrt(dx * dx + dy * dy) -
+            Math.Sqrt(startDx * startDx + startDy * startDy);
+        _angleChange = MapCamera.ShortestHeadingDelta(
+            Math.Atan2(startDy, startDx) * 180 / Math.PI,
+            Math.Atan2(dy, dx) * 180 / Math.PI);
+        _hasPair = true;
+    }
+
+    internal void Release(uint id)
+    {
+        if (_contacts.Remove(id))
+        {
+            _current.Remove(id);
+            _isCanceled |= _isPitch;
+            _isRejected = true;
+            _frames.Clear();
+            _frameOrder.Clear();
+            _hasPair = false;
+        }
+    }
+
+    internal bool Cancel(uint id)
+    {
+        if (!_contacts.Remove(id))
+        {
+            return false;
+        }
+        _current.Remove(id);
+        ResetCandidate();
+        _isCanceled = true;
+        return true;
+    }
+
+    internal void Clear()
+    {
+        _contacts.Clear();
+        _current.Clear();
+        Reset();
+    }
+
+    internal void Reset(bool preserveContactEvidence = false)
+    {
+        _isPitch = false;
+        _isRejected = false;
+        _isCanceled = false;
+        ResetCandidate(preserveContactEvidence);
+    }
+
+    private void ResetCandidate(bool preserveContactEvidence = false)
+    {
+        _translation = default;
+        _scale = 1;
+        if (preserveContactEvidence)
+        {
+            return;
+        }
+        ResetContactEvidence();
+    }
+
+    private void ResetContactEvidence()
+    {
+        _frames.Clear();
+        _frameOrder.Clear();
+        _hasPair = false;
+        _lastPairedFrame = null;
+        _starts.Clear();
+        foreach (var contact in _current)
+        {
+            _starts[contact.Key] = contact.Value;
+        }
+    }
+
+    internal bool TryGetPitchDelta(
+        Point delta, double deltaScale, double expansion, double rotation, bool isInertial,
+        out Point translation, out double scale, out double pitchDelta)
+    {
+        translation = delta;
+        scale = deltaScale;
+        pitchDelta = 0;
+        if (_isCanceled || (_isPitch && (isInertial || _contacts.Count != 2)))
+        {
+            // Do not pan, zoom, or apply inertia after a pitch contact lifts.
+            return true;
+        }
+        if (isInertial || _contacts.Count != 2 || _isRejected)
+        {
+            // A still-undecided pair may lift before reaching a threshold.
+            // Flush its buffered normal motion rather than dropping it.
+            translation = new(_translation.X + delta.X, _translation.Y + delta.Y);
+            scale = _scale * deltaScale;
+            _translation = default;
+            _scale = 1;
+            return false;
+        }
+        double verticalDelta = delta.Y;
+        if (!_isPitch)
+        {
+            _translation = new Point(_translation.X + delta.X, _translation.Y + delta.Y);
+            _scale *= deltaScale;
+            if (!_hasPair)
+            {
+                return true;
+            }
+            _hasPair = false;
+            double vertical = Math.Min(Math.Abs(_firstMotion.Y), Math.Abs(_secondMotion.Y));
+            // Separation wins competing evidence, including a drifting midpoint.
+            if (Math.Abs(_separationChange) > 6 ||
+                Math.Abs(_angleChange) >= TouchRotationState.ActivationThreshold ||
+                Math.Abs((_firstMotion.X + _secondMotion.X) / 2) > Math.Max(4, vertical / 2))
+            {
+                _isRejected = true;
+                // Replay pending translation/scale when this proves to be pan/pinch.
+                translation = _translation;
+                scale = _scale;
+                _translation = default;
+                _scale = 1;
+                return false;
+            }
+            double tolerance = Math.Max(4, vertical / 4);
+            if (vertical <= ActivationDistance ||
+                Math.Sign(_firstMotion.Y) != Math.Sign(_secondMotion.Y) ||
+                Math.Abs(_firstMotion.X) > tolerance ||
+                Math.Abs(_secondMotion.X) > tolerance ||
+                Math.Abs(_firstMotion.X - _secondMotion.X) > tolerance ||
+                Math.Abs(_firstMotion.Y - _secondMotion.Y) > tolerance)
+            {
+                return true;
+            }
+            _isPitch = true;
+            // Classification establishes the origin: no deferred camera jump.
+            verticalDelta = 0;
+        }
+        pitchDelta = -verticalDelta * DegreesPerPixel;
+        return true;
+    }
+}
+
 internal sealed class TouchRotationState
 {
-    internal const double ActivationThreshold = 5;
+    internal const double ActivationThreshold = 10;
     internal const double SnapThreshold = 10;
     private double _appliedRotation;
 

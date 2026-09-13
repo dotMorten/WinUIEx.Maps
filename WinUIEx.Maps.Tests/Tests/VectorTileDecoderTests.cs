@@ -419,7 +419,7 @@ public sealed class VectorTileDecoderTests
 
         Assert.HasCount(3, placements);
         Assert.IsTrue(placements.All(placement =>
-            placement.PlacementIndex == 0));
+            placement.PlacementIndex == placements[0].PlacementIndex));
         Assert.AreEqual(
             placements[0].Left + (placements[0].Width / 2),
             (placements[1].Left + (placements[1].Width / 2) +

@@ -22,6 +22,7 @@ cbuffer TileConstants : register(b0)
     float4 Rotation;
     float4 Pitch;
     float4 Opacity;
+    float4 TextureTransform;
 };
 """;
 
@@ -53,7 +54,7 @@ PixelInput main(VertexInput input)
         rotated.y * Pitch.x * Pitch.z,
         0.0f,
         Pitch.z + rotated.y * Pitch.w * Pitch.y);
-    output.TexCoord = input.TexCoord;
+    output.TexCoord = input.TexCoord * TextureTransform.xy + TextureTransform.zw;
     return output;
 }
 """;
@@ -142,7 +143,8 @@ struct PixelInput
 float4 main(PixelInput input) : SV_TARGET
 {
     float distance = GlyphTexture.Sample(GlyphSampler, input.TexCoord).r;
-    float smoothing = max(fwidth(distance), 1.0f / 64.0f);
+    // fwidth spans a whole pixel; smoothstep takes the half-width on either side.
+    float smoothing = max(0.5f * fwidth(distance), 1.0f / 64.0f);
     float fillCoverage = smoothstep(
         0.75f - smoothing,
         0.75f + smoothing,
@@ -173,16 +175,54 @@ cbuffer GeometryConstants : register(b0)
 };
 """;
 
+    // Offscreen experiment only: one exact capsule per existing instanced symbol quad.
+    // This isolates coverage cost without adding boundary attributes to production meshes.
+    internal static string CoveragePrototypePixel(bool analytic, bool polygon) => TileConstants +
+        (analytic ? "\n#define ANALYTIC 1\n" : "\n#define ANALYTIC 0\n") +
+        (polygon ? "#define POLYGON 1\n" : "#define POLYGON 0\n") + """
+struct PixelInput
+{
+    float4 Position : SV_POSITION;
+    float2 TexCoord : TEXCOORD0;
+};
+
+float4 main(PixelInput input) : SV_TARGET
+{
+#if POLYGON
+    float2 centered = input.TexCoord - 0.5f;
+    float2 rotated = float2(
+        0.8660254f * centered.x + 0.5f * centered.y,
+        -0.5f * centered.x + 0.8660254f * centered.y);
+    float2 q = abs(rotated) - float2(0.3f, 0.2f);
+    float distance = -(length(max(q, 0.0f)) + min(max(q.x, q.y), 0.0f));
+#else
+    float2 start = float2(0.2f, 0.25f);
+    float2 segment = float2(0.6f, 0.5f);
+    float2 relative = input.TexCoord - start;
+    float t = saturate(dot(relative, segment) / dot(segment, segment));
+    float distance = 0.025f - length(relative - t * segment);
+#endif
+#if ANALYTIC
+    float coverage = saturate(0.5f + distance / max(fwidth(distance), 0.000001f));
+#else
+    float coverage = step(0.0f, distance);
+#endif
+    return Rotation * coverage * Opacity.x;
+}
+""";
+
     internal const string GeometryVertex = GeometryConstants + """
 
 struct VertexInput
 {
     float2 Position : POSITION;
+    float2 Coverage : TEXCOORD;
 };
 
 struct PixelInput
 {
     float4 Position : SV_POSITION;
+    float2 Coverage : TEXCOORD;
 };
 
 PixelInput main(VertexInput input)
@@ -201,6 +241,7 @@ PixelInput main(VertexInput input)
         projected.y * Transform.y,
         0.0f,
         1.0f);
+    output.Coverage = input.Coverage;
     return output;
 }
 """;
@@ -210,11 +251,15 @@ PixelInput main(VertexInput input)
 struct PixelInput
 {
     float4 Position : SV_POSITION;
+    float2 Coverage : TEXCOORD;
 };
 
 float4 main(PixelInput input) : SV_TARGET
 {
-    return Color;
+    float coverage = input.Coverage.y > 0
+        ? saturate(0.5f + input.Coverage.x / max(fwidth(input.Coverage.x), 0.0001f))
+        : 1.0f;
+    return Color * coverage;
 }
 """;
 

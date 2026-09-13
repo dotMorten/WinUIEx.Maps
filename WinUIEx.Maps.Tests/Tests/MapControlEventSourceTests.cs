@@ -12,6 +12,40 @@ namespace WinUIEx.Maps.Tests;
 public sealed class MapControlEventSourceTests
 {
     [TestMethod]
+    public void SymbolFallbackDiagnosticsContainOnlyStyleAndCounts()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.VectorTiles);
+        MapControlEventSource.Log.VectorSymbolFallbackSummary(1, 5, 3);
+        CapturedEvent captured = listener.Single(82);
+        Assert.AreEqual("VectorSymbolFallbackSummary", captured.Name);
+        Assert.AreSequenceEqual(["style", "candidateTileCount", "coveredTileCount"], captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>([1, 5, 3], captured.Payload);
+    }
+
+    [TestMethod]
+    public void ProviderManifestCanBeGenerated()
+    {
+        Assert.IsNull(MapControlEventSource.Log.ConstructionException);
+        Assert.IsNotNull(EventSource.GenerateManifest(
+            typeof(MapControlEventSource), null));
+    }
+
+    [TestMethod]
+    public void SurfaceDiagnosticsExposeOnlyDimensionsScaleAndResourceCost()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.Device);
+        MapControlEventSource.Log.RenderSurfaceChanged(1, 800, 600, 1.5, 1.5, 1200, 900, 8640000, 1);
+        CapturedEvent captured = listener.Single(81);
+        Assert.AreEqual("RenderSurfaceChanged", captured.Name);
+        Assert.AreSequenceEqual(
+            ["rendererId", "logicalWidth", "logicalHeight", "scaleX", "scaleY", "pixelWidth", "pixelHeight", "bufferBytes", "sampleCount"],
+            captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>([1L, 800d, 600d, 1.5d, 1.5d, 1200, 900, 8640000L, 1], captured.Payload);
+    }
+
+    [TestMethod]
     public void ProviderHasStableName()
     {
         Assert.AreEqual(
@@ -479,7 +513,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 80),
+            Enumerable.Range(1, 82),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }

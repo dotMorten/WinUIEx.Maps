@@ -246,7 +246,7 @@ internal sealed partial class MapRenderer
             {
                 MapScreenPoint point = points[startIndex + index];
                 vertices[index] = new GeometryVertex(
-                    new Vector2((float)point.X, (float)point.Y));
+                    new Vector2((float)point.X, (float)point.Y), point.Coverage);
             }
 
             uint startVertex;
@@ -364,7 +364,7 @@ internal sealed partial class MapRenderer
                 {
                     MapScreenPoint point = sourceChunk.Buffer[index];
                     vertices[index] = new GeometryVertex(
-                        new Vector2((float)point.X, (float)point.Y));
+                        new Vector2((float)point.X, (float)point.Y), point.Coverage);
                 }
 
                 D3D11_BUFFER_DESC description = new()
@@ -533,7 +533,7 @@ internal sealed partial class MapRenderer
         geometries[index].LayerIndex == layerIndex;
 
     [StructLayout(LayoutKind.Sequential)]
-    private readonly record struct GeometryVertex(Vector2 Position);
+    private readonly record struct GeometryVertex(Vector2 Position, Vector2 Coverage);
 
     private sealed class PooledGeometryBuffer : IDisposable
     {

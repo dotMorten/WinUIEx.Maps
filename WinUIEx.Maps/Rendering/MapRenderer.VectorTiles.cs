@@ -215,6 +215,24 @@ internal sealed partial class MapRenderer
             return false;
         }
 
+        bool canEnumerateActiveScene = CanEnumerateRasterScene(
+            _displayZoom,
+            state.Scene.TileZoom);
+        MapScene? activeScene = canEnumerateActiveScene && state.FallbackTileZooms.Count != 0
+            ? CreateCurrentRasterScene(state.Scene.TileZoom)
+            : null;
+        // Scene publication can restore cached fallback levels even when the active
+        // coverage is already opaque. Retire them before collecting or caching symbols.
+        if (activeScene is not null &&
+            HasCompleteVectorCoverage(
+                layer.RuntimeId,
+                activeScene,
+                state.IncludesTile,
+                layer.FadeDuration))
+        {
+            state.FallbackTileZooms.Clear();
+        }
+
         VectorRenderResult renderResult = default;
         VectorSymbolRenderCacheKey cacheKey = new(
             layer,
@@ -253,9 +271,6 @@ internal sealed partial class MapRenderer
         _vectorSymbolFrameBuildCount++;
         workspace.ResetFrame();
         long nextCollisionGroup = 0;
-        bool canEnumerateActiveScene = CanEnumerateRasterScene(
-            _displayZoom,
-            state.Scene.TileZoom);
         HashSet<int> cachedLevels = [.. state.FallbackTileZooms];
         if (!canEnumerateActiveScene)
         {
@@ -265,26 +280,19 @@ internal sealed partial class MapRenderer
         bool activeFade = CollectCachedVectorLevels(
             layer,
             cachedLevels,
+            activeScene,
             workspace,
             ref renderResult,
             ref nextCollisionGroup);
         if (canEnumerateActiveScene)
         {
-            MapScene scene = CreateCurrentRasterScene(state.Scene.TileZoom);
+            activeScene ??= CreateCurrentRasterScene(state.Scene.TileZoom);
             activeFade |= CollectVectorScene(
                 layer,
-                scene,
+                activeScene,
                 workspace,
                 ref renderResult,
                 ref nextCollisionGroup);
-            if (HasCompleteVectorCoverage(
-                layer.RuntimeId,
-                scene,
-                state.IncludesTile,
-                layer.FadeDuration))
-            {
-                state.FallbackTileZooms.Clear();
-            }
         }
 
         FindIncompleteLabelGroups(
@@ -361,7 +369,7 @@ internal sealed partial class MapRenderer
         ref long nextCollisionGroup)
     {
         bool activeFade = false;
-        foreach (VisibleTile visibleTile in scene.VisibleTiles)
+        foreach (VisibleTile visibleTile in MapCamera.CreateLabelCollisionScene(scene).VisibleTiles)
         {
             if (_vectorTiles.TryGetValue(
                     new RasterTileKey(layer.RuntimeId, visibleTile.Id),
@@ -382,6 +390,7 @@ internal sealed partial class MapRenderer
     private bool CollectCachedVectorLevels(
         LayerRenderSnapshot layer,
         IReadOnlySet<int> tileZooms,
+        MapScene? activeScene,
         VectorSymbolRenderWorkspace workspace,
         ref VectorRenderResult renderResult,
         ref long nextCollisionGroup)
@@ -394,6 +403,19 @@ internal sealed partial class MapRenderer
             {
                 continue;
             }
+            // Retire covered footprints independently: an unrelated missing tile
+            // must not keep an obsolete zoom tier in the collision candidates.
+            renderResult.FallbackTileCount++;
+            if (GetVectorGeometryReplacementOpacity(
+                    layer.RuntimeId,
+                    key.Id,
+                    activeScene,
+                    layer.FadeDuration,
+                    tileZooms) >= 1)
+            {
+                renderResult.CoveredFallbackTileCount++;
+                continue;
+            }
             foreach (VisibleTile instance in GetVisibleCachedTileInstances(
                 key.Id,
                 _displayLongitude,
@@ -402,7 +424,8 @@ internal sealed partial class MapRenderer
                 _viewportWidth,
                 _viewportHeight,
                 _displayHeading,
-                _displayPitch))
+                _displayPitch,
+                MapCamera.LabelCollisionMargin))
             {
                 activeFade |= CollectVectorTile(
                     layer,
@@ -910,6 +933,8 @@ internal sealed partial class MapRenderer
         double projectedY = double.NaN;
         double anchorX = 0;
         double anchorY = 0;
+        int pointStart = projected.Count;
+        HashSet<(long GroupId, int StyleLayerOrder)> visiblePointGroups = [];
         foreach (VectorTileSymbol symbol in symbols)
         {
             if (symbol.LinePoints is not { Length: >= 2 } linePoints)
@@ -934,6 +959,7 @@ internal sealed partial class MapRenderer
                     projectedX = symbol.X;
                     projectedY = symbol.Y;
                 }
+                int pointCount = projected.Count;
                 AddProjectedPointSymbolAtAnchor(
                     symbol,
                     viewportWidth,
@@ -941,6 +967,11 @@ internal sealed partial class MapRenderer
                     anchorX,
                     anchorY,
                     projected);
+                if (projected.Count > pointCount &&
+                    IntersectsVectorSymbolCollisionArea(projected[^1], viewportWidth, viewportHeight))
+                {
+                    visiblePointGroups.Add((groupId, symbol.StyleLayerOrder));
+                }
                 continue;
             }
 
@@ -959,6 +990,21 @@ internal sealed partial class MapRenderer
             }
             group.Add(symbol);
         }
+        // Point glyphs must reach readiness, fade, and collision as complete groups,
+        // just like line labels. Only the render target clips individual glyphs.
+        int writeIndex = pointStart;
+        for (int index = pointStart; index < projected.Count; index++)
+        {
+            VectorSymbolPlacement placement = projected[index];
+            long groupId = placement.SymbolGroupId >= 0
+                ? placement.SymbolGroupId : placement.LabelId;
+            if (groupId < 0 ||
+                visiblePointGroups.Contains((groupId, placement.StyleLayerOrder)))
+            {
+                projected[writeIndex++] = placement;
+            }
+        }
+        projected.RemoveRange(writeIndex, projected.Count - writeIndex);
         if (lineGroups is null)
         {
             return;
@@ -1139,21 +1185,24 @@ internal sealed partial class MapRenderer
                 Optional: symbol.Optional,
                 CollisionPadding: symbol.CollisionPadding,
                 AvoidEdges: symbol.AvoidEdges);
-            GetVectorSymbolBounds(
-                placement,
-                out double boundsLeft,
-                out double boundsTop,
-                out double boundsRight,
-                out double boundsBottom);
-            if (boundsRight <= 0 ||
-                boundsBottom <= 0 ||
-                boundsLeft >= viewportWidth ||
-                boundsTop >= viewportHeight)
+            if (symbol.SymbolGroupId < 0 && symbol.LabelId < 0 &&
+                !IntersectsVectorSymbolCollisionArea(placement, viewportWidth, viewportHeight))
             {
                 return;
             }
             // Tile edges are not clip boundaries: collision handling spans visible tiles.
             projected.Add(placement);
+    }
+
+    private static bool IntersectsVectorSymbolCollisionArea(
+        VectorSymbolPlacement placement, double viewportWidth, double viewportHeight)
+    {
+        GetVectorSymbolBounds(placement, out double left, out double top,
+            out double right, out double bottom);
+        return right > -MapCamera.LabelCollisionMargin &&
+            bottom > -MapCamera.LabelCollisionMargin &&
+            left < viewportWidth + MapCamera.LabelCollisionMargin &&
+            top < viewportHeight + MapCamera.LabelCollisionMargin;
     }
 
     private static void AddProjectedLineSymbols(
@@ -1174,6 +1223,7 @@ internal sealed partial class MapRenderer
             heading,
             pitch);
         double[] distances = new double[path.Length];
+        double[] anchorDistances = new double[path.Length];
         for (int index = 1; index < path.Length; index++)
         {
             double deltaX = path[index].X - path[index - 1].X;
@@ -1185,6 +1235,10 @@ internal sealed partial class MapRenderer
                 return;
             }
             distances[index] = distances[index - 1] + segmentLength;
+            double anchorX = linePoints[index].X - linePoints[index - 1].X;
+            double anchorY = linePoints[index].Y - linePoints[index - 1].Y;
+            anchorDistances[index] = anchorDistances[index - 1] +
+                Math.Sqrt(anchorX * anchorX + anchorY * anchorY) * MapCamera.TileSize;
         }
         double pathLength = distances[^1];
         double minimumOffset = symbols.Min(
@@ -1199,19 +1253,23 @@ internal sealed partial class MapRenderer
             return;
         }
 
-        double spacing = Math.Max(
-            symbols[0].LineSpacing,
-            symbolLength + (continuousPlacement ? 0 : 16));
-        double usableLength = pathLength - symbolLength -
-            (endpointPadding * 2);
+        double spacing = continuousPlacement
+            ? Math.Max(symbols[0].LineSpacing, symbolLength)
+            : Math.Max(symbols[0].LineSpacing, 16);
+        // Repeats belong to tile geometry, not the changing screen-space path.
+        // Re-centering after every projected repeat-count change moves every label
+        // by half a spacing interval during a fractional zoom.
+        double placementPathLength = continuousPlacement ? pathLength : anchorDistances[^1];
         const int maximumPlacementCount = 4096;
         int placementCount = (int)Math.Clamp(
-            Math.Floor(usableLength / spacing) + 1,
+            continuousPlacement
+                ? Math.Floor((pathLength - symbolLength) / spacing) + 1
+                : Math.Floor(placementPathLength / spacing),
             1,
             maximumPlacementCount);
         double firstCenter = continuousPlacement
             ? symbolLength / 2
-            : (pathLength - ((placementCount - 1) * spacing)) / 2;
+            : Math.Min(spacing, placementPathLength) / 2;
         VectorTileSymbol? textSymbol = null;
         foreach (VectorTileSymbol symbol in symbols)
         {
@@ -1227,6 +1285,31 @@ internal sealed partial class MapRenderer
             placementIndex++)
         {
             double centerDistance = firstCenter + (placementIndex * spacing);
+            if (!continuousPlacement)
+            {
+                int segment = 1;
+                while (segment < anchorDistances.Length - 1 &&
+                    anchorDistances[segment] < centerDistance)
+                    segment++;
+                double segmentLength = anchorDistances[segment] - anchorDistances[segment - 1];
+                double fraction = segmentLength > 0
+                    ? (centerDistance - anchorDistances[segment - 1]) / segmentLength
+                    : 0;
+                VectorTilePoint start = linePoints[segment - 1];
+                VectorTilePoint end = linePoints[segment];
+                MapScreenPoint anchor = ProjectVectorPoint(
+                    new VectorTilePoint(
+                        start.X + fraction * (end.X - start.X),
+                        start.Y + fraction * (end.Y - start.Y)),
+                    tile, viewportWidth, viewportHeight, heading, pitch);
+                double anchorX = anchor.X - path[segment - 1].X;
+                double anchorY = anchor.Y - path[segment - 1].Y;
+                centerDistance = distances[segment - 1] +
+                    Math.Sqrt(anchorX * anchorX + anchorY * anchorY);
+                if (centerDistance + minimumOffset < endpointPadding ||
+                    centerDistance + maximumOffset > pathLength - endpointPadding)
+                    continue;
+            }
             if (!TryGetPathPosition(
                     path,
                     distances,
@@ -1255,6 +1338,7 @@ internal sealed partial class MapRenderer
             double minimumRelativeRotation = double.PositiveInfinity;
             double maximumRelativeRotation = double.NegativeInfinity;
             bool valid = true;
+            bool intersectsViewport = false;
             foreach (VectorTileSymbol symbol in symbols)
             {
                 MapScreenPoint position;
@@ -1372,17 +1456,16 @@ internal sealed partial class MapRenderer
                     out double boundsTop,
                     out double boundsRight,
                     out double boundsBottom);
-                if (boundsRight <= 0 ||
-                    boundsBottom <= 0 ||
-                    boundsLeft >= viewportWidth ||
-                    boundsTop >= viewportHeight)
-                {
-                    valid = false;
-                    break;
-                }
+                double margin = continuousPlacement ? 0 : MapCamera.LabelCollisionMargin;
+                intersectsViewport |= boundsRight > -margin &&
+                    boundsBottom > -margin &&
+                    boundsLeft < viewportWidth + margin &&
+                    boundsTop < viewportHeight + margin;
                 candidate.Add(placement);
             }
-            if (valid)
+            // Keep the complete label group for collision and texture readiness;
+            // the render target clips glyphs outside the viewport.
+            if (valid && intersectsViewport)
             {
                 projected.AddRange(candidate);
             }
@@ -1984,12 +2067,12 @@ internal sealed partial class MapRenderer
                 continue;
             }
             protectedKeys.UnionWith(
-                state.Scene.RequiredTiles
+                MapCamera.CreateLabelCollisionScene(state.Scene).RequiredTiles
                     .Where(state.IncludesTile)
                     .Select(id => new RasterTileKey(sourceId, id)));
             MapScene scene = CreateCurrentRasterScene(state.Scene.TileZoom);
             protectedKeys.UnionWith(
-                scene.RequiredTiles
+                MapCamera.CreateLabelCollisionScene(scene).RequiredTiles
                     .Where(state.IncludesTile)
                     .Select(id => new RasterTileKey(sourceId, id)));
             protectedKeys.UnionWith(_vectorTiles.Keys.Where(key =>
@@ -2003,7 +2086,8 @@ internal sealed partial class MapRenderer
                     _viewportWidth,
                     _viewportHeight,
                     _displayHeading,
-                    _displayPitch).Count != 0));
+                    _displayPitch,
+                    MapCamera.LabelCollisionMargin).Count != 0));
         }
 
         bool removed = false;
@@ -2082,11 +2166,12 @@ internal sealed partial class MapRenderer
             return _resolved;
         }
 
-        internal VectorLineResolution GetLines(double zoom, bool isFallback = false)
+        internal VectorLineResolution GetLines(
+            double zoom, bool isFallback = false, double displayZoom = double.PositiveInfinity)
         {
             if (isFallback && double.IsFinite(_lastDrawableLineZoom))
             {
-                zoom = _lastDrawableLineZoom;
+                zoom = Math.Min(_lastDrawableLineZoom, displayZoom);
             }
             if (_resolvedLineZoom != zoom &&
                 !styleAssets.CanReuseLines(_resolvedLineZoom, zoom))
@@ -2101,11 +2186,14 @@ internal sealed partial class MapRenderer
             return _resolvedLines;
         }
 
-        internal VectorPolygonResolution GetPolygons(double zoom, bool isFallback = false)
+        internal VectorPolygonResolution GetPolygons(
+            double zoom, bool isFallback = false, double displayZoom = double.PositiveInfinity)
         {
             if (isFallback && double.IsFinite(_lastDrawablePolygonZoom))
             {
-                zoom = _lastDrawablePolygonZoom;
+                // Retain coarse coverage above its former style tier while zooming in,
+                // but never resurrect detail below its minzoom while zooming out.
+                zoom = Math.Min(_lastDrawablePolygonZoom, displayZoom);
             }
             if (_resolvedPolygonZoom != zoom &&
                 !styleAssets.CanReusePolygons(_resolvedPolygonZoom, zoom))
@@ -2235,6 +2323,10 @@ internal sealed partial class MapRenderer
             renderResult.LineSymbolCandidateCount,
             renderResult.LineSymbolProjectedCount,
             renderResult.LineSymbolDrawnCount);
+        MapControlEventSource.Log.VectorSymbolFallbackSummary(
+            style,
+            renderResult.FallbackTileCount,
+            renderResult.CoveredFallbackTileCount);
         MapControlEventSource.Log.VectorLineDecorationSummary(
             style,
             2,
@@ -2294,6 +2386,8 @@ internal sealed partial class MapRenderer
 
     private struct VectorRenderResult
     {
+        internal int FallbackTileCount;
+        internal int CoveredFallbackTileCount;
         internal int CandidateCount;
         internal int DrawableCount;
         internal int EvaluationFailureCount;

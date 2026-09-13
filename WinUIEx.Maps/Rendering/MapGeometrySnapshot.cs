@@ -61,7 +61,10 @@ internal readonly record struct MapGeometryCamera(
 /// <summary>
 /// Represents one screen-space point generated from immutable map geometry.
 /// </summary>
-internal readonly record struct MapScreenPoint(double X, double Y);
+internal readonly record struct MapScreenPoint(double X, double Y)
+{
+    internal Vector2 Coverage { get; init; }
+}
 
 /// <summary>
 /// Represents one solid or visible dashed screen-space stroke segment.

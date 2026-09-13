@@ -65,10 +65,12 @@ public sealed class AzureTileLayerTests
             Assert.AreSequenceEqual(
                 style == MapStyle.SatelliteWithRoads
                     ? ["microsoft.imagery", "microsoft.base"]
+                    : style == MapStyle.RoadShadedRelief
+                    ? ["microsoft.terra.main", "microsoft.base"]
                     : ["microsoft.base"],
                 AzureTileAcquisitionSession.GetTilesetIds(style, 6));
             Assert.AreEqual(
-                style == MapStyle.SatelliteWithRoads
+                style is MapStyle.SatelliteWithRoads or MapStyle.RoadShadedRelief
                     ? LayerRenderKind.HybridTiles
                     : LayerRenderKind.VectorPoints,
                 new AzureTileAcquisitionSession(style, "token").RenderKind);
@@ -150,12 +152,22 @@ public sealed class AzureTileLayerTests
     {
         Assert.AreEqual(19, AzureTileAcquisitionSession.GetMaximumTileZoom(MapStyle.Satellite));
         Assert.AreEqual(
-            MapCamera.MaximumTileZoom,
+            21,
             AzureTileAcquisitionSession.GetMaximumTileZoom(MapStyle.Road));
         Assert.AreEqual(
             19,
             AzureTileAcquisitionSession.GetMaximumTileZoom(
                 MapStyle.SatelliteWithRoads));
+    }
+
+    [TestMethod]
+    public void AzureVectorSourceOverzoomsItsLastPopulatedTierAtDisplayZoom22()
+    {
+        AzureTileAcquisitionSession source = new(MapStyle.Road, "token");
+        MapScene scene = MapCamera.CreateScene(-122.337, 47.6162, 22, 22, 256, 256, 0, 0);
+        Assert.AreEqual(21, source.MaxSourceZoom);
+        Assert.AreEqual(21, source.GetSourceZoom(scene));
+        Assert.AreEqual(22, scene.Zoom);
     }
 
     [TestMethod]
@@ -192,7 +204,7 @@ public sealed class AzureTileLayerTests
             AzureTileAcquisitionSession.IsHybridStyle(
                 MapStyle.SatelliteWithRoads));
         Assert.AreEqual(
-            MapCamera.MaximumTileZoom,
+            21,
             AzureTileAcquisitionSession.GetMaximumTileZoom(MapStyle.HighContrastDark));
     }
 

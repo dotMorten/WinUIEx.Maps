@@ -1174,7 +1174,9 @@ internal sealed class RasterTileManager : IDisposable
                 // Cached fallback coverage is renderer-owned. The scheduler requests only
                 // the normal active source level and never fills fallback levels.
                 IReadOnlyList<TileId> required = GetActiveRequestTiles(
-                    sourceScene,
+                    layer.Acquisition.RenderKind is LayerRenderKind.VectorPoints or LayerRenderKind.HybridTiles
+                        ? MapCamera.CreateLabelCollisionScene(sourceScene)
+                        : sourceScene,
                     layer.Acquisition.IncludesTile);
                 RasterTileLookupResult lookup = _renderer.GetMissingRasterTiles(
                     RuntimeId,
@@ -1340,6 +1342,7 @@ internal sealed class RasterTileManager : IDisposable
                             raster.Height,
                             generation,
                             acquisition.SourceKind)
+                        { TextureTransform = raster.TextureTransform }
                         : null;
                     VectorTileData vectorTile = new(
                         key,

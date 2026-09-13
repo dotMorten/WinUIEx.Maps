@@ -23,6 +23,15 @@ internal static class MapCamera
     internal const double MaximumPitch = 60;
     internal const int MaximumTileZoom = 22;
     internal const double TileSize = 256;
+    // One nominal tile in logical pixels. This is a finite collision-placement
+    // horizon, not temporal label locking or a change to the camera projection.
+    internal const double LabelCollisionMargin = 256;
+
+    internal static MapScene CreateLabelCollisionScene(MapScene scene) =>
+        CreateScene(
+            scene.Longitude, scene.Latitude, scene.Zoom, scene.TileZoom,
+            scene.ViewportWidth, scene.ViewportHeight, scene.Heading, scene.Pitch,
+            LabelCollisionMargin);
 
     /// <summary>
     /// Creates a camera scene using the integral floor of the display zoom for tile
@@ -61,7 +70,8 @@ internal static class MapCamera
         double viewportWidth,
         double viewportHeight,
         double heading = 0,
-        double pitch = 0)
+        double pitch = 0,
+        double coverageMargin = 0)
     {
         double normalizedZoom = NormalizeZoom(zoom);
         double normalizedLatitude = double.IsFinite(latitude)
@@ -86,7 +96,8 @@ internal static class MapCamera
             out double minimumX,
             out double minimumY,
             out double maximumX,
-            out double maximumY);
+            out double maximumY,
+            coverageMargin);
         double coverageLeft = centerX + minimumX;
         double coverageTop = centerY + minimumY;
         double coverageWidth = maximumX - minimumX;
@@ -546,18 +557,25 @@ internal static class MapCamera
         out double minimumX,
         out double minimumY,
         out double maximumX,
-        out double maximumY)
+        out double maximumY,
+        double coverageMargin = 0)
     {
         minimumX = double.PositiveInfinity;
         minimumY = double.PositiveInfinity;
         maximumX = double.NegativeInfinity;
         maximumY = double.NegativeInfinity;
-        double halfWidth = width / 2;
-        double halfHeight = height / 2;
+        double halfWidth = width / 2 + coverageMargin;
+        double halfHeight = height / 2 + coverageMargin;
+        // Overscan can cross the perspective horizon on small, steeply pitched
+        // viewports. Keep acquisition finite rather than requesting a world of tiles.
+        double top = -halfHeight;
+        double radians = NormalizePitch(pitch) * Math.PI / 180;
+        if (coverageMargin > 0 && radians > 0)
+            top = Math.Max(top, -0.75 * GetPerspectiveDistance(height) / Math.Tan(radians));
         ReadOnlySpan<(double X, double Y)> corners =
         [
-            (-halfWidth, -halfHeight),
-            (halfWidth, -halfHeight),
+            (-halfWidth, top),
+            (halfWidth, top),
             (-halfWidth, halfHeight),
             (halfWidth, halfHeight),
         ];
@@ -575,6 +593,16 @@ internal static class MapCamera
             minimumY = Math.Min(minimumY, y);
             maximumX = Math.Max(maximumX, x);
             maximumY = Math.Max(maximumY, y);
+        }
+        if (coverageMargin > 0)
+        {
+            GetMapPlaneViewportBounds(width, height, heading, pitch,
+                out double left, out double upper, out double right, out double lower);
+            double maximumExtension = coverageMargin * 4;
+            minimumX = Math.Clamp(minimumX, left - maximumExtension, left);
+            minimumY = Math.Clamp(minimumY, upper - maximumExtension, upper);
+            maximumX = Math.Clamp(maximumX, right, right + maximumExtension);
+            maximumY = Math.Clamp(maximumY, lower, lower + maximumExtension);
         }
     }
 

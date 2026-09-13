@@ -94,7 +94,7 @@ internal sealed class AzureVectorStyleProvider
                 MaximumStyleBytes,
                 cancellationToken)
             .ConfigureAwait(false);
-        VectorStyle style = VectorStyle.Parse(styleJson.Memory);
+        VectorStyle style = VectorStyle.Parse(styleJson.Memory, _style == MapStyle.RoadShadedRelief);
         Dictionary<string, VectorSpriteEntry> spriteEntries;
         using (PooledByteBuffer spriteJson = await AzureTileAcquisitionSession
             .GetStyleAssetAsync(
@@ -267,7 +267,7 @@ internal sealed class VectorStyleAssets
         uint spriteHeight) =>
         new(
             mapStyle,
-            VectorStyle.Parse(styleJson),
+            VectorStyle.Parse(styleJson, mapStyle == MapStyle.RoadShadedRelief),
             new VectorSpriteAtlas(
                 AzureTileAcquisitionSession.GetAzureStyleName(mapStyle),
                 VectorSpriteAtlas.ParseIndex(spriteJson),
@@ -979,7 +979,10 @@ internal sealed class VectorStyleAssets
 
     internal VectorBackgroundResolution ResolveBackgrounds(double zoom)
     {
-        if (_mapStyle == MapStyle.BlankAccessible)
+        // Hybrid already draws its satellite background through the shared raster
+        // pipeline. The style's canvas background would cover that imagery before
+        // roads and labels are drawn (including in prepared geometry frames).
+        if (_mapStyle is MapStyle.BlankAccessible or MapStyle.SatelliteWithRoads)
         {
             return new VectorBackgroundResolution([], 0);
         }
@@ -1006,6 +1009,9 @@ internal sealed class VectorStyleAssets
             backgrounds.ToArray(),
             evaluationFailureCount);
     }
+
+    internal AzureReliefStyle? Relief =>
+        _mapStyle == MapStyle.RoadShadedRelief ? _style.Relief : null;
 
     private void CollectTextGlyphKeys(
         VectorTileFeatureCollection features,
@@ -1633,9 +1639,11 @@ internal sealed class VectorStyle
 
     internal VectorBackgroundStyleLayer[] BackgroundLayers { get; }
 
+    internal AzureReliefStyle? Relief { get; private init; }
+
     internal int LayerCount =>
         IconLayers.Length + TextLayers.Length + LineLayers.Length +
-        FillLayers.Length + BackgroundLayers.Length;
+        FillLayers.Length + BackgroundLayers.Length + (Relief is null ? 0 : 1);
 
     internal int UnsupportedLayerCount =>
         _unsupportedLayerCounts.Sum();
@@ -1646,9 +1654,9 @@ internal sealed class VectorStyle
             ? 0
             : _unsupportedLayerCounts[(int)result];
 
-    internal static VectorStyle Parse(ReadOnlyMemory<byte> json)
+    internal static VectorStyle Parse(ReadOnlyMemory<byte> json, bool supportsAzureRelief = false)
     {
-        return Parse(json, azureBaseSourceOnly: true);
+        return Parse(json, azureBaseSourceOnly: true, supportsAzureRelief);
     }
 
     internal static VectorStyle ParseCustom(ReadOnlyMemory<byte> json)
@@ -1658,7 +1666,8 @@ internal sealed class VectorStyle
 
     private static VectorStyle Parse(
         ReadOnlyMemory<byte> json,
-        bool azureBaseSourceOnly)
+        bool azureBaseSourceOnly,
+        bool supportsAzureRelief = false)
     {
         using JsonDocument document = JsonDocument.Parse(
             json,
@@ -1688,6 +1697,7 @@ internal sealed class VectorStyle
         int[] unsupportedLayerCounts =
             new int[Enum.GetValues<VectorStyleLayerParseResult>().Length];
         int layerCount = 0;
+        AzureReliefStyle? relief = supportsAzureRelief ? AzureReliefStyle.Parse(root) : null;
         foreach (JsonElement layer in layers.EnumerateArray())
         {
             if (++layerCount > MaximumStyleLayers)
@@ -1707,6 +1717,8 @@ internal sealed class VectorStyle
                     "The vector style contains a layer without a valid type.");
             }
             string? layerType = type.GetString();
+            if (relief?.Order == layerCount - 1)
+                continue;
             if (string.Equals(layerType, "background", StringComparison.Ordinal))
             {
                 VectorStyleLayerParseResult result = TryParseBackgroundLayer(
@@ -1851,7 +1863,10 @@ internal sealed class VectorStyle
             parsedLines.ToArray(),
             parsedFills.ToArray(),
             parsedBackgrounds.ToArray(),
-            unsupportedLayerCounts);
+            unsupportedLayerCounts)
+        {
+            Relief = relief,
+        };
     }
 
     internal double[] GetPreparationZooms(int tileZoom)
@@ -4266,8 +4281,17 @@ internal sealed class VectorTextStyleLayer(
     {
         color = default;
         bool hasAlpha;
+        bool hsl = false;
         int prefixLength;
-        if (text.StartsWith("rgba(", StringComparison.OrdinalIgnoreCase) &&
+        if ((text.StartsWith("hsla(", StringComparison.OrdinalIgnoreCase) ||
+             text.StartsWith("hsl(", StringComparison.OrdinalIgnoreCase)) &&
+            text.EndsWith(')'))
+        {
+            hsl = true;
+            hasAlpha = text.StartsWith("hsla(", StringComparison.OrdinalIgnoreCase);
+            prefixLength = hasAlpha ? 5 : 4;
+        }
+        else if (text.StartsWith("rgba(", StringComparison.OrdinalIgnoreCase) &&
             text.EndsWith(')'))
         {
             hasAlpha = true;
@@ -4287,25 +4311,33 @@ internal sealed class VectorTextStyleLayer(
         string[] components = text[prefixLength..^1].Split(
             ',',
             StringSplitOptions.TrimEntries);
-        if (components.Length != (hasAlpha ? 4 : 3) ||
-            !double.TryParse(
+        if (components.Length != (hasAlpha ? 4 : 3))
+        {
+            return false;
+        }
+        if (hsl && (!components[1].EndsWith('%') || !components[2].EndsWith('%')))
+        {
+            return false;
+        }
+        if (!double.TryParse(
                 components[0],
                 NumberStyles.Float,
                 CultureInfo.InvariantCulture,
                 out double red) ||
             !double.TryParse(
-                components[1],
+                hsl ? components[1][..^1] : components[1],
                 NumberStyles.Float,
                 CultureInfo.InvariantCulture,
                 out double green) ||
             !double.TryParse(
-                components[2],
+                hsl ? components[2][..^1] : components[2],
                 NumberStyles.Float,
                 CultureInfo.InvariantCulture,
                 out double blue) ||
-            red is < 0 or > 255 ||
-            green is < 0 or > 255 ||
-            blue is < 0 or > 255)
+            !double.IsFinite(red) || !double.IsFinite(green) || !double.IsFinite(blue) ||
+            (!hsl && red is < 0 or > 255) ||
+            green < 0 || green > (hsl ? 100 : 255) ||
+            blue < 0 || blue > (hsl ? 100 : 255))
         {
             return false;
         }
@@ -4317,11 +4349,31 @@ internal sealed class VectorTextStyleLayer(
                 NumberStyles.Float,
                 CultureInfo.InvariantCulture,
                 out alpha) ||
-             alpha is < 0 or > 1))
+             !double.IsFinite(alpha) || alpha is < 0 or > 1))
         {
             return false;
         }
 
+        if (hsl)
+        {
+            double hue = ((red % 360) + 360) % 360 / 60;
+            double lightness = blue / 100;
+            double chroma = (1 - Math.Abs(2 * lightness - 1)) * green / 100;
+            double secondary = chroma * (1 - Math.Abs(hue % 2 - 1));
+            double offset = lightness - chroma / 2;
+            (red, green, blue) = hue switch
+            {
+                < 1 => (chroma, secondary, 0d),
+                < 2 => (secondary, chroma, 0d),
+                < 3 => (0d, chroma, secondary),
+                < 4 => (0d, secondary, chroma),
+                < 5 => (secondary, 0d, chroma),
+                _ => (chroma, 0d, secondary),
+            };
+            red = (red + offset) * 255;
+            green = (green + offset) * 255;
+            blue = (blue + offset) * 255;
+        }
         float normalizedAlpha = (float)alpha;
         color = new Vector4(
             (float)(red / 255) * normalizedAlpha,

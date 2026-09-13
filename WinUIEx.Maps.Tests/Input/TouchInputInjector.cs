@@ -89,7 +89,7 @@ internal sealed class TouchInputInjector(InputTarget target)
             beforeRelease);
     }
 
-    private async Task InjectAsync(
+    internal async Task InjectAsync(
         IReadOnlyList<IReadOnlyList<InputPoint>> paths,
         int durationMilliseconds,
         Func<Task>? beforeRelease = null)
@@ -98,8 +98,10 @@ internal sealed class TouchInputInjector(InputTarget target)
         await Task.Delay(100);
         foreach (IReadOnlyList<InputPoint> path in paths)
         {
-            target.VerifyPoint(path[0]);
-            target.VerifyPoint(path[^1]);
+            foreach (InputPoint point in path)
+            {
+                target.VerifyPoint(point);
+            }
         }
 
         HSYNTHETICPOINTERDEVICE device = Interop.CreateSyntheticPointerDevice(
@@ -146,11 +148,14 @@ internal sealed class TouchInputInjector(InputTarget target)
                     double progress = step / (double)steps;
                     for (int index = 0; index < paths.Count; index++)
                     {
-                        InputPoint start = paths[index][0];
-                        InputPoint end = paths[index][^1];
+                        double pathProgress = progress * (paths[index].Count - 1);
+                        int segment = Math.Min((int)pathProgress, Math.Max(0, paths[index].Count - 2));
+                        double segmentProgress = pathProgress - segment;
+                        InputPoint start = paths[index][segment];
+                        InputPoint end = paths[index][Math.Min(segment + 1, paths[index].Count - 1)];
                         var point = new InputPoint(
-                            start.X + (int)Math.Round((end.X - start.X) * progress),
-                            start.Y + (int)Math.Round((end.Y - start.Y) * progress));
+                            start.X + (int)Math.Round((end.X - start.X) * segmentProgress),
+                            start.Y + (int)Math.Round((end.Y - start.Y) * segmentProgress));
                         contacts[index] = CreateContact(
                             (uint)index,
                             point,
@@ -175,7 +180,8 @@ internal sealed class TouchInputInjector(InputTarget target)
                 {
                     contacts[index] = CreateContact(
                         (uint)index,
-                        paths[index][^1],
+                        new InputPoint(contacts[index].pointerInfo.ptPixelLocation.X,
+                            contacts[index].pointerInfo.ptPixelLocation.Y),
                         POINTER_FLAGS.POINTER_FLAG_UP,
                         index == 0);
                 }

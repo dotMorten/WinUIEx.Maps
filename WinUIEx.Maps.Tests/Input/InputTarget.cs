@@ -1,5 +1,4 @@
 using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Automation.Peers;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.UI.WindowsAndMessaging;
@@ -49,32 +48,27 @@ internal sealed class InputTarget
             throw new InvalidOperationException("The WinUI test window does not have a native handle.");
         }
 
-        AutomationPeer peer =
-            FrameworkElementAutomationPeer.FromElement(element) ??
-            FrameworkElementAutomationPeer.CreatePeerForElement(element) ??
-            throw new InvalidOperationException("Could not create an automation peer for the input target.");
-        Windows.Foundation.Rect automationBounds = peer.GetBoundingRectangle();
+        // UIA can return root-relative rectangles for the self-hosted WinUI tree.
+        // Whether such a rectangle happens to fit inside the screen window is not
+        // a reliable way to distinguish it from a screen-relative rectangle.
+        Windows.Foundation.Point offset = element.TransformToVisual(null)
+            .TransformPoint(default);
+        double scale = element.XamlRoot.RasterizationScale;
+        var clientOrigin = new System.Drawing.Point();
+        if (!ClientToScreen(handle, ref clientOrigin))
+        {
+            throw new InvalidOperationException("Could not get the test window client origin.");
+        }
         if (!Interop.GetWindowRect(new HWND(handle), out RECT windowBounds))
         {
             throw new InvalidOperationException("Could not get the WinUI test window bounds.");
         }
 
         var bounds = new InputBounds(
-            (int)Math.Round(automationBounds.X),
-            (int)Math.Round(automationBounds.Y),
-            (int)Math.Round(automationBounds.Width),
-            (int)Math.Round(automationBounds.Height));
-        if (bounds.Left < windowBounds.left ||
-            bounds.Top < windowBounds.top ||
-            bounds.Left + bounds.Width > windowBounds.right ||
-            bounds.Top + bounds.Height > windowBounds.bottom)
-        {
-            bounds = bounds with
-            {
-                Left = bounds.Left + windowBounds.left,
-                Top = bounds.Top + windowBounds.top,
-            };
-        }
+            clientOrigin.X + (int)Math.Round(offset.X * scale),
+            clientOrigin.Y + (int)Math.Round(offset.Y * scale),
+            (int)Math.Round(element.ActualWidth * scale),
+            (int)Math.Round(element.ActualHeight * scale));
 
         if (bounds.Width <= 0 || bounds.Height <= 0)
         {
@@ -97,12 +91,20 @@ internal sealed class InputTarget
 
     internal void ActivateWindow()
     {
-        if (!Interop.SetForegroundWindow(WindowHandle) ||
-            Interop.GetForegroundWindow() != WindowHandle)
+        if (Interop.GetForegroundWindow() == WindowHandle)
+        {
+            return;
+        }
+        Interop.SetForegroundWindow(WindowHandle);
+        if (Interop.GetForegroundWindow() != WindowHandle)
         {
             throw new InvalidOperationException("The WinUI test window could not receive foreground input.");
         }
     }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool ClientToScreen(nint window, ref System.Drawing.Point point);
 
     internal void VerifyPoint(InputPoint point)
     {

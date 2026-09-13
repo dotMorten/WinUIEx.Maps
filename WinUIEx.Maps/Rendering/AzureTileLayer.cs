@@ -131,6 +131,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     private const string ImageryTileset = "microsoft.imagery";
     private const string TerrainTileset = "microsoft.terra.main";
     private const string VectorTileset = "microsoft.base";
+    private const int MaximumVectorTileZoom = 21;
     private const string VectorTileMediaType = "application/vnd.mapbox-vector-tile";
     private const int MaximumEncodedVectorTileBytes = 4 * 1024 * 1024;
     private const int MaximumAttributionBytes = 1024 * 1024;
@@ -326,7 +327,11 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
             throw new InvalidOperationException(
                 "The vector Azure style has no asset provider."))
             .GetAssetsAsync(cancellationToken);
-        DecodedTile? imagery = IsHybridStyle(_style)
+        VectorStyleAssets? reliefAssets = _style == MapStyle.RoadShadedRelief
+            ? await styleAssetsTask.ConfigureAwait(false) : null;
+        DecodedTile? imagery = _style == MapStyle.RoadShadedRelief
+            ? await GetReliefTileAsync(id, reliefAssets!.Relief, cancellationToken).ConfigureAwait(false)
+            : IsHybridStyle(_style)
             ? await GetHybridImageryTileAsync(id, cancellationToken)
             : null;
         PooledByteBuffer encoded;
@@ -350,8 +355,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                 encoded.Memory.Span,
                 cancellationToken);
         }
-        VectorStyleAssets styleAssets =
-            await styleAssetsTask.ConfigureAwait(false);
+        VectorStyleAssets styleAssets = reliefAssets ?? await styleAssetsTask.ConfigureAwait(false);
         double downloadMilliseconds =
             Stopwatch.GetElapsedTime(downloadStarted).TotalMilliseconds -
             (imagery?.DecodeMilliseconds ?? 0);
@@ -370,7 +374,8 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                 imagery.Value.Width,
                 imagery.Value.Height,
                 imagery.Value.DownloadMilliseconds,
-                imagery.Value.DecodeMilliseconds);
+                imagery.Value.DecodeMilliseconds)
+            { TextureTransform = imagery.Value.TextureTransform };
         return new DecodedVectorTile(
             id,
             features,
@@ -406,6 +411,63 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                 "AzureMapsHybridImageryRequestException";
             throw;
         }
+    }
+
+    private async Task<DecodedTile> GetReliefTileAsync(
+        TileId id, AzureReliefStyle? relief, CancellationToken cancellationToken)
+    {
+        // Keep the existing atomic hybrid admission/commit even where the style
+        // hides terrain. No terrain request is needed above its display maxzoom.
+        if (relief is null || id.Zoom >= relief.MaxZoom || id.Zoom + 1 <= relief.MinZoom)
+            return new DecodedTile(new byte[4], 1, 1, 0, 0);
+        const int maximumZoom = 6;
+        int difference = Math.Max(0, id.Zoom - maximumZoom);
+        int scale = 1 << difference;
+        TileId parent = new(Math.Min(id.Zoom, maximumZoom), id.X / scale, id.Y / scale);
+        DecodedTile terrain = await DownloadAndDecodeTileAsync(parent, TerrainTileset, 512,
+            BitmapAlphaMode.Straight, new BitmapTransform(), _token, _language, cancellationToken).ConfigureAwait(false);
+        if (difference == 0)
+            return terrain;
+        long cropStarted = Stopwatch.GetTimestamp();
+        var crop = CropReliefTile(new(parent, terrain.Pixels, terrain.Width, terrain.Height, 0, 0), id);
+        return terrain with
+        {
+            Pixels = crop.Pixels, Width = crop.Width, Height = crop.Height,
+            TextureTransform = crop.TextureTransform,
+            DecodeMilliseconds = terrain.DecodeMilliseconds + Stopwatch.GetElapsedTime(cropStarted).TotalMilliseconds,
+        };
+    }
+
+    internal static DecodedRasterTile CropReliefTile(DecodedRasterTile terrain, TileId id)
+    {
+        int scale = 1 << (id.Zoom - terrain.Id.Zoom);
+        // Use the decoded dimensions, not the requested size: the current service
+        // returns 256px terrain even for a 512px request.
+        uint width = terrain.Width / (uint)scale;
+        uint height = terrain.Height / (uint)scale;
+        if (width == 0 || height == 0)
+            throw new InvalidDataException("Azure terrain exceeds supported overzoom.");
+        int x = (id.X % scale) * (int)width;
+        int y = (id.Y % scale) * (int)height;
+        // Bilinear filtering needs the adjacent ancestor texel on every interior
+        // edge. Tight crops clamp there, changing the function during replacement.
+        int left = Math.Max(0, x - 1), top = Math.Max(0, y - 1);
+        int right = Math.Min((int)terrain.Width, x + (int)width + 1);
+        int bottom = Math.Min((int)terrain.Height, y + (int)height + 1);
+        int paddedWidth = right - left, paddedHeight = bottom - top;
+        byte[] pixels = new byte[checked(paddedWidth * paddedHeight * 4)];
+        for (int row = 0; row < paddedHeight; row++)
+        {
+            terrain.Pixels.AsSpan(((top + row) * (int)terrain.Width + left) * 4, paddedWidth * 4)
+                .CopyTo(pixels.AsSpan(row * paddedWidth * 4));
+        }
+        return terrain with
+        {
+            Id = id, Pixels = pixels, Width = (uint)paddedWidth, Height = (uint)paddedHeight,
+            TextureTransform = new System.Numerics.Vector4(
+                width / (float)paddedWidth, height / (float)paddedHeight,
+                (x - left) / (float)paddedWidth, (y - top) / (float)paddedHeight),
+        };
     }
 
     private async Task<PooledByteBuffer> GetVectorTileBytesAsync(
@@ -490,7 +552,9 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         }
         if (IsHybridStyle(style))
         {
-            return [ImageryTileset, VectorTileset];
+            return style == MapStyle.RoadShadedRelief
+                ? zoom < 15 ? [TerrainTileset, VectorTileset] : [VectorTileset]
+                : [ImageryTileset, VectorTileset];
         }
         if (IsVectorStyle(style))
         {
@@ -522,7 +586,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     internal static int GetMaximumTileZoom(MapStyle style) =>
         style is MapStyle.Satellite or MapStyle.SatelliteWithRoads
             ? 19
-            : MapCamera.MaximumTileZoom;
+            : IsVectorStyle(style) ? MaximumVectorTileZoom : MapCamera.MaximumTileZoom;
 
     /// <summary>
     /// Gets whether the selected style acquires Mapbox Vector Tile payloads.
@@ -539,7 +603,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
             MapStyle.SatelliteWithRoads;
 
     internal static bool IsHybridStyle(MapStyle style) =>
-        style == MapStyle.SatelliteWithRoads;
+        style is MapStyle.SatelliteWithRoads or MapStyle.RoadShadedRelief;
 
     /// <summary>
     /// Maps public styles to the identifiers used by Azure Maps documentation and SDKs.
@@ -1069,7 +1133,10 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         uint Width,
         uint Height,
         double DownloadMilliseconds,
-        double DecodeMilliseconds);
+        double DecodeMilliseconds)
+    {
+        internal System.Numerics.Vector4? TextureTransform { get; init; }
+    }
 }
 
 /// <summary>

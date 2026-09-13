@@ -279,6 +279,10 @@ public sealed partial class MapControl : Control
         DefaultStyleKey = typeof(MapControl);
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
+        AddHandler(PointerPressedEvent, new PointerEventHandler(OnTouchContactPressed), true);
+        AddHandler(PointerReleasedEvent, new PointerEventHandler(OnTouchContactReleased), true);
+        AddHandler(PointerCanceledEvent, new PointerEventHandler(OnTouchContactCanceled), true);
+        AddHandler(PointerCaptureLostEvent, new PointerEventHandler(OnTouchContactCanceled), true);
         ActualThemeChanged += OnActualThemeChanged;
         AddHandler(
             PointerEnteredEvent,
@@ -460,6 +464,8 @@ public sealed partial class MapControl : Control
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         MapControlEventSource.Log.ControlUnloaded();
+        _touchPitch.Clear();
+        ResetTouchManipulation();
         _iconService.SetLoaded(false);
         StopAccessibilityAnnouncementTimer();
         StopMissingAzureTokenTimer();
@@ -1054,11 +1060,7 @@ public sealed partial class MapControl : Control
     }
 
     internal string? GetAzureRequestLanguage() =>
-        ReferenceEquals(
-                ReadLocalValue(LanguageProperty),
-                DependencyProperty.UnsetValue)
-            ? null
-            : AzureTileAcquisitionSession.GetRequestLanguage(Language);
+        AzureTileAcquisitionSession.GetRequestLanguage(Language);
 
     internal static AzureTileLayer? CreateAzureBaseLayer(MapStyle style, string? token) =>
         CreateAzureBaseLayer(style, token, null);

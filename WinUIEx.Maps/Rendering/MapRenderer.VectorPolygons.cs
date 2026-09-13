@@ -31,6 +31,7 @@ internal sealed partial class MapRenderer
         }
 
         ulong fallbackMask = GetFallbackZoomMask(state);
+        bool hasDrawnRelief = false;
         if (_vectorPolygonFrameCache is { } cached &&
             cached.MatchesConfiguration(
                 layer,
@@ -92,17 +93,21 @@ internal sealed partial class MapRenderer
                         pendingOrder.Sort(CompareVectorPolygonBatches);
                         DrawReusedVectorPolygons(
                             context,
+                            layer,
                             cached,
                             pendingBatches,
                             pendingOrder,
                             panTransform,
-                            ref pendingResult);
+                            ref pendingResult,
+                            ref hasDrawnRelief,
+                            ref activeFade);
                         result.Add(pendingResult);
                     }
                     else
                     {
                         foreach (VectorPolygonCachedBatch batch in cached.Batches)
                         {
+                            activeFade |= DrawReliefBefore(context, layer, batch.Key.StyleLayerOrder, ref hasDrawnRelief);
                             DrawGpuGeometryBuffer(
                                 context,
                                 batch.Buffer,
@@ -111,6 +116,7 @@ internal sealed partial class MapRenderer
                                 panTransform);
                         }
                     }
+                    activeFade |= DrawReliefBefore(context, layer, int.MaxValue, ref hasDrawnRelief);
                     TraceVectorPolygonResult(layer, result);
                     MapControlEventSource.Log.VectorGeometryFrameCacheSummary(
                         layer.Style,
@@ -184,6 +190,7 @@ internal sealed partial class MapRenderer
             batchOrder.Sort(CompareVectorPolygonBatches);
             foreach (VectorPolygonBatchKey key in batchOrder)
             {
+                activeFade |= DrawReliefBefore(context, layer, key.StyleLayerOrder, ref hasDrawnRelief);
                 if (key.Kind == VectorPolygonBatchKind.Pattern)
                 {
                     result.DrawCallCount += DrawVectorPolygonPattern(
@@ -203,6 +210,7 @@ internal sealed partial class MapRenderer
                     result.DrawCallCount += buffer.Chunks.Count;
                 }
             }
+            activeFade |= DrawReliefBefore(context, layer, int.MaxValue, ref hasDrawnRelief);
             TraceVectorPolygonResult(layer, result);
             int vertexCount = batches.Values.Sum(buffer => buffer.Count);
             long retainedByteSize = 0;
@@ -358,11 +366,14 @@ internal sealed partial class MapRenderer
 
     private void DrawReusedVectorPolygons(
         IntPtr context,
+        LayerRenderSnapshot layer,
         VectorPolygonFrameCache cached,
         IReadOnlyDictionary<VectorPolygonBatchKey, PooledGeometryBuffer> pending,
         IReadOnlyList<VectorPolygonBatchKey> pendingOrder,
         MapViewportProjectiveTransform panTransform,
-        ref VectorPolygonRenderResult pendingResult)
+        ref VectorPolygonRenderResult pendingResult,
+        ref bool hasDrawnRelief,
+        ref bool activeFade)
     {
         int cachedIndex = 0;
         int pendingIndex = 0;
@@ -377,6 +388,7 @@ internal sealed partial class MapRenderer
             {
                 VectorPolygonCachedBatch batch =
                     cached.Batches[cachedIndex++];
+                activeFade |= DrawReliefBefore(context, layer, batch.Key.StyleLayerOrder, ref hasDrawnRelief);
                 DrawGpuGeometryBuffer(
                     context,
                     batch.Buffer,
@@ -387,6 +399,7 @@ internal sealed partial class MapRenderer
             else
             {
                 VectorPolygonBatchKey key = pendingOrder[pendingIndex++];
+                activeFade |= DrawReliefBefore(context, layer, key.StyleLayerOrder, ref hasDrawnRelief);
                 PooledGeometryBuffer buffer = pending[key];
                 DrawGeometryBuffer(
                     context,
@@ -589,7 +602,7 @@ internal sealed partial class MapRenderer
     {
         tile.MarkUsed();
         VectorPolygonResolution resolution = tile.GetPolygons(
-            styleZoom ?? _displayZoom, isFallback: styleZoom.HasValue);
+            styleZoom ?? _displayZoom, isFallback: styleZoom.HasValue, displayZoom: _displayZoom);
         result.CandidatePolygonCount += resolution.Polygons.Length;
         result.EvaluationFailureCount += resolution.EvaluationFailureCount;
         double tileOpacity = ComputeLayerTileOpacity(
@@ -766,30 +779,61 @@ internal sealed partial class MapRenderer
         int triangleCount = 0;
         foreach (VectorTileRing ring in rings)
         {
+            if (ring.Points.Length < 3)
+                continue;
             MapScreenPoint[] projected =
-                ArrayPool<MapScreenPoint>.Shared.Rent(ring.Points.Length);
+                ArrayPool<MapScreenPoint>.Shared.Rent(ring.Points.Length + 2);
             try
             {
-                for (int index = 0; index < ring.Points.Length; index++)
+                int count = 0;
+                VectorTilePoint previousEnd = default;
+                int first = 0;
+                // MVT ClosePath closes the ring without repeating the first point.
+                int segments = ring.Points[0] == ring.Points[^1]
+                    ? ring.Points.Length - 1 : ring.Points.Length;
+                // Keep a real corner from becoming an artificial path endpoint.
+                for (int index = 0; index < segments; index++)
                 {
-                    projected[index] = ProjectVectorPoint(
-                        ring.Points[index],
-                        tile,
-                        viewportWidth,
-                        viewportHeight,
-                        heading,
-                        pitch,
-                        translateX,
-                        translateY,
-                        translateAnchor);
+                    VectorTilePoint point = ring.Points[index];
+                    if (point.X < 0 || point.X > 1 || point.Y < 0 || point.Y > 1)
+                    {
+                        first = index;
+                        break;
+                    }
                 }
-                triangleCount += AppendVectorLineTriangles(
-                    projected.AsSpan(0, ring.Points.Length),
-                    outlineStyle,
-                    viewportWidth,
-                    viewportHeight,
-                    viewportPadding,
-                    buffer);
+                for (int index = 1; index <= segments; index++)
+                {
+                    VectorTilePoint originalStart = ring.Points[(first + index - 1) % segments];
+                    VectorTilePoint originalEnd = ring.Points[(first + index) % segments];
+                    if (!TryClipVectorPolygonOutlineSegment(
+                            originalStart, originalEnd, out VectorTilePoint start, out VectorTilePoint end))
+                    {
+                        Flush();
+                        continue;
+                    }
+                    if (count != 0 && previousEnd != start)
+                        Flush();
+                    if (count == 0)
+                        projected[count++] = Project(start);
+                    projected[count++] = Project(end);
+                    previousEnd = end;
+                    if (end != originalEnd)
+                        Flush();
+                }
+                Flush();
+
+                MapScreenPoint Project(VectorTilePoint point) => ProjectVectorPoint(
+                    point, tile, viewportWidth, viewportHeight, heading, pitch,
+                    translateX, translateY, translateAnchor);
+
+                void Flush()
+                {
+                    if (count >= 2)
+                        triangleCount += AppendVectorLineTriangles(
+                            projected.AsSpan(0, count), outlineStyle, viewportWidth,
+                            viewportHeight, viewportPadding, buffer);
+                    count = 0;
+                }
             }
             finally
             {
@@ -797,6 +841,49 @@ internal sealed partial class MapRenderer
             }
         }
         return triangleCount;
+    }
+
+    // MVT rings can close at the edge of their buffer (Azure footprints use 600/4096).
+    // Clip original outline segments, not a clipped polygon: closing the latter would
+    // invent a stroked tile edge, while stroking the buffer paints across adjacent tiles.
+    private static bool TryClipVectorPolygonOutlineSegment(
+        VectorTilePoint start,
+        VectorTilePoint end,
+        out VectorTilePoint clippedStart,
+        out VectorTilePoint clippedEnd)
+    {
+        clippedStart = start;
+        clippedEnd = end;
+        double dx = end.X - start.X, dy = end.Y - start.Y;
+        double enter = 0, leave = 1;
+        if (!Clip(-dx, start.X) || !Clip(dx, 1 - start.X) ||
+            !Clip(-dy, start.Y) || !Clip(dy, 1 - start.Y) || leave <= enter)
+            return false;
+        if (enter > 0)
+            clippedStart = new(start.X + dx * enter, start.Y + dy * enter);
+        if (leave < 1)
+            clippedEnd = new(start.X + dx * leave, start.Y + dy * leave);
+        return clippedStart != clippedEnd;
+
+        bool Clip(double direction, double distance)
+        {
+            if (direction == 0)
+                return distance >= 0;
+            double fraction = distance / direction;
+            if (direction < 0)
+            {
+                if (fraction > leave)
+                    return false;
+                enter = Math.Max(enter, fraction);
+            }
+            else
+            {
+                if (fraction < enter)
+                    return false;
+                leave = Math.Min(leave, fraction);
+            }
+            return true;
+        }
     }
 
     internal static Vector2[] GetVectorPolygonPatternTextureCoordinates(

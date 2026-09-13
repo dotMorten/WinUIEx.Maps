@@ -99,13 +99,16 @@ public sealed class MapControlAuthenticationTests
     }
 
     [TestMethod]
-    public Task ExplicitMapLanguageControlsAzureRequestLanguage()
+    public Task MapLanguageControlsAzureRequestLanguage()
     {
         return MapControlTestHost.LoadMapControlAsync(map =>
         {
             map.MapStyle = MapStyle.Blank;
+            map.ClearValue(FrameworkElement.LanguageProperty);
 
-            Assert.IsNull(map.GetAzureRequestLanguage());
+            Assert.AreEqual(
+                AzureTileAcquisitionSession.GetRequestLanguage(map.Language),
+                map.GetAzureRequestLanguage());
 
             map.Language = "eo";
 
@@ -113,7 +116,9 @@ public sealed class MapControlAuthenticationTests
 
             map.ClearValue(FrameworkElement.LanguageProperty);
 
-            Assert.IsNull(map.GetAzureRequestLanguage());
+            Assert.AreEqual(
+                AzureTileAcquisitionSession.GetRequestLanguage(map.Language),
+                map.GetAzureRequestLanguage());
             return Task.CompletedTask;
         });
     }

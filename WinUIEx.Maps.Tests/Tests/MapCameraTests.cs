@@ -453,11 +453,17 @@ public sealed class MapCameraTests
     {
         TouchRotationState state = new();
 
-        Assert.AreEqual(0, state.GetRotationDelta(4.9));
+        Assert.AreEqual(0, state.GetRotationDelta(9.9));
+        Assert.AreEqual(0, state.GetRotationDelta(-9.9));
+        Assert.AreEqual(0, state.GetRotationDelta(9.9));
         Assert.IsFalse(state.IsActive);
-        Assert.AreEqual(1, state.GetRotationDelta(6));
+        Assert.AreEqual(1, state.GetRotationDelta(11));
         Assert.IsTrue(state.IsActive);
-        Assert.AreEqual(2, state.GetRotationDelta(8));
+        Assert.AreEqual(2, state.GetRotationDelta(13));
+        Assert.AreEqual(-5, state.GetRotationDelta(8));
+        state.Reset();
+        Assert.AreEqual(0, state.GetRotationDelta(8));
+        Assert.IsFalse(state.IsActive);
     }
 
     [TestMethod]

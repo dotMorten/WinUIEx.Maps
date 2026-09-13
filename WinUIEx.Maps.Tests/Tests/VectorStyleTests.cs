@@ -2588,7 +2588,7 @@ public sealed class VectorStyleTests
             method,
             BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(
                 cache,
-                family == "symbol" ? [zoom, textScaleFactor] : [zoom])!;
+                family == "symbol" ? [zoom, textScaleFactor] : [zoom, false, double.PositiveInfinity])!;
     }
 
     private static int GetResolvedItemCount(object resolution) => resolution switch

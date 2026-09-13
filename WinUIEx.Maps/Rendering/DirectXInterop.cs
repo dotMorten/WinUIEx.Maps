@@ -31,6 +31,46 @@ internal static class DirectXInterop
     private static readonly Guid IidDxgiDevice3 = new("6007896c-3244-4afd-bf18-a6d3beda5023");
     private static readonly Guid IidDxgiFactory2 = new("50c83a1c-e072-4c48-87b0-3630fa36a6d0");
     private static readonly Guid IidD3D11Texture2D = new("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
+    private static readonly Guid IidDxgiSwapChain2 = new("a8be2ac4-199f-4946-b331-79599fb98de7");
+
+    internal static unsafe bool SupportsFourSampleTarget(IntPtr device)
+    {
+        uint qualityLevels = 0;
+        IntPtr* vtable = *(IntPtr**)device;
+        var method = (delegate* unmanaged[Stdcall]<IntPtr, DXGI_FORMAT, uint, uint*, int>)vtable[30];
+        ThrowIfFailed(new(method(device, DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM, 4, &qualityLevels)),
+            "Failed to query map multisample support.");
+        return qualityLevels > 0;
+    }
+
+    internal static unsafe void ResolveColorTarget(IntPtr context, IntPtr destination, IntPtr source)
+    {
+        IntPtr* vtable = *(IntPtr**)context;
+        var method = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, uint, IntPtr, uint, DXGI_FORMAT, void>)vtable[57];
+        method(context, destination, 0, source, 0, DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM);
+    }
+
+    internal static unsafe void SetSwapChainScale(IntPtr swapChain, float scaleX, float scaleY)
+    {
+        Marshal.ThrowExceptionForHR(Marshal.QueryInterface(
+            swapChain, in IidDxgiSwapChain2, out IntPtr swapChain2));
+        try
+        {
+            DXGI_MATRIX_3X2_F matrix = new()
+            {
+                _11 = 1 / scaleX,
+                _22 = 1 / scaleY,
+            };
+            IntPtr* vtable = *(IntPtr**)swapChain2;
+            var method = (delegate* unmanaged[Stdcall]<IntPtr, DXGI_MATRIX_3X2_F*, int>)vtable[34];
+            ThrowIfFailed(new(method(swapChain2, &matrix)),
+                "Failed to set the map composition scale.");
+        }
+        finally
+        {
+            ReleasePointer(ref swapChain2);
+        }
+    }
 
     [DllImport("d3d11.dll", EntryPoint = "D3D11CreateDevice", ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
     private static extern unsafe int D3D11CreateDeviceNative(

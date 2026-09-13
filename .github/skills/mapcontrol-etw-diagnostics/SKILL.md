@@ -147,6 +147,8 @@ payload inspection is best in PerfView's Events view.
 | 78 | `MapFrameStageTiming` | Verbose/Frames | renderer/frame-correlated camera/scene, completion commits, raster, polygon, line, symbol, and remaining frame work |
 | 79 | `TilePipelineStageFailed` | Error/Tiles+Errors | supplements unexpected request failures with source kind, tile/generation, stage, exception type, and HRESULT; stage 0 is request admission, 1 acquisition (including decode/assets), 2 renderer admission |
 | 80 | `GeometryStreamUploadTiming` | Verbose/Frames | renderer/frame-correlated dynamic geometry upload, discard/no-overwrite and byte counts, and aggregate CPU-side map/copy/unmap duration |
+| 81 | `RenderSurfaceChanged` | Info/Device | renderer-correlated logical dimensions, composition scales, physical dimensions, retained color-buffer bytes and selected sample count; presentation uses two single-sample buffers plus a supported-device 4x intermediate, unless startup switch `WinUIEx.Maps.DisableMultisampleAntialiasing` is true; offscreen benchmarks explicitly select samples and use one resolve buffer |
+| 82 | `VectorSymbolFallbackSummary` | Verbose/Icons+VectorTiles | cached fallback symbol tiles considered and omitted because their visible footprint has opaque same-source replacement coverage; unrelated missing tiles no longer keep covered old tiers in collision candidates |
 
 ### Frame-time investigations
 

@@ -19,7 +19,7 @@ custom HTTP(S) tile layers without an Azure token.
 
 ## Documentation
 
-- [Documentation learning path](https://github.com/dotMorten/WinUIEx.Maps/blob/main/docs/README.md)
+- [Documentation Overview](https://github.com/dotMorten/WinUIEx.Maps/blob/main/docs/README.md)
 - [Getting started](https://github.com/dotMorten/WinUIEx.Maps/blob/main/docs/getting-started.md)
 - [Map elements and interaction](https://github.com/dotMorten/WinUIEx.Maps/blob/main/docs/map-elements-and-interaction.md)
 - [Custom raster tiles](https://github.com/dotMorten/WinUIEx.Maps/blob/main/docs/custom-raster-tiles.md)
@@ -32,10 +32,8 @@ WinUIEx.Maps uses a dual source-available license:
 
 - Noncommercial use is free.
 - All commercial use requires an active GitHub Sponsorship of at least
-  **USD $10 per month** at
+  USD $10 per month at
   [github.com/sponsors/dotMorten](https://github.com/sponsors/dotMorten).
 
 Using the package constitutes acceptance of the terms in
-[LICENSE.md](LICENSE.md). This is not an MIT or OSI-approved open-source
-license. Third-party licenses are listed in
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+[LICENSE.md](LICENSE.md).

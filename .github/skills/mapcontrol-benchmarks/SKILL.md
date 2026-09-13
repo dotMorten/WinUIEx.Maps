@@ -41,6 +41,10 @@ The project is `WinUIEx.Maps.Benchmarks`.
   includes both retained steady-state frames and camera-changing frames that force
   projection/collision preparation. Asset generation, texture upload, and warmup occur in
   `GlobalSetup`.
+- `AnalyticCoverageBenchmarks` compares hard and derivative-based procedural capsule
+  coverage using the same instanced symbol draw path and completed-GPU wait. This is an
+  offscreen experiment, not production antialiasing for connected lines or polygon meshes;
+  do not extrapolate its timing to arbitrary boundary geometry or presentation deadlines.
 - `[MemoryDiagnoser]` reports managed allocations. D3D resources and driver allocations are
   native memory and do not appear in the `Allocated` column.
 

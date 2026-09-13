@@ -594,7 +594,7 @@ internal sealed partial class MapRenderer
     {
         tile.MarkUsed();
         VectorLineResolution resolution = tile.GetLines(
-            styleZoom ?? _displayZoom, isFallback: styleZoom.HasValue);
+            styleZoom ?? _displayZoom, isFallback: styleZoom.HasValue, displayZoom: _displayZoom);
         result.CandidateLineCount += resolution.Lines.Length;
         result.EvaluationFailureCount += resolution.EvaluationFailureCount;
         double tileOpacity = ComputeLayerTileOpacity(

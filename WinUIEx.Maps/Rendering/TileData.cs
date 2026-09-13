@@ -18,7 +18,11 @@ internal readonly record struct DecodedRasterTile(
     uint Width,
     uint Height,
     double DownloadMilliseconds,
-    double DecodeMilliseconds);
+    double DecodeMilliseconds)
+{
+    // Normalized interior of a padded crop: scale.xy, offset.zw.
+    internal Vector4? TextureTransform { get; init; }
+}
 
 /// <summary>
 /// Carries decoded point and line features, immutable style state, and the bounded sprite
@@ -299,7 +303,10 @@ internal readonly record struct RasterTileData(
     uint Width,
     uint Height,
     long Generation,
-    RasterSourceKind SourceKind);
+    RasterSourceKind SourceKind)
+{
+    internal Vector4? TextureTransform { get; init; }
+}
 
 /// <summary>
 /// Associates a decoded raster upload with the reservation that owns its deduplication and

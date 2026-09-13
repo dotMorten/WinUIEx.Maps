@@ -31,7 +31,7 @@ public sealed partial class BasemapPage : Page
         };
         LanguagePicker.ItemsSource = new[]
         {
-            new LanguagePickerItem("Azure default", null),
+            new LanguagePickerItem("Inherited language", null),
             new LanguagePickerItem("English (United States)", "en-US"),
             new LanguagePickerItem("French", "fr"),
             new LanguagePickerItem("German", "de-DE"),

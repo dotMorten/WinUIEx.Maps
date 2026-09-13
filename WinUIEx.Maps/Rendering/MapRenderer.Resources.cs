@@ -33,6 +33,14 @@ namespace WinUIEx.Maps.Rendering;
 /// </remarks>
 internal sealed partial class MapRenderer : DirectXRenderer
 {
+    private string? _glyphShaderPrototype;
+
+    internal void InitializeCoveragePrototypeForBenchmark(int width, int height, bool analytic, bool polygon = false)
+    {
+        _glyphShaderPrototype = MapShaders.CoveragePrototypePixel(analytic, polygon);
+        InitializeOffscreenForBenchmark(width, height);
+    }
+
     private IntPtr _vertexShaderPointer;
     private IntPtr _iconVertexShaderPointer;
     private IntPtr _geometryVertexShaderPointer;
@@ -186,7 +194,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             "vs_4_0");
         IntPtr pixelBlob = CompileShader(MapShaders.Pixel, "main", "ps_4_0");
         IntPtr iconPixelBlob = CompileShader(MapShaders.IconPixel, "main", "ps_4_0");
-        IntPtr glyphPixelBlob = CompileShader(MapShaders.GlyphPixel, "main", "ps_4_0");
+        IntPtr glyphPixelBlob = CompileShader(_glyphShaderPrototype ?? MapShaders.GlyphPixel, "main", "ps_4_0");
         IntPtr geometryPixelBlob = CompileShader(
             MapShaders.GeometryPixel,
             "main",
@@ -303,13 +311,16 @@ internal sealed partial class MapRenderer : DirectXRenderer
                         GetBlobBufferSize(iconVertexBlob));
                 }
 
-                D3D11_INPUT_ELEMENT_DESC geometryElement = elements[0];
-                _geometryInputLayoutPointer = CreateInputLayout(
-                    DevicePointer,
-                    &geometryElement,
-                    1,
-                    (void*)GetBlobBufferPointer(geometryVertexBlob),
-                    GetBlobBufferSize(geometryVertexBlob));
+                D3D11_INPUT_ELEMENT_DESC[] geometryElements = [elements[0], elements[1]];
+                fixed (D3D11_INPUT_ELEMENT_DESC* geometryElement = geometryElements)
+                {
+                    _geometryInputLayoutPointer = CreateInputLayout(
+                        DevicePointer,
+                        geometryElement,
+                        2,
+                        (void*)GetBlobBufferPointer(geometryVertexBlob),
+                        GetBlobBufferSize(geometryVertexBlob));
+                }
             }
         }
         finally
@@ -437,6 +448,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             FillMode = D3D11_FILL_MODE.D3D11_FILL_SOLID,
             CullMode = D3D11_CULL_MODE.D3D11_CULL_NONE,
             DepthClipEnable = true,
+            MultisampleEnable = RenderSampleCount > 1,
         };
         BlendDescription blendDescription = BlendDescription.CreateSourceAlpha();
         BlendDescription premultipliedBlendDescription =
@@ -486,7 +498,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
         Vector4 Transform,
         Vector4 Rotation,
         Vector4 Pitch,
-        Vector4 Opacity);
+        Vector4 Opacity,
+        Vector4 TextureTransform = default);
 
     /// <summary>
     /// Mirrors one native D3D11 render-target blend descriptor with explicit padding.
@@ -598,6 +611,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         }
 
         public long ReadyTimestamp { get; }
+        internal Vector4 TextureTransform { get; set; } = new(1, 1, 0, 0);
         public long LastUsedTimestamp { get; private set; }
         public ulong ByteSize { get; }
         public IntPtr ViewPointer;

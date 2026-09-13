@@ -314,6 +314,11 @@ internal sealed partial class MapRenderer
             if (canCommit)
             {
                 _rasterTiles.Add(completed.Key, completed.Texture);
+                // A useful parent can finish after the zoom scene was published.
+                // It must cover holes in that very commit frame, not one scene later.
+                if (completed.VectorTile?.Style == (int)MapStyle.RoadShadedRelief &&
+                    state.Scene is { } scene && completed.Key.Id.Zoom != scene.TileZoom)
+                    state.FallbackTileZooms.Add(completed.Key.Id.Zoom);
                 if (completed.VectorTile is VectorTileData vectorTile)
                 {
                     _vectorTiles.Add(
@@ -484,6 +489,7 @@ internal sealed partial class MapRenderer
                         tile.Width,
                         tile.Height,
                         "Failed to create a raster tile shader resource.");
+                    completedTexture.TextureTransform = tile.TextureTransform ?? new(1, 1, 0, 0);
                     if (traceTiming)
                     {
                         textureCreateTicks += Stopwatch.GetTimestamp() - textureCreateStarted;
@@ -617,6 +623,12 @@ internal sealed partial class MapRenderer
             state.Scene is null)
         {
             return false;
+        }
+
+        if (layer.Style == (int)MapStyle.RoadShadedRelief &&
+            layer.Kind == LayerRenderKind.HybridTiles)
+        {
+            return DrawExclusiveReliefCoverage(context, layer, state);
         }
 
         bool canEnumerateActiveScene = CanEnumerateRasterScene(
@@ -769,6 +781,7 @@ internal sealed partial class MapRenderer
             layer.FadeDuration,
             layer.Opacity);
         TileConstants constants = CreateTileConstants(visibleTile, (float)opacity);
+        constants = constants with { TextureTransform = texture.TextureTransform };
         UpdateSubresource(context, _constantBufferPointer, &constants);
         SetPixelShader(
             context,
@@ -963,7 +976,8 @@ internal sealed partial class MapRenderer
         double viewportWidth,
         double viewportHeight,
         double heading = 0,
-        double pitch = 0)
+        double pitch = 0,
+        double coverageMargin = 0)
     {
         if (id.Zoom is < 0 or > MapCamera.MaximumTileZoom ||
             id.X < 0 ||
@@ -995,7 +1009,8 @@ internal sealed partial class MapRenderer
             out double minimumX,
             out double minimumY,
             out double maximumX,
-            out double maximumY);
+            out double maximumY,
+            coverageMargin);
         double viewportWorldLeft = centerX - (viewportWidth / 2);
         double viewportWorldTop = centerY - (viewportHeight / 2);
         double baseLeft = (id.X * tileDisplaySize) - viewportWorldLeft;

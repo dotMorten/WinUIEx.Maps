@@ -539,8 +539,9 @@ internal sealed partial class MapRenderer : DirectXRenderer
             {
                 continue;
             }
-            if (layer.Kind is
-                LayerRenderKind.RasterTiles or LayerRenderKind.HybridTiles)
+            if (layer.Kind == LayerRenderKind.RasterTiles ||
+                (layer.Kind == LayerRenderKind.HybridTiles &&
+                 layer.Style != (int)MapStyle.RoadShadedRelief))
             {
                 long stageStart = traceFrame ? Stopwatch.GetTimestamp() : 0;
                 SetBlendState(context, _blendStatePointer);

@@ -1841,6 +1841,18 @@ internal sealed class MapControlEventSource : EventSource
         }
     }
 
+    [Event(81, Level = EventLevel.Informational, Keywords = Keywords.Device)]
+    public void RenderSurfaceChanged(
+        long rendererId, double logicalWidth, double logicalHeight,
+        double scaleX, double scaleY, int pixelWidth, int pixelHeight, long bufferBytes, int sampleCount)
+    {
+        if (IsEnabled(EventLevel.Informational, Keywords.Device))
+        {
+            WriteEvent(81, rendererId, logicalWidth, logicalHeight,
+                scaleX, scaleY, pixelWidth, pixelHeight, bufferBytes, sampleCount);
+        }
+    }
+
     /// <summary>
     /// Separates frame execution from render-lock, readback, presentation, and producer waits.
     /// </summary>
@@ -1945,6 +1957,18 @@ internal sealed class MapControlEventSource : EventSource
             data[5] = new() { DataPointer = (IntPtr)(&byteCount), Size = sizeof(long) };
             data[6] = new() { DataPointer = (IntPtr)(&uploadMilliseconds), Size = sizeof(double) };
             WriteEventCore(80, 7, data);
+        }
+    }
+
+    /// <summary>
+    /// Reports cached symbol tiers retired by opaque coverage of their own footprint.
+    /// </summary>
+    [Event(82, Level = EventLevel.Verbose, Keywords = Keywords.Icons | Keywords.VectorTiles, Task = Tasks.VectorTiles)]
+    public void VectorSymbolFallbackSummary(int style, int candidateTileCount, int coveredTileCount)
+    {
+        if (IsEnabled(EventLevel.Verbose, Keywords.Icons | Keywords.VectorTiles))
+        {
+            WriteEvent(82, style, candidateTileCount, coveredTileCount);
         }
     }
 }

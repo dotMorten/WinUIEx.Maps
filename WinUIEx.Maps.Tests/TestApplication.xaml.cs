@@ -56,8 +56,17 @@ public sealed partial class TestApplication : Application
         };
         window.Activated += activatedHandler;
         window.Activate();
-        window.AppWindow.Resize(new SizeInt32(800, 600));
+        double scale = GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(window)) / 96d;
+        window.AppWindow.Resize(new SizeInt32((int)(800 * scale), (int)(600 * scale)));
+        window.AppWindow.Move(new PointInt32(40, 40));
+        if (window.AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter presenter)
+        {
+            presenter.IsAlwaysOnTop = true;
+        }
     }
 
     internal void Stop() => Exit();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(nint window);
 }

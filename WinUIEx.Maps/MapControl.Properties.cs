@@ -237,9 +237,8 @@ public sealed partial class MapControl
     /// <see cref="MapServiceToken"/>. <see cref="MapStyle.Blank"/> removes that hidden layer
     /// without changing the identity or indexes of entries in <see cref="Layers"/>. Azure
     /// tile requests use this control's <see cref="FrameworkElement.Language"/> value as an
-    /// IETF language tag when it is explicitly set on the map. When it is not set, Azure's
-    /// default language is requested. Azure applies its own fallback when localized data is
-    /// unavailable. Get or set this dependency property only on the UI thread.
+    /// IETF language tag. Azure applies its own fallback when localized data is unavailable.
+    /// Get or set this dependency property only on the UI thread.
     /// </remarks>
     public MapStyle MapStyle
     {

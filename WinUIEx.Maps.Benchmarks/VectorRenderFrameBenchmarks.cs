@@ -8,8 +8,9 @@ namespace WinUIEx.Maps.Benchmarks;
 [BenchmarkCategory("GPU", "Rendering", "VectorTiles")]
 public class VectorRenderFrameBenchmarks
 {
-    private const int Width = 1024;
-    private const int Height = 768;
+    [Params(1024, 1920)]
+    public int Width { get; set; }
+    private int Height => Width == 1920 ? 1080 : 768;
     private const long SourceId = 2;
     private MapRenderer _renderer = null!;
     private double _longitude;
@@ -28,6 +29,9 @@ public class VectorRenderFrameBenchmarks
 
     [Params(0, 60)]
     public double Pitch { get; set; }
+
+    [Params(1, 4)]
+    public int Samples { get; set; }
 
     [GlobalSetup]
     public void Setup()
@@ -55,7 +59,12 @@ public class VectorRenderFrameBenchmarks
             Pitch);
 
         _renderer = new MapRenderer();
-        _renderer.InitializeOffscreenForBenchmark(Width, Height);
+        _renderer.InitializeOffscreenForBenchmark(Width, Height, Samples);
+        if (_renderer.RenderSampleCount != Samples)
+        {
+            _renderer.Dispose();
+            throw new NotSupportedException("The requested multisample target is not supported.");
+        }
         _renderer.SetCameraTargetImmediately(
             _longitude,
             _latitude,

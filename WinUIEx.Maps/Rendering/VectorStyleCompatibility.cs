@@ -137,7 +137,7 @@ internal static class VectorStyleCompatibility
     ];
 
     internal static IReadOnlyList<VectorStyleCompatibilityIssue> Analyze(
-        ReadOnlyMemory<byte> json)
+        ReadOnlyMemory<byte> json, bool supportsAzureRelief = false)
     {
         using JsonDocument document = JsonDocument.Parse(
             json,
@@ -155,8 +155,12 @@ internal static class VectorStyleCompatibility
 
         Dictionary<(VectorStyleCompatibilityIssueKind Kind, string Construct), int>
             counts = [];
+        AzureReliefStyle? relief = supportsAzureRelief ? AzureReliefStyle.Parse(document.RootElement) : null;
+        int order = 0;
         foreach (JsonElement layer in layers.EnumerateArray())
         {
+            if (order++ == relief?.Order)
+                continue;
             if (layer.ValueKind != JsonValueKind.Object ||
                 !layer.TryGetProperty("type", out JsonElement typeElement) ||
                 typeElement.ValueKind != JsonValueKind.String ||
@@ -209,7 +213,7 @@ internal static class VectorStyleCompatibility
         {
             return;
         }
-        foreach (VectorStyleCompatibilityIssue issue in Analyze(json))
+        foreach (VectorStyleCompatibilityIssue issue in Analyze(json, style == (int)MapStyle.RoadShadedRelief))
         {
             MapControlEventSource.Log.VectorStyleCompatibilityIssue(
                 style,
