@@ -14,8 +14,8 @@ namespace WinUIEx.Maps.Rendering;
 /// UI-thread callers publish camera targets and immutable layer snapshots without directly
 /// touching render-thread state. Camera fields are copied under <c>_cameraSync</c> and tagged
 /// with a monotonically increasing version; the render thread consumes only the newest
-/// version, advances pan and zoom animations, and publishes the displayed camera back for
-/// hit testing and anchored zoom calculations.
+/// version, advances the applicable camera animation, and publishes the displayed camera
+/// back for hit testing and anchored zoom calculations.
 /// </para>
 /// <para>
 /// Each rendered frame builds a <see cref="MapScene"/>, raises <see cref="SceneChanged"/> for
@@ -46,6 +46,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private readonly ZoomAnimation _zoomAnimation = new();
     private readonly HeadingAnimation _headingAnimation = new();
     private readonly PitchAnimation _pitchAnimation = new();
+    private readonly CameraAnimation _cameraAnimation = new();
     private readonly AutoResetEvent _uploadRequested = new(false);
     private readonly AutoResetEvent _rasterUploadEnteredRenderLock = new(false);
     private readonly ManualResetEvent _uploadShutdown = new(false);
@@ -74,6 +75,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private double _targetZoomAnchorHorizontalOffset;
     private double _targetZoomAnchorVerticalOffset;
     private bool _targetHasZoomAnchor;
+    private bool _targetUsesProgrammaticAnimation;
     private bool _targetIsImmediate;
     private KeyboardNavigationState _keyboardNavigation;
     private long _lastKeyboardNavigationTimestamp;
@@ -178,7 +180,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
         double viewportHeight,
         double targetHeading = 0,
         double targetPitch = 0,
-        MapAnimationKind animation = MapAnimationKind.Default)
+        MapAnimationKind animation = MapAnimationKind.Default,
+        bool useProgrammaticAnimation = false)
     {
         bool headingChanged;
         bool pitchChanged;
@@ -197,6 +200,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _targetViewportWidth = viewportWidth;
             _targetViewportHeight = viewportHeight;
             _targetHasZoomAnchor = false;
+            _targetUsesProgrammaticAnimation = useProgrammaticAnimation;
             _targetIsImmediate = false;
             _cameraVersion++;
         }
@@ -275,6 +279,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _targetZoomAnchorHorizontalOffset = horizontalOffset;
             _targetZoomAnchorVerticalOffset = verticalOffset;
             _targetHasZoomAnchor = true;
+            _targetUsesProgrammaticAnimation = false;
             _targetIsImmediate = false;
             _cameraVersion++;
         }
@@ -323,6 +328,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _targetViewportWidth = viewportWidth;
             _targetViewportHeight = viewportHeight;
             _targetHasZoomAnchor = false;
+            _targetUsesProgrammaticAnimation = false;
             _targetIsImmediate = true;
             _cameraVersion++;
         }
@@ -655,6 +661,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     protected override bool CanCompleteFrameCaptures()
     {
         if (_hasActiveFrameFade ||
+            _cameraAnimation.IsActive ||
             _zoomAnimation.IsActive ||
             _panAnimation.IsActive ||
             _headingAnimation.IsActive ||
@@ -690,28 +697,49 @@ internal sealed partial class MapRenderer : DirectXRenderer
         }
 
         long timestamp = Stopwatch.GetTimestamp();
-        _displayZoom = _zoomAnimation.GetZoom(timestamp);
-        _displayHeading = _headingAnimation.GetHeading(timestamp);
-        _displayPitch = _pitchAnimation.GetPitch(timestamp);
-        ZoomAnchor? zoomAnchor = _activeZoomAnchor;
-        MapCenter displayCenter = zoomAnchor is null
-            ? _panAnimation.GetCenter(timestamp)
-            : MapCamera.CenterForLocationAtOffset(
-                zoomAnchor.Value.Location,
-                _displayZoom,
-                zoomAnchor.Value.HorizontalOffset,
-                zoomAnchor.Value.VerticalOffset,
-                _displayHeading,
-                _displayPitch,
-                _viewportHeight);
-        _displayLongitude = displayCenter.Longitude;
-        _displayLatitude = displayCenter.Latitude;
-        if (zoomAnchor is not null)
+        if (_cameraAnimation.IsActive)
         {
-            _panAnimation.Reset(_displayLongitude, _displayLatitude);
-            if (!_zoomAnimation.IsActive)
+            _cameraAnimation.GetCamera(
+                timestamp,
+                out MapCenter displayCenter,
+                out _displayZoom,
+                out _displayHeading,
+                out _displayPitch);
+            _displayLongitude = displayCenter.Longitude;
+            _displayLatitude = displayCenter.Latitude;
+            if (!_cameraAnimation.IsActive)
             {
-                _activeZoomAnchor = null;
+                _panAnimation.Reset(_displayLongitude, _displayLatitude);
+                _zoomAnimation.Reset(_displayZoom);
+                _headingAnimation.Reset(_displayHeading);
+                _pitchAnimation.Reset(_displayPitch);
+            }
+        }
+        else
+        {
+            _displayZoom = _zoomAnimation.GetZoom(timestamp);
+            _displayHeading = _headingAnimation.GetHeading(timestamp);
+            _displayPitch = _pitchAnimation.GetPitch(timestamp);
+            ZoomAnchor? zoomAnchor = _activeZoomAnchor;
+            MapCenter displayCenter = zoomAnchor is null
+                ? _panAnimation.GetCenter(timestamp)
+                : MapCamera.CenterForLocationAtOffset(
+                    zoomAnchor.Value.Location,
+                    _displayZoom,
+                    zoomAnchor.Value.HorizontalOffset,
+                    zoomAnchor.Value.VerticalOffset,
+                    _displayHeading,
+                    _displayPitch,
+                    _viewportHeight);
+            _displayLongitude = displayCenter.Longitude;
+            _displayLatitude = displayCenter.Latitude;
+            if (zoomAnchor is not null)
+            {
+                _panAnimation.Reset(_displayLongitude, _displayLatitude);
+                if (!_zoomAnimation.IsActive)
+                {
+                    _activeZoomAnchor = null;
+                }
             }
         }
         bool isKeyboardNavigationActive = ApplyKeyboardNavigation(timestamp);
@@ -766,7 +794,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
             SceneChanged?.Invoke(scene);
         }
 
-        if (_zoomAnimation.IsActive ||
+        if (_cameraAnimation.IsActive ||
+            _zoomAnimation.IsActive ||
             _panAnimation.IsActive ||
             _headingAnimation.IsActive ||
             _pitchAnimation.IsActive ||
@@ -837,6 +866,12 @@ internal sealed partial class MapRenderer : DirectXRenderer
         _zoomAnimation.Reset(_displayZoom);
         _headingAnimation.Reset(_displayHeading);
         _pitchAnimation.Reset(_displayPitch);
+        _cameraAnimation.Reset(
+            _displayLongitude,
+            _displayLatitude,
+            _displayZoom,
+            _displayHeading,
+            _displayPitch);
         return true;
     }
 
@@ -858,6 +893,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         double zoomAnchorHorizontalOffset;
         double zoomAnchorVerticalOffset;
         bool hasZoomAnchor;
+        bool usesProgrammaticAnimation;
         bool isImmediate;
         MapAnimationKind animationKind;
         long version;
@@ -881,6 +917,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             zoomAnchorHorizontalOffset = _targetZoomAnchorHorizontalOffset;
             zoomAnchorVerticalOffset = _targetZoomAnchorVerticalOffset;
             hasZoomAnchor = _targetHasZoomAnchor;
+            usesProgrammaticAnimation = _targetUsesProgrammaticAnimation;
             isImmediate = _targetIsImmediate;
             animationKind = _targetAnimationKind;
         }
@@ -900,6 +937,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _zoomAnimation.Reset(zoom);
             _headingAnimation.Reset(heading);
             _pitchAnimation.Reset(pitch);
+            _cameraAnimation.Reset(longitude, latitude, zoom, heading, pitch);
             _cameraInitialized = true;
         }
         else if (isImmediate)
@@ -914,55 +952,94 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _zoomAnimation.Reset(zoom);
             _headingAnimation.Reset(heading);
             _pitchAnimation.Reset(pitch);
+            _cameraAnimation.Reset(longitude, latitude, zoom, heading, pitch);
         }
         else
         {
             MapCenter center = new(longitude, latitude);
-            if (hasZoomAnchor && _zoomAnimation.TargetZoom != zoom)
+            if (usesProgrammaticAnimation && !hasZoomAnchor)
             {
-                _activeZoomAnchor = new ZoomAnchor(
-                    zoomAnchor,
-                    zoomAnchorHorizontalOffset,
-                    zoomAnchorVerticalOffset);
-                _panAnimation.Reset(_displayLongitude, _displayLatitude);
+                if (!_cameraAnimation.HasTarget(center, zoom, heading, pitch))
+                {
+                    _activeZoomAnchor = null;
+                    _panAnimation.Reset(_displayLongitude, _displayLatitude);
+                    _zoomAnimation.Reset(_displayZoom);
+                    _headingAnimation.Reset(_displayHeading);
+                    _pitchAnimation.Reset(_displayPitch);
+                    _cameraAnimation.SetTarget(
+                        _displayLongitude,
+                        _displayLatitude,
+                        _displayZoom,
+                        _displayHeading,
+                        _displayPitch,
+                        longitude,
+                        latitude,
+                        zoom,
+                        heading,
+                        pitch,
+                        _viewportWidth,
+                        _viewportHeight,
+                        timestamp,
+                        animationKind);
+                }
             }
             else
             {
-                _activeZoomAnchor = null;
-            }
-            if (!hasZoomAnchor && _panAnimation.Target != center)
-            {
-                _panAnimation.SetTarget(
+                _cameraAnimation.Reset(
                     _displayLongitude,
                     _displayLatitude,
-                    longitude,
-                    latitude,
-                    timestamp,
-                    animationKind);
-            }
-            if (_zoomAnimation.TargetZoom != zoom)
-            {
-                _zoomAnimation.SetTarget(
                     _displayZoom,
-                    zoom,
-                    timestamp,
-                    animationKind);
-            }
-            if (_headingAnimation.TargetHeading != heading)
-            {
-                _headingAnimation.SetTarget(
                     _displayHeading,
-                    heading,
-                    timestamp,
-                    animationKind);
-            }
-            if (_pitchAnimation.TargetPitch != pitch)
-            {
-                _pitchAnimation.SetTarget(
-                    _displayPitch,
-                    pitch,
-                    timestamp,
-                    animationKind);
+                    _displayPitch);
+                bool centerChanged = !hasZoomAnchor && _panAnimation.Target != center;
+                bool headingChanged = _headingAnimation.TargetHeading != heading;
+                bool pitchChanged = _pitchAnimation.TargetPitch != pitch;
+                if (hasZoomAnchor && _zoomAnimation.TargetZoom != zoom)
+                {
+                    _activeZoomAnchor = new ZoomAnchor(
+                        zoomAnchor,
+                        zoomAnchorHorizontalOffset,
+                        zoomAnchorVerticalOffset);
+                    _panAnimation.Reset(_displayLongitude, _displayLatitude);
+                }
+                else
+                {
+                    _activeZoomAnchor = null;
+                }
+                if (centerChanged)
+                {
+                    _panAnimation.SetTarget(
+                        _displayLongitude,
+                        _displayLatitude,
+                        longitude,
+                        latitude,
+                        timestamp,
+                        animationKind);
+                }
+                if (_zoomAnimation.TargetZoom != zoom)
+                {
+                    _zoomAnimation.SetTarget(
+                        _displayZoom,
+                        zoom,
+                        timestamp,
+                        animationKind);
+                }
+                if (headingChanged)
+                {
+                    _headingAnimation.SetTarget(
+                        _displayHeading,
+                        heading,
+                        timestamp,
+                        animationKind);
+                }
+                if (pitchChanged)
+                {
+                    _pitchAnimation.SetTarget(
+                        _displayPitch,
+                        pitch,
+                        timestamp,
+                        animationKind);
+                }
             }
         }
         _consumedCameraVersion = version;

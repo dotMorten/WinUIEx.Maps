@@ -1358,7 +1358,8 @@ public sealed partial class MapControl : Control
     private void UpdateCameraTarget(
         bool forceImmediate = false,
         MapAnimationKind animation = MapAnimationKind.Default,
-        bool preservePendingViewChange = false)
+        bool preservePendingViewChange = false,
+        bool useProgrammaticAnimation = false)
     {
         if (!preservePendingViewChange)
         {
@@ -1398,7 +1399,8 @@ public sealed partial class MapControl : Control
                 _panel.ActualHeight,
                 Heading,
                 Pitch,
-                animation);
+                animation,
+                useProgrammaticAnimation);
         }
         _hasPublishedCameraTarget = true;
     }

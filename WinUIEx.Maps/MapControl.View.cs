@@ -9,6 +9,7 @@ public sealed partial class MapControl
 {
     private readonly object _viewChangeSync = new();
     private PendingViewChange? _pendingViewChange;
+    private int _programmaticViewPending;
 
     /// <summary>
     /// Sets the view of the map displayed in the <see cref="MapControl"/> using the specified
@@ -119,6 +120,8 @@ public sealed partial class MapControl
         {
             throw new ArgumentOutOfRangeException(nameof(animation));
         }
+        CancelKeyboardNavigation();
+        CancelDirectManipulations();
         MapControlEventSource.Log.CameraViewChangeRequested(
             (int)animation,
             zoomLevel.HasValue,
@@ -177,12 +180,14 @@ public sealed partial class MapControl
         lock (_viewChangeSync)
         {
             _pendingViewChange = pending;
+            Volatile.Write(ref _programmaticViewPending, 1);
         }
 
         UpdateCameraTarget(
             forceImmediate: animation == MapAnimationKind.None,
             animation,
-            preservePendingViewChange: true);
+            preservePendingViewChange: true,
+            useProgrammaticAnimation: true);
         if (_renderer.TryGetDisplayedCamera(
             out MapCenter displayedCenter,
             out double displayedZoom,
@@ -522,6 +527,7 @@ public sealed partial class MapControl
             }
 
             _pendingViewChange = null;
+            Volatile.Write(ref _programmaticViewPending, 0);
         }
 
         pending.Completion.TrySetResult(true);
@@ -534,6 +540,7 @@ public sealed partial class MapControl
         {
             pending = _pendingViewChange;
             _pendingViewChange = null;
+            Volatile.Write(ref _programmaticViewPending, 0);
         }
         pending?.Completion.TrySetResult(false);
     }

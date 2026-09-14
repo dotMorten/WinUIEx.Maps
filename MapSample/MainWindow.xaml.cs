@@ -17,6 +17,7 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
+        WinUIEx.WindowManager.Get(this).PersistenceId = "MainWindow";
         InitializeComponent();
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
@@ -59,6 +60,7 @@ public sealed partial class MainWindow : Window
             "arcgis-vector" => typeof(CustomVectorTilesPage),
             "elements" => typeof(MapElementsPage),
             "camera" => typeof(CameraBindingPage),
+            "set-view" => typeof(TrySetViewPage),
             "location" => typeof(CurrentLocationPage),
             "stress" => typeof(StressTestPage),
             "tab-lifecycle" => typeof(TabLifecyclePage),

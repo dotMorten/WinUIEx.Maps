@@ -82,6 +82,14 @@
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem
+                    AutomationProperties.AutomationId="TrySetViewNavigationItem"
+                    Content="Set camera view"
+                    Tag="set-view">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Go" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
                     AutomationProperties.AutomationId="CurrentLocationNavigationItem"
                     Content="Current location"
                     Tag="location">

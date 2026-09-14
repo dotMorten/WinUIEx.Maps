@@ -342,6 +342,51 @@ public sealed class TouchInputTests
             });
 
     [TestMethod]
+    public Task TrySetViewAsyncInterruptsTouchInertia() =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
+            {
+                await MapControlTestUtilities.SetupMapAsync(map);
+                UiInputInjector input =
+                    UiInputInjector.ForElement(MapControlTestHost.Window, map);
+                bool sawInertialDelta = false;
+                map.AddHandler(
+                    UIElement.ManipulationDeltaEvent,
+                    new ManipulationDeltaEventHandler((_, e) =>
+                    {
+                        sawInertialDelta |= e.IsInertial;
+                    }),
+                    handledEventsToo: true);
+
+                await input.Touch.SwipeAsync(
+                    input.PointAt(0.3, 0.5),
+                    input.PointAt(0.7, 0.5),
+                    durationMilliseconds: 80);
+                await MapControlTestUtilities.WaitForAsync(() => sawInertialDelta);
+                var target = new Geopoint(new BasicGeoposition
+                {
+                    Latitude = 30,
+                    Longitude = 40,
+                });
+
+                Task<bool> view = map.TrySetViewAsync(
+                    target,
+                    8,
+                    null,
+                    null,
+                    MapAnimationKind.Linear);
+
+                await MapControlTestUtilities.WaitForAsync(() => view.IsCompleted);
+                Assert.IsTrue(await view);
+                await MapControlTestUtilities.WaitForDisplayedCameraAsync(
+                    map,
+                    target.Position,
+                    8);
+            });
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public Task PinchOrStretch_OffCenter_PreservesLocationUnderGesture(

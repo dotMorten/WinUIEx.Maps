@@ -720,6 +720,14 @@ public sealed partial class MapControl
             return;
         }
 
+        if (e.IsInertial &&
+            Volatile.Read(ref _programmaticViewPending) != 0)
+        {
+            e.Complete();
+            e.Handled = true;
+            return;
+        }
+
         if (e.IsInertial && !_animationsEnabled)
         {
             e.Complete();

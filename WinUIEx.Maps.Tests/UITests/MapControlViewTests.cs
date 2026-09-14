@@ -116,6 +116,36 @@ public sealed class MapControlViewTests
             });
 
     [TestMethod]
+    public Task DefaultFlightFromWorldToSeattleRemainsAtFinalDisplayedView() =>
+        MapControlTestHost.LoadMapControlAsync(
+            new BasicGeoposition
+            {
+                Latitude = 0,
+                Longitude = 0,
+            },
+            1,
+            async map =>
+            {
+                var center = new Geopoint(new BasicGeoposition
+                {
+                    Latitude = 47.6062,
+                    Longitude = -122.3321,
+                });
+
+                Assert.IsTrue(await map.TrySetViewAsync(
+                    center,
+                    15,
+                    30,
+                    10,
+                    MapAnimationKind.Default));
+
+                using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+                await map.CaptureRenderedFrameAsync(timeout.Token);
+
+                AssertDisplayedView(map, center.Position, 15, 30, 10);
+            });
+
+    [TestMethod]
     [DataRow(MapAnimationKind.Default)]
     [DataRow(MapAnimationKind.Linear)]
     [DataRow(MapAnimationKind.Bow)]

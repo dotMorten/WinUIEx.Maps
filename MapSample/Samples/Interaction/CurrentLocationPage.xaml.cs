@@ -28,7 +28,7 @@ public sealed partial class CurrentLocationPage : Page
     public CurrentLocationPage()
     {
         InitializeComponent();
-        Map.ZoomLevel = 15;
+        Map.ZoomLevel = 1;
         Map.Layers.Add(new TileLayer(
             new TileLayerOptions
             {
@@ -151,7 +151,7 @@ public sealed partial class CurrentLocationPage : Page
         {
             _currentLocation = new MapIcon(_locationIcon, location);
             _locationLayer.MapElements.Add(_currentLocation);
-            Map.Center = location;
+            _ = Map.TrySetViewAsync(location, 15, null, null, MapAnimationKind.Bow);
         }
         else
         {
