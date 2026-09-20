@@ -95,6 +95,8 @@ public class TileLayer : MapLayer
     private double _minZoom;
     private double _maxZoom = 24;
     private TimeSpan _fadeDuration = TimeSpan.FromMilliseconds(300);
+    private WeakReference<RasterTileAcquisitionSession>? _acquisitionSession;
+    private bool _acquisitionChanged = true;
 
     /// <summary>
     /// Initializes a raster or Mapbox vector tile layer.
@@ -476,19 +478,20 @@ public class TileLayer : MapLayer
     /// </remarks>
     internal virtual TileLayerSnapshot CreateSnapshot()
     {
-        string tileUrl = TileUrl;
-        string? styleUrl = StyleUrl;
-        IReadOnlyDictionary<string, string> requestHeaders = RequestHeaders;
-        TileLayerBounds bounds = Bounds;
-        bool isTms = IsTMS;
-        int maximumSourceZoom = MaxSourceZoom;
-        int minimumSourceZoom = MinSourceZoom;
-        string[] subdomains = Subdomains.ToArray();
-        int tileSize = TileSize;
-        return new TileLayerSnapshot(
-            RuntimeId,
-            Revision,
-            styleUrl is null
+        RasterTileAcquisitionSession? acquisition = null;
+        _acquisitionSession?.TryGetTarget(out acquisition);
+        if (_acquisitionChanged || acquisition is null)
+        {
+            string tileUrl = TileUrl;
+            string? styleUrl = StyleUrl;
+            IReadOnlyDictionary<string, string> requestHeaders = RequestHeaders;
+            TileLayerBounds bounds = Bounds;
+            bool isTms = IsTMS;
+            int maximumSourceZoom = MaxSourceZoom;
+            int minimumSourceZoom = MinSourceZoom;
+            IReadOnlyList<string> subdomains = Subdomains;
+            int tileSize = TileSize;
+            RasterTileAcquisitionSession session = styleUrl is null
                 ? new CustomRasterTileAcquisitionSession(
                     tileUrl,
                     bounds,
@@ -507,7 +510,24 @@ public class TileLayer : MapLayer
                     minimumSourceZoom,
                     subdomains,
                     tileSize,
-                    requestHeaders),
+                    requestHeaders);
+            if (acquisition is null ||
+                !acquisition.SourceKey.Equals(session.SourceKey))
+            {
+                acquisition = session;
+            }
+            // Active snapshots/workers own the provider. An unused layer must not keep
+            // retired style, sprite, and glyph caches alive by itself.
+            if (_acquisitionSession is null)
+                _acquisitionSession = new(acquisition);
+            else
+                _acquisitionSession.SetTarget(acquisition);
+            _acquisitionChanged = false;
+        }
+        return new TileLayerSnapshot(
+            RuntimeId,
+            Revision,
+            acquisition,
             MinZoom,
             MaxZoom,
             IsVisible,
@@ -547,6 +567,18 @@ public class TileLayer : MapLayer
             return;
         }
 
+        if (args.Property == TileUrlProperty ||
+            args.Property == StyleUrlProperty ||
+            args.Property == RequestHeadersProperty ||
+            args.Property == BoundsProperty ||
+            args.Property == IsTMSProperty ||
+            args.Property == MinSourceZoomProperty ||
+            args.Property == MaxSourceZoomProperty ||
+            args.Property == SubdomainsProperty ||
+            args.Property == TileSizeProperty)
+        {
+            layer._acquisitionChanged = true;
+        }
         layer.NotifyTilePropertyChanged(args.Property);
     }
 

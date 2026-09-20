@@ -7,6 +7,28 @@ namespace WinUIEx.Maps.Tests;
 public sealed class DynamicGeometryStreamCursorTests
 {
     [TestMethod]
+    public void InstanceWritesAppendArbitraryCountsAndWrapAtCapacity()
+    {
+        DynamicGeometryStreamCursor cursor = new(16_384, alignment: 1);
+        Assert.AreEqual(new DynamicGeometryStreamRange(0, true), cursor.Reserve(1));
+        Assert.AreEqual(new DynamicGeometryStreamRange(1, false), cursor.Reserve(17));
+        Assert.AreEqual(new DynamicGeometryStreamRange(18, false), cursor.Reserve(16_366));
+        Assert.AreEqual(new DynamicGeometryStreamRange(0, true), cursor.Reserve(9));
+        Assert.AreEqual(new DynamicGeometryStreamRange(0, true), cursor.Reserve(16_384));
+        cursor.Reset();
+        Assert.AreEqual(new DynamicGeometryStreamRange(0, true), cursor.Reserve(2));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => cursor.Reserve(16_385));
+        Assert.AreEqual(new DynamicGeometryStreamRange(2, false), cursor.Reserve(1));
+    }
+
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(-1)]
+    public void InvalidAlignmentsAreRejected(int alignment) =>
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new DynamicGeometryStreamCursor(12, alignment));
+
+    [TestMethod]
     public void InitialWriteDiscardsAndSubsequentWritesAppendThroughExactCapacity()
     {
         DynamicGeometryStreamCursor cursor = new(12);

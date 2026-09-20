@@ -16,6 +16,74 @@ namespace WinUIEx.Maps.Tests.UITests;
 public sealed class MapControlLifecycleTests
 {
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public Task InactiveMapRetainsResourcesAndCachedTilesBeyondOneSecond(bool useTabs) =>
+        MapControlTestHost.LoadUIAsync(
+            () => useTabs
+                ? new TabView
+                {
+                    TabItems =
+                    {
+                        new TabViewItem { Header = "Map", Content = new Grid() },
+                        new TabViewItem { Header = "Other", Content = new Grid() },
+                    },
+                }
+                : new Grid(),
+            async root =>
+            {
+                TabView? tabs = root as TabView;
+                Grid host = tabs is null
+                    ? (Grid)root
+                    : (Grid)((TabViewItem)tabs.TabItems[0]).Content;
+                TileId tile = new(5, 16, 16);
+                TestRasterTileSource red = new(tile.Zoom,
+                    new Dictionary<TileId, TestRasterTile>
+                    {
+                        [tile] = TestRasterTileSource.Solid(256, 255, 0, 0),
+                    });
+                MapControl map = new()
+                {
+                    Width = 640,
+                    Height = 480,
+                    MapStyle = MapStyle.Blank,
+                    Center = new Geopoint(red.GetTileCenter(tile)),
+                    ZoomLevel = tile.Zoom,
+                };
+                map.Layers.Add(new TestRasterTileLayer(red));
+                await AddAsync(host, map);
+                using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+                MapRenderFrame first = await map.CaptureRenderedFrameAsync(timeout.Token);
+                Assert.IsNotEmpty(ConnectedComponentAnalyzer.Find(first,
+                    ConnectedComponentAnalyzer.Near(255, 0, 0), minimumPixelCount: 1000));
+                int requestCount = red.GetRequestCount(tile);
+                if (tabs is null)
+                    await RemoveAsync(host, map);
+                else
+                    tabs.SelectedIndex = 1;
+                await MapControlTestUtilities.WaitForAsync(() => map.ActiveRasterWorkerCount == 0);
+
+                // A still-owned control must retain its warm caches beyond the old timeout.
+                await Task.Delay(TimeSpan.FromMilliseconds(1500));
+                Assert.IsFalse(map.RuntimeResourcesReleased);
+                Assert.IsTrue(map.RendererHasDeviceResources);
+                Assert.AreEqual(0, map.ActiveRasterWorkerCount);
+
+                if (tabs is null)
+                    await AddAsync(host, map);
+                else
+                    tabs.SelectedIndex = 0;
+                await MapControlTestUtilities.WaitForAsync(() => map.ActiveRasterWorkerCount == 1);
+                MapRenderFrame reloaded = await map.CaptureRenderedFrameAsync(timeout.Token);
+                Assert.IsFalse(map.RuntimeResourcesReleased);
+                Assert.IsTrue(map.RendererHasDeviceResources);
+                Assert.AreEqual(1, map.ActiveRasterWorkerCount);
+                Assert.AreEqual(requestCount, red.GetRequestCount(tile));
+                Assert.IsNotEmpty(ConnectedComponentAnalyzer.Find(reloaded,
+                    ConnectedComponentAnalyzer.Near(255, 0, 0), minimumPixelCount: 1000));
+            });
+
+    [TestMethod]
     public Task InitialCameraPropertiesAreAppliedWithoutAnimation()
     {
         BasicGeoposition expectedCenter = new()

@@ -1889,6 +1889,17 @@ public sealed class VectorStyleTests
     }
 
     [TestMethod]
+    public void MembershipStillEvaluatesFailingOperandsAfterAnEarlierMatch()
+    {
+        VectorStyleEvaluationContext context = new(null, 10);
+        AssertExpressionBoolean("""["in",2,["literal",[1,2,3]],4]""", context, true);
+        AssertExpressionBoolean("""["in",5,["literal",[1,2,3]],4]""", context, false);
+        AssertExpressionFails("""["in",2,["literal",[1,2,3]],["var","missing"]]""", context);
+        AssertExpressionNumber(
+            """["match",2,[1,2,3],7,["var","missing"]]""", context, 7);
+    }
+
+    [TestMethod]
     public void LegacyArcGisFiltersResolveFeatureProperties()
     {
         VectorStyleAssets assets = CreateAssets(

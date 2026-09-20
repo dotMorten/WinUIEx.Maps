@@ -313,6 +313,51 @@ public sealed class VectorTileDecoderTests
     }
 
     [TestMethod]
+    [DataRow(0d)]
+    [DataRow(60d)]
+    public void CachedLineSymbolGroupsReuseProjectionScratch(double pitch)
+    {
+        VectorTilePoint[] path = [new(0.1, 0.5), new(0.9, 0.5)];
+        VectorTileSymbol first = new(3, 0, 0, -1, 20, 10, 0, 0,
+            VectorSymbolKind.Text, default, 7, path, 100);
+        VectorTileSymbol[] symbols =
+        [
+            first with { OffsetX = -10 },
+            first with { LabelId = 8, StyleLayerOrder = 4 },
+            first with { OffsetX = 10 },
+        ];
+        MapRenderer.VectorSymbolProjectionData data = new(symbols);
+        Assert.AreSame(symbols, data.Symbols);
+        Assert.HasCount(2, data.LineGroups);
+        Assert.AreSequenceEqual(new[] { 0, 2 }, data.LineGroups[0]);
+        Assert.AreSequenceEqual(new[] { 1 }, data.LineGroups[1]);
+
+        VisibleTile tile = new(new TileId(2, 1, 1), 1, 100, 50, 256);
+        MapRenderer.VectorSymbolProjectionWorkspace workspace = new();
+        List<VectorSymbolPlacement> placements = [];
+        VectorSymbolPlacement[] expected =
+            MapRenderer.ProjectVectorSymbols(symbols, tile, 640, 480, 0, pitch);
+        Assert.IsNotEmpty(expected);
+        for (int index = 0; index < 20; index++)
+        {
+            placements.Clear();
+            MapRenderer.ProjectVectorSymbols(data, tile, 640, 480, 0, pitch, placements, workspace);
+        }
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int index = 0; index < 100; index++)
+        {
+            placements.Clear();
+            MapRenderer.ProjectVectorSymbols(data, tile, 640, 480, 0, pitch, placements, workspace);
+        }
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.AreSequenceEqual(expected, placements);
+        Assert.IsLessThan(1024L, allocated, "Warmed projection must not rebuild per-group symbol or placement lists.");
+        workspace.ReleaseRetainedMemory();
+        Assert.AreEqual(0, workspace.Candidate.Capacity);
+        Assert.IsEmpty(workspace.VisiblePointGroups);
+    }
+
+    [TestMethod]
     public void LineSymbolsRepeatAlongPathAndRemainUpright()
     {
         VisibleTile tile = new(

@@ -544,26 +544,31 @@ internal static class VectorTileDecoder
             ElementType.Polygons,
             3);
 
-        List<VectorTilePoint> triangles = new(tessellator.Elements.Length);
+        int count = 0;
         foreach (int element in tessellator.Elements)
         {
-            if (element == Tess.Undef)
-            {
-                continue;
-            }
-            Vec3 point = tessellator.Vertices[element].Position;
-            triangles.Add(new VectorTilePoint(point.X, point.Y));
+            if (element != Tess.Undef)
+                count++;
         }
         if (trianglePointCount >
-            MaximumPolygonTrianglePoints - triangles.Count)
+            MaximumPolygonTrianglePoints - count)
         {
             throw new InvalidDataException(
                 "The vector tile contains too much tessellated polygon geometry.");
         }
-        trianglePointCount += triangles.Count;
+        VectorTilePoint[] triangles = new VectorTilePoint[count];
+        int writeIndex = 0;
+        foreach (int element in tessellator.Elements)
+        {
+            if (element == Tess.Undef)
+                continue;
+            Vec3 point = tessellator.Vertices[element].Position;
+            triangles[writeIndex++] = new VectorTilePoint(point.X, point.Y);
+        }
+        trianglePointCount += count;
         polygons.Add(new VectorTilePolygon(
             rings.ToArray(),
-            triangles.ToArray()));
+            triangles));
         rings.Clear();
     }
 

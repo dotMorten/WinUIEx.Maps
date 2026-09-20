@@ -18,6 +18,13 @@ canonical event IDs are in
 `WinUIEx.Maps/Rendering/Diagnostics/MapControlEventSource.cs`. Event IDs are compatibility
 surface: never renumber or reuse them.
 
+The packaged sample enables `EventSourceSupport` explicitly, including Release/AOT
+configurations. Other AOT hosts must build/publish with `-p:EventSourceSupport=true`
+before collecting this provider; enabling collection cannot restore support disabled
+in the deployed runtime configuration. Verify provider liveness with a camera/resize
+action before recording settled idle. Runtime GC events alone do not prove that
+application EventSource support is enabled.
+
 Keywords:
 
 | Mask | Area |
@@ -149,8 +156,36 @@ payload inspection is best in PerfView's Events view.
 | 80 | `GeometryStreamUploadTiming` | Verbose/Frames | renderer/frame-correlated dynamic geometry upload, discard/no-overwrite and byte counts, and aggregate CPU-side map/copy/unmap duration |
 | 81 | `RenderSurfaceChanged` | Info/Device | renderer-correlated logical dimensions, composition scales, physical dimensions, retained color-buffer bytes and selected sample count; presentation uses two single-sample buffers plus a supported-device 4x intermediate, unless startup switch `WinUIEx.Maps.DisableMultisampleAntialiasing` is true; offscreen benchmarks explicitly select samples and use one resolve buffer |
 | 82 | `VectorSymbolFallbackSummary` | Verbose/Icons+VectorTiles | cached fallback symbol tiles considered and omitted because their visible footprint has opaque same-source replacement coverage; unrelated missing tiles no longer keep covered old tiers in collision candidates |
+| 83 | `VectorRetainedMemory` | Verbose/Frames | renderer/frame-correlated decoded-feature estimates, cached symbol struct payloads, cached line-group index payloads, retained line/polygon geometry-buffer bytes, and running/completed preparation counts |
+| 84 | `SymbolInstanceUploadTiming` | Verbose/Frames | renderer/frame-correlated icon/glyph instance uploads, discard/no-overwrite counts, copied bytes, dynamic-buffer capacity and CPU map/copy/unmap time |
 
 ### Frame-time investigations
+
+ID 84 distinguishes bytes copied for small symbol batches from full-buffer discards.
+Repeated discards can cause driver backing-allocation churn much larger than the copied
+payload. `bufferBytes` is one logical buffer's capacity, not a measurement of driver
+residency; `discardCount * bufferBytes` describes the capacity discarded, not guaranteed
+physical allocations. Its counters, timing and payload calculations require active
+Verbose/Frames listeners.
+Icons, vector sprites, glyph bodies and halos share an append/no-overwrite instance
+stream. Its cursor persists across frames and discards only when the next batch will not
+fit, or after resource recreation or an upload failure. Draws use the reserved instance
+offset without changing layer order or batch boundaries.
+
+ID 83 distinguishes cache-owned vector payloads from retained native frame geometry.
+Its payload calculations only run with active Verbose/Frames listeners; disposal-only
+counts and byte totals likewise require active Informational/Device or Cache listeners.
+It does not report a whole-process heap or GPU residency: array/object headers, referenced
+style/glyph/sprite assets, pooled scratch, and obsolete worker-owned inputs are excluded.
+Symbol and group-index payloads are separate from the decoded-feature estimate rather than
+silently charged to its existing cache budget. Pair with IDs 41/42 for texture disposal and
+upload backlog and ID 76 for dormant scratch release. Geometry preparation has one running
+owner; newer requests cancel obsolete same-layer work and capture the latest scene only
+after that owner releases its input/device. Other layers wait without canceling useful work.
+
+ID 41 writes explicit Int32/Int64/Int32 payload widths. Older builds used an overload
+that could produce inflated byte totals in native traces despite correct EventListener
+values; do not use those older byte totals as evidence of actual native allocations.
 
 Enable `WinUIEx-Maps-Rendering:0x400:5` to collect frame timings without enabling
 verbose tile/symbol events. Join IDs 77 and 78 by `rendererId` and `frameId`.
@@ -271,6 +306,14 @@ and request URLs out of traces.
   batches in ID 26; layers render from the first (bottom-most) to the last (top-most).
 - **Device/blank surface:** use Lifecycle+Device+Errors (`0x43`). Pair IDs 5/6, then look for
   ID 8 and HRESULT. Verify resource release and recreation around unload/resume.
+
+An unloaded map retains resources while its owner keeps it available for reuse. Tab
+switches and remove/reinsert operations must not time out and discard those caches.
+Full XamlRoot teardown still releases dormant resources. The sample viewer explicitly
+collects retired samples after top-level sample navigation and unload processing finish;
+this is a sample-host policy, not a control timeout. Switching tabs or removing a map
+within the same sample does not trigger that host collection. Account for those forced
+collections when profiling sample-to-sample navigation.
 
 ## Privacy and Copilot analysis rules
 

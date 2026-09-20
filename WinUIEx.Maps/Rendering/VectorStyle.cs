@@ -5789,7 +5789,14 @@ internal sealed class VectorStyleExpression
             if (candidate.Kind == VectorStyleValueKind.Array &&
                 candidate.ArrayValue is not null)
             {
-                found |= candidate.ArrayValue.Any(needle.EqualsValue);
+                foreach (VectorStyleValue item in candidate.ArrayValue)
+                {
+                    if (needle.EqualsValue(item))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
             }
             else
             {
@@ -5972,10 +5979,22 @@ internal sealed class VectorStyleExpression
                 value = default;
                 return false;
             }
-            bool matches = label.Kind == VectorStyleValueKind.Array &&
-                label.ArrayValue is not null
-                ? label.ArrayValue.Any(input.EqualsValue)
-                : input.EqualsValue(label);
+            bool matches = false;
+            if (label.Kind == VectorStyleValueKind.Array && label.ArrayValue is not null)
+            {
+                foreach (VectorStyleValue item in label.ArrayValue)
+                {
+                    if (input.EqualsValue(item))
+                    {
+                        matches = true;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                matches = input.EqualsValue(label);
+            }
             if (matches)
             {
                 return TryEvaluateArgument(index + 1, context, variables, out value);

@@ -12,6 +12,52 @@ namespace WinUIEx.Maps.Tests;
 public sealed class MapControlEventSourceTests
 {
     [TestMethod]
+    public void SymbolUploadDiagnosticsAreOptInAndContainOnlyNumericCosts()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.Frames);
+        MapControlEventSource.Log.SymbolInstanceUploadTiming(4, 12, 10, 2, 8, 65536, 1048576, 1.25);
+        Assert.DoesNotContain(value => value.Id == 84, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.Frames);
+        MapControlEventSource.Log.SymbolInstanceUploadTiming(4, 12, 10, 2, 8, 65536, 1048576, 1.25);
+        CapturedEvent captured = listener.Single(84);
+        Assert.AreSequenceEqual(
+            ["rendererId", "frameId", "uploadCount", "discardCount", "noOverwriteCount",
+             "byteCount", "bufferBytes", "uploadMilliseconds"], captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>(
+            [4L, 12L, 10, 2, 8, 65536L, 1048576L, 1.25d], captured.Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
+    public void VectorMemoryDiagnosticsAreOptInNumericAndCorrelated()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.Frames);
+        MapControlEventSource.Log.VectorRetainedMemory(4, 12, 100, 200, 300, 400, 1, 0);
+        Assert.DoesNotContain(value => value.Id == 83, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.Frames);
+        MapControlEventSource.Log.VectorRetainedMemory(4, 12, 100, 200, 300, 400, 1, 0);
+        CapturedEvent captured = listener.Single(83);
+        Assert.AreEqual("VectorRetainedMemory", captured.Name);
+        Assert.AreSequenceEqual(
+            ["rendererId", "frameId", "decodedBytes", "symbolPayloadBytes",
+             "projectionIndexBytes", "geometryBufferBytes",
+             "runningPreparations", "completedPreparations"], captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>([4L, 12L, 100L, 200L, 300L, 400L, 1, 0], captured.Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
+    public void TextureDisposalPreservesMixedWidthPayloadValues()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.Device);
+        MapControlEventSource.Log.TextureDisposalSummary(12, 0x123456789L, 7);
+        Assert.AreSequenceEqual<object?>([12, 0x123456789L, 7], listener.Single(41).Payload);
+    }
+
+    [TestMethod]
     public void SymbolFallbackDiagnosticsContainOnlyStyleAndCounts()
     {
         using TestEventListener listener = new();
@@ -513,7 +559,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 82),
+            Enumerable.Range(1, 84),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }

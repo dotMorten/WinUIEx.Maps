@@ -500,6 +500,10 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _geometryDiscardCount = 0;
             _geometryUploadBytes = 0;
             _geometryUploadTicks = 0;
+            _symbolUploadCount = 0;
+            _symbolDiscardCount = 0;
+            _symbolUploadBytes = 0;
+            _symbolUploadTicks = 0;
         }
         long frameStart = traceFrame ? Stopwatch.GetTimestamp() : 0;
         UpdateCameraScene();
@@ -622,6 +626,23 @@ internal sealed partial class MapRenderer : DirectXRenderer
         }
         if (traceFrame)
         {
+            long decodedBytes = 0, symbolBytes = 0, projectionBytes = 0;
+            foreach (VectorTileCacheEntry tile in _vectorTiles.Values)
+            {
+                decodedBytes += tile.ByteSize;
+                symbolBytes += tile.SymbolPayloadBytes;
+                projectionBytes += tile.ProjectionIndexBytes;
+            }
+            MapControlEventSource.Log.VectorRetainedMemory(
+                DiagnosticRendererId,
+                DiagnosticFrameId,
+                decodedBytes,
+                symbolBytes,
+                projectionBytes,
+                (_vectorLineFrameCache?.ByteSize ?? 0) +
+                    (_vectorPolygonFrameCache?.ByteSize ?? 0),
+                ActiveVectorGeometryPreparations,
+                _completedVectorGeometryPreparations.Count);
             long otherTicks = Stopwatch.GetTimestamp() - commitEnd -
                 rasterTicks - polygonTicks - lineTicks - symbolTicks;
             double millisecondsPerTick = 1000d / Stopwatch.Frequency;
@@ -643,6 +664,15 @@ internal sealed partial class MapRenderer : DirectXRenderer
                 _geometryUploadCount - _geometryDiscardCount,
                 _geometryUploadBytes,
                 _geometryUploadTicks * millisecondsPerTick);
+            MapControlEventSource.Log.SymbolInstanceUploadTiming(
+                DiagnosticRendererId,
+                DiagnosticFrameId,
+                _symbolUploadCount,
+                _symbolDiscardCount,
+                _symbolUploadCount - _symbolDiscardCount,
+                _symbolUploadBytes,
+                (long)IconInstanceCapacity * sizeof(IconInstance),
+                _symbolUploadTicks * millisecondsPerTick);
         }
     }
 
@@ -679,6 +709,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         lock (_vectorGeometryPreparationSync)
         {
             return _vectorGeometryPreparationJob is null &&
+                _runningVectorGeometryPreparationJob is null &&
                 _completedVectorGeometryPreparations.IsEmpty;
         }
     }

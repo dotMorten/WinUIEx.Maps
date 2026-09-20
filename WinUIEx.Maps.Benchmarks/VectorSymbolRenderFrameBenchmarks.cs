@@ -24,11 +24,14 @@ public class VectorSymbolRenderFrameBenchmarks
     [Params(0, 60)]
     public double Pitch { get; set; }
 
+    [Params(false, true)]
+    public bool LineLabels { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
         VectorSymbolBenchmarkFixture fixture =
-            VectorSymbolBenchmarkFixture.Create(SymbolsPerTile);
+            VectorSymbolBenchmarkFixture.Create(SymbolsPerTile, LineLabels);
         TileId centerTile = new(TileZoom, 4823, 6160);
         double scale = Math.Pow(2, centerTile.Zoom);
         _longitude =

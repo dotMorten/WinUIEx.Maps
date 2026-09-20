@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Windows.Win32.Graphics.Direct3D11;
@@ -36,6 +37,11 @@ namespace WinUIEx.Maps.Rendering;
 internal sealed partial class MapRenderer : DirectXRenderer
 {
     private const int IconInstanceCapacity = 16384;
+    private DynamicGeometryStreamCursor _iconStreamCursor = new(IconInstanceCapacity, alignment: 1);
+    private int _symbolUploadCount;
+    private int _symbolDiscardCount;
+    private long _symbolUploadBytes;
+    private long _symbolUploadTicks;
     private readonly object _iconSync = new();
     private readonly ConcurrentQueue<MapIconPixelData> _iconPixelUploads = new();
     private readonly ConcurrentQueue<CompletedIconUpload> _completedIconUploads = new();
@@ -529,19 +535,51 @@ internal sealed partial class MapRenderer : DirectXRenderer
             Span<IconInstance> chunk = remaining[..Math.Min(
                 IconInstanceCapacity,
                 remaining.Length)];
+            uint startInstance;
             fixed (IconInstance* instancePointer = chunk)
             {
-                WriteDiscardBuffer(
-                    context,
-                    _iconInstanceBufferPointer,
-                    instancePointer,
-                    (nuint)(chunk.Length * Marshal.SizeOf<IconInstance>()));
+                startInstance = WriteIconInstances(context, instancePointer, chunk.Length);
             }
-            DrawIndexedInstanced(context, (uint)chunk.Length);
+            DrawIndexedInstanced(context, (uint)chunk.Length, startInstance);
             drawCallCount++;
             remaining = remaining[chunk.Length..];
         }
         return new IconDrawResult(count, instances.Count, 1, drawCallCount);
+    }
+
+    private unsafe uint WriteIconInstances(
+        IntPtr context, IconInstance* instances, int count)
+    {
+        DynamicGeometryStreamRange range = _iconStreamCursor.Reserve(count);
+        nuint byteCount = checked((nuint)count * (nuint)sizeof(IconInstance));
+        long start = _traceGeometryUploads ? Stopwatch.GetTimestamp() : 0;
+        try
+        {
+            WriteDynamicVertexBuffer(
+                context,
+                _iconInstanceBufferPointer,
+                instances,
+                byteCount,
+                (nuint)(IconInstanceCapacity * sizeof(IconInstance)),
+                (nuint)(range.StartVertex * sizeof(IconInstance)),
+                range.Discard);
+        }
+        catch
+        {
+            _iconStreamCursor.Reset();
+            throw;
+        }
+        if (_traceGeometryUploads)
+        {
+            _symbolUploadTicks += Stopwatch.GetTimestamp() - start;
+            _symbolUploadCount++;
+            if (range.Discard)
+            {
+                _symbolDiscardCount++;
+            }
+            _symbolUploadBytes += (long)byteCount;
+        }
+        return (uint)range.StartVertex;
     }
 
     internal static MapViewportPoint GetMapIconTopLeft(

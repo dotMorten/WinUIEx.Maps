@@ -849,14 +849,20 @@ internal sealed class MapControlEventSource : EventSource
         Level = EventLevel.Informational,
         Keywords = Keywords.Device | Keywords.Cache,
         Task = Tasks.Cache)]
-    public void TextureDisposalSummary(
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The fixed event payload contains only Int32 and Int64 primitives.")]
+    public unsafe void TextureDisposalSummary(
         int disposedCount,
         long disposedBytes,
         int remainingCount)
     {
         if (IsEnabled(EventLevel.Informational, Keywords.Device | Keywords.Cache))
         {
-            WriteEvent(41, disposedCount, disposedBytes, remainingCount);
+            EventData* data = stackalloc EventData[3];
+            data[0] = new() { DataPointer = (IntPtr)(&disposedCount), Size = sizeof(int) };
+            data[1] = new() { DataPointer = (IntPtr)(&disposedBytes), Size = sizeof(long) };
+            data[2] = new() { DataPointer = (IntPtr)(&remainingCount), Size = sizeof(int) };
+            WriteEventCore(41, 3, data);
         }
     }
 
@@ -1969,6 +1975,57 @@ internal sealed class MapControlEventSource : EventSource
         if (IsEnabled(EventLevel.Verbose, Keywords.Icons | Keywords.VectorTiles))
         {
             WriteEvent(82, style, candidateTileCount, coveredTileCount);
+        }
+    }
+
+    /// <summary>
+    /// Separates cache-owned vector payloads from retained geometry and preparation work.
+    /// </summary>
+    [Event(83, Level = EventLevel.Verbose, Keywords = Keywords.Frames, Task = Tasks.Frame)]
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The fixed event payload contains only Int32 and Int64 primitives.")]
+    public unsafe void VectorRetainedMemory(
+        long rendererId, long frameId, long decodedBytes, long symbolPayloadBytes,
+        long projectionIndexBytes, long geometryBufferBytes,
+        int runningPreparations, int completedPreparations)
+    {
+        if (IsEnabled(EventLevel.Verbose, Keywords.Frames))
+        {
+            EventData* data = stackalloc EventData[8];
+            data[0] = new() { DataPointer = (IntPtr)(&rendererId), Size = sizeof(long) };
+            data[1] = new() { DataPointer = (IntPtr)(&frameId), Size = sizeof(long) };
+            data[2] = new() { DataPointer = (IntPtr)(&decodedBytes), Size = sizeof(long) };
+            data[3] = new() { DataPointer = (IntPtr)(&symbolPayloadBytes), Size = sizeof(long) };
+            data[4] = new() { DataPointer = (IntPtr)(&projectionIndexBytes), Size = sizeof(long) };
+            data[5] = new() { DataPointer = (IntPtr)(&geometryBufferBytes), Size = sizeof(long) };
+            data[6] = new() { DataPointer = (IntPtr)(&runningPreparations), Size = sizeof(int) };
+            data[7] = new() { DataPointer = (IntPtr)(&completedPreparations), Size = sizeof(int) };
+            WriteEventCore(83, 8, data);
+        }
+    }
+
+    /// <summary>
+    /// Reports instance-buffer uploads and full-buffer discards without exposing symbols.
+    /// </summary>
+    [Event(84, Level = EventLevel.Verbose, Keywords = Keywords.Frames, Task = Tasks.Frame)]
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The fixed event payload contains only Int32, Int64 and Double primitives.")]
+    public unsafe void SymbolInstanceUploadTiming(
+        long rendererId, long frameId, int uploadCount, int discardCount,
+        int noOverwriteCount, long byteCount, long bufferBytes, double uploadMilliseconds)
+    {
+        if (IsEnabled(EventLevel.Verbose, Keywords.Frames))
+        {
+            EventData* data = stackalloc EventData[8];
+            data[0] = new() { DataPointer = (IntPtr)(&rendererId), Size = sizeof(long) };
+            data[1] = new() { DataPointer = (IntPtr)(&frameId), Size = sizeof(long) };
+            data[2] = new() { DataPointer = (IntPtr)(&uploadCount), Size = sizeof(int) };
+            data[3] = new() { DataPointer = (IntPtr)(&discardCount), Size = sizeof(int) };
+            data[4] = new() { DataPointer = (IntPtr)(&noOverwriteCount), Size = sizeof(int) };
+            data[5] = new() { DataPointer = (IntPtr)(&byteCount), Size = sizeof(long) };
+            data[6] = new() { DataPointer = (IntPtr)(&bufferBytes), Size = sizeof(long) };
+            data[7] = new() { DataPointer = (IntPtr)(&uploadMilliseconds), Size = sizeof(double) };
+            WriteEventCore(84, 8, data);
         }
     }
 }

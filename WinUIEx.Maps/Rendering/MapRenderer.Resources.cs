@@ -71,6 +71,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     {
         _geometryStreamCursor.Reset();
         _patternStreamCursor.Reset();
+        _iconStreamCursor.Reset();
         Interlocked.Increment(ref _deviceEpoch);
         CreateShaders();
         CreateGeometry();
@@ -169,6 +170,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         ReleasePointer(ref _patternVertexBufferPointer);
         _geometryStreamCursor.Reset();
         _patternStreamCursor.Reset();
+        _iconStreamCursor.Reset();
         ReleasePointer(ref _inputLayoutPointer);
         ReleasePointer(ref _iconInputLayoutPointer);
         ReleasePointer(ref _geometryInputLayoutPointer);

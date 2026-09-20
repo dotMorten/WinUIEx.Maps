@@ -10,7 +10,7 @@ internal sealed record VectorSymbolBenchmarkFixture(
 {
     private const string FontStack = "BenchmarkFont";
 
-    internal static VectorSymbolBenchmarkFixture Create(int symbolCount)
+    internal static VectorSymbolBenchmarkFixture Create(int symbolCount, bool lineLabels = false)
     {
         if (symbolCount <= 0)
         {
@@ -20,7 +20,7 @@ internal sealed record VectorSymbolBenchmarkFixture(
         byte[] spritePixels = CreateSpritePixels(20, 20);
         VectorStyleAssets styleAssets = VectorStyleAssets.CreateForTest(
             MapStyle.Road,
-            CreateStyle(),
+            CreateStyle(lineLabels),
             """
             {
               "marker": {
@@ -41,7 +41,7 @@ internal sealed record VectorSymbolBenchmarkFixture(
             0,
             CreateGlyphs()));
 
-        VectorTileFeatureCollection features = CreateFeatures(symbolCount);
+        VectorTileFeatureCollection features = CreateFeatures(symbolCount, lineLabels);
         VectorSpriteTextureData[] textures = styleAssets
             .PrepareTexturesAsync(features, 14, CancellationToken.None)
             .GetAwaiter()
@@ -49,7 +49,7 @@ internal sealed record VectorSymbolBenchmarkFixture(
         return new(features, styleAssets, textures);
     }
 
-    private static VectorTileFeatureCollection CreateFeatures(int symbolCount)
+    private static VectorTileFeatureCollection CreateFeatures(int symbolCount, bool lineLabels)
     {
         int columns = (int)Math.Ceiling(Math.Sqrt(symbolCount));
         int rows = (int)Math.Ceiling((double)symbolCount / columns);
@@ -63,8 +63,8 @@ internal sealed record VectorSymbolBenchmarkFixture(
             string name = $"MAP {index % 100:00}";
             features[index] = new VectorTileFeature(
                 "poi",
-                VectorTileGeometryType.Point,
-                [new VectorTilePoint(x, y)],
+                lineLabels ? VectorTileGeometryType.LineString : VectorTileGeometryType.Point,
+                lineLabels ? [] : [new VectorTilePoint(x, y)],
                 [
                     new VectorTileProperty(
                         "name",
@@ -73,13 +73,18 @@ internal sealed record VectorSymbolBenchmarkFixture(
                         "rank",
                         VectorTileValue.FromInt(index)),
                 ],
-                [],
+                lineLabels
+                    ? [new VectorTileLine([
+                        new VectorTilePoint(x - 0.25, y - 0.02),
+                        new VectorTilePoint(x, y),
+                        new VectorTilePoint(x + 0.25, y + 0.02)])]
+                    : [],
                 []);
         }
         return new VectorTileFeatureCollection(features);
     }
 
-    private static byte[] CreateStyle() => Encoding.UTF8.GetBytes(
+    private static byte[] CreateStyle(bool lineLabels) => Encoding.UTF8.GetBytes(
         $$"""
         {
           "version": 8,
@@ -95,6 +100,7 @@ internal sealed record VectorSymbolBenchmarkFixture(
             "source": "microsoft.base",
             "source-layer": "poi",
             "layout": {
+              "symbol-placement": "{{(lineLabels ? "line" : "point")}}",
               "icon-image": "marker",
               "icon-size": 1,
               "text-field": "{name}",

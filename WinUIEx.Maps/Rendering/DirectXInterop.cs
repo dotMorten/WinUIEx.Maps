@@ -650,27 +650,33 @@ internal static class DirectXInterop
     }
 
     /// <summary>
-    /// Reserves nonoverlapping triangle-list ranges until wrapping requires a discard.
+    /// Reserves nonoverlapping aligned ranges until wrapping requires a discard.
     /// Retain across frames, and reset whenever its native buffer is released or a write fails.
     /// </summary>
     internal struct DynamicGeometryStreamCursor
     {
         private readonly int _capacity;
+        private readonly int _alignment;
         private int _nextVertex;
 
-        internal DynamicGeometryStreamCursor(int capacity)
+        internal DynamicGeometryStreamCursor(int capacity, int alignment = 3)
         {
-            if (capacity <= 0 || capacity % 3 != 0)
+            if (alignment <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(alignment));
+            }
+            if (capacity <= 0 || capacity % alignment != 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(capacity));
             }
             _capacity = capacity;
+            _alignment = alignment;
             _nextVertex = 0;
         }
 
         internal DynamicGeometryStreamRange Reserve(int vertexCount)
         {
-            if (vertexCount <= 0 || vertexCount > _capacity || vertexCount % 3 != 0)
+            if (vertexCount <= 0 || vertexCount > _capacity || vertexCount % _alignment != 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(vertexCount));
             }
@@ -940,7 +946,8 @@ internal static class DirectXInterop
     /// <summary>
     /// Draws the shared six-index quad for each bound icon instance.
     /// </summary>
-    internal static unsafe void DrawIndexedInstanced(IntPtr context, uint instanceCount)
+    internal static unsafe void DrawIndexedInstanced(
+        IntPtr context, uint instanceCount, uint startInstance = 0)
     {
         IntPtr* vtable = *(IntPtr**)context;
         ((delegate* unmanaged[Stdcall]<IntPtr, uint, uint, uint, int, uint, void>)vtable[20])(
@@ -949,7 +956,7 @@ internal static class DirectXInterop
             instanceCount,
             0,
             0,
-            0);
+            startInstance);
     }
 
     /// <summary>

@@ -2,10 +2,12 @@ using MapSample.Samples.Interaction;
 using MapSample.Samples.Maps;
 using MapSample.Samples.Performance;
 using Microsoft.UI;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using System;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using Windows.Graphics;
 
 namespace MapSample;
@@ -71,8 +73,28 @@ public sealed partial class MainWindow : Window
         };
         if (SampleFrame.CurrentSourcePageType != pageType)
         {
-            SampleFrame.Navigate(pageType);
+            FrameworkElement? previousSample = SampleFrame.Content as FrameworkElement;
+            if (previousSample is not null)
+                previousSample.Unloaded += PreviousSample_Unloaded;
+            if (!SampleFrame.Navigate(pageType) && previousSample is not null)
+                previousSample.Unloaded -= PreviousSample_Unloaded;
         }
         AppTitleBar.Subtitle = title;
+    }
+
+    private static void PreviousSample_Unloaded(object sender, RoutedEventArgs e)
+    {
+        FrameworkElement previousSample = (FrameworkElement)sender;
+        previousSample.Unloaded -= PreviousSample_Unloaded;
+        // Wait for navigation and queued control unload handlers to release their references.
+        previousSample.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, static () =>
+        {
+            _ = Task.Run(static () =>
+            {
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, true);
+                GC.WaitForPendingFinalizers();
+                GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, true);
+            });
+        });
     }
 }

@@ -41,6 +41,8 @@ The project is `WinUIEx.Maps.Benchmarks`.
   includes both retained steady-state frames and camera-changing frames that force
   projection/collision preparation. Asset generation, texture upload, and warmup occur in
   `GlobalSetup`.
+  `LineLabels` selects deterministic line-following labels instead of point labels,
+  exercising group construction and line-path projection during camera changes.
 - `AnalyticCoverageBenchmarks` compares hard and derivative-based procedural capsule
   coverage using the same instanced symbol draw path and completed-GPU wait. This is an
   offscreen experiment, not production antialiasing for connected lines or polygon meshes;

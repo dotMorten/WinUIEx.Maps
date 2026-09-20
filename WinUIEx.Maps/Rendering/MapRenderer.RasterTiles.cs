@@ -1068,14 +1068,16 @@ internal sealed partial class MapRenderer
     /// met, preferring entries not needed for active coverage or visible fallbacks.
     /// </summary>
     /// <remarks>
-    /// Protected entries are evicted only if all unprotected entries are insufficient.
+    /// Protected entries are never evicted to meet the soft budget.
     /// Texture destruction is deferred to the upload worker to preserve ownership ordering.
     /// </remarks>
     private void TrimRasterTileCache()
     {
-        ulong cacheBytes = _rasterTiles.Values.Aggregate<TileTexture, ulong>(
-            0,
-            (total, texture) => total + texture.ByteSize);
+        ulong cacheBytes = 0;
+        foreach (TileTexture texture in _rasterTiles.Values)
+            cacheBytes += texture.ByteSize;
+        if (cacheBytes <= MinimumRasterCacheBytes)
+            return;
         Dictionary<long, LayerRenderSnapshot> eligibleLayers = _layerRenderPlan
             .Where(layer =>
                 layer.Kind is
@@ -1334,18 +1336,21 @@ internal sealed partial class MapRenderer
     /// </summary>
     private void DrainTextureDisposals()
     {
+        bool traceDisposals = MapControlEventSource.Log.IsEnabled(
+            System.Diagnostics.Tracing.EventLevel.Informational,
+            MapControlEventSource.Keywords.Device | MapControlEventSource.Keywords.Cache);
         int disposedCount = 0;
         ulong disposedBytes = 0;
         while (_textureDisposals.TryDequeue(out TileTexture? texture))
         {
-            disposedCount++;
-            disposedBytes += texture.ByteSize;
+            if (traceDisposals)
+            {
+                disposedCount++;
+                disposedBytes += texture.ByteSize;
+            }
             texture.Dispose();
         }
-        if (disposedCount != 0 &&
-            MapControlEventSource.Log.IsEnabled(
-                System.Diagnostics.Tracing.EventLevel.Informational,
-                MapControlEventSource.Keywords.Device | MapControlEventSource.Keywords.Cache))
+        if (disposedCount != 0)
         {
             MapControlEventSource.Log.TextureDisposalSummary(
                 disposedCount,

@@ -685,6 +685,48 @@ internal sealed partial class MapRenderer
         Dictionary<VectorLineBatchKey, PooledGeometryBuffer> batches,
         List<VectorLineBatchKey> batchOrder)
     {
+        if (points.Length < 2)
+            return 0;
+        double[]? rental = null;
+        try
+        {
+            ReadOnlySpan<double> distances = default;
+            if (!style.Gradient.IsDefaultOrEmpty)
+            {
+                rental = ArrayPool<double>.Shared.Rent(points.Length);
+                rental[0] = 0;
+                for (int index = 1; index < points.Length; index++)
+                {
+                    double deltaX = points[index].X - points[index - 1].X;
+                    double deltaY = points[index].Y - points[index - 1].Y;
+                    rental[index] = rental[index - 1] +
+                        Math.Sqrt((deltaX * deltaX) + (deltaY * deltaY));
+                }
+                distances = rental.AsSpan(0, points.Length);
+            }
+            return AppendStyledVectorLineTriangles(
+                points, distances, style, styleLayerOrder, opacity,
+                viewportWidth, viewportHeight, viewportPadding, batches, batchOrder);
+        }
+        finally
+        {
+            if (rental is not null)
+                ArrayPool<double>.Shared.Return(rental);
+        }
+    }
+
+    private static int AppendStyledVectorLineTriangles(
+        ReadOnlySpan<MapScreenPoint> points,
+        ReadOnlySpan<double> distances,
+        VectorLineStyle style,
+        int styleLayerOrder,
+        double opacity,
+        double viewportWidth,
+        double viewportHeight,
+        double viewportPadding,
+        Dictionary<VectorLineBatchKey, PooledGeometryBuffer> batches,
+        List<VectorLineBatchKey> batchOrder)
+    {
         int triangleCount = 0;
         if (style.Blur > 0)
         {
@@ -693,6 +735,7 @@ internal sealed partial class MapRenderer
                 double amount = (3 - pass) / 3d;
                 triangleCount += AppendVectorLineColorRuns(
                     points,
+                    distances,
                     style with
                     {
                         Width = style.Width + (style.Blur * amount * 2),
@@ -710,6 +753,7 @@ internal sealed partial class MapRenderer
         }
         triangleCount += AppendVectorLineColorRuns(
             points,
+            distances,
             style with { Blur = 0 },
             styleLayerOrder,
             3,
@@ -724,6 +768,7 @@ internal sealed partial class MapRenderer
 
     private static int AppendVectorLineColorRuns(
         ReadOnlySpan<MapScreenPoint> points,
+        ReadOnlySpan<double> distances,
         VectorLineStyle style,
         int styleLayerOrder,
         int passOrder,
@@ -749,14 +794,6 @@ internal sealed partial class MapRenderer
                 GetOrCreateVectorLineBuffer(key, batches, batchOrder));
         }
 
-        double[] distances = new double[points.Length];
-        for (int index = 1; index < points.Length; index++)
-        {
-            double deltaX = points[index].X - points[index - 1].X;
-            double deltaY = points[index].Y - points[index - 1].Y;
-            distances[index] = distances[index - 1] +
-                Math.Sqrt((deltaX * deltaX) + (deltaY * deltaY));
-        }
         double totalLength = distances[^1];
         if (!double.IsFinite(totalLength) || totalLength <= 1e-7)
         {

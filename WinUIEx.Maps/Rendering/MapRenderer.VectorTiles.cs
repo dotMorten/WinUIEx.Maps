@@ -1,5 +1,7 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using System.Diagnostics;
 using System.Numerics;
 using WinUIEx.Maps.Rendering.Diagnostics;
@@ -489,13 +491,14 @@ internal sealed partial class MapRenderer
             layer.Opacity);
         int placementStart = workspace.Placements.Count;
         ProjectVectorSymbols(
-            symbols,
+            tile.GetSymbolProjection(symbols),
             visibleTile,
             _viewportWidth,
             _viewportHeight,
             _displayHeading,
             _displayPitch,
-            workspace.Placements);
+            workspace.Placements,
+            workspace.Projection);
         int placementCount = workspace.Placements.Count - placementStart;
         renderResult.LineSymbolProjectedCount +=
             CountPlacements(
@@ -883,15 +886,12 @@ internal sealed partial class MapRenderer
             ReadOnlySpan<IconInstance> chunk = remaining[..Math.Min(
                 IconInstanceCapacity,
                 remaining.Length)];
+            uint startInstance;
             fixed (IconInstance* instancePointer = chunk)
             {
-                WriteDiscardBuffer(
-                    context,
-                    _iconInstanceBufferPointer,
-                    instancePointer,
-                    (nuint)(chunk.Length * Marshal.SizeOf<IconInstance>()));
+                startInstance = WriteIconInstances(context, instancePointer, chunk.Length);
             }
-            DrawIndexedInstanced(context, (uint)chunk.Length);
+            DrawIndexedInstanced(context, (uint)chunk.Length, startInstance);
             remaining = remaining[chunk.Length..];
         }
     }
@@ -906,38 +906,41 @@ internal sealed partial class MapRenderer
     {
         List<VectorSymbolPlacement> projected = new(symbols.Count);
         ProjectVectorSymbols(
-            symbols,
+            new VectorSymbolProjectionData(symbols),
             tile,
             viewportWidth,
             viewportHeight,
             heading,
             pitch,
-            projected);
+            projected,
+            new VectorSymbolProjectionWorkspace());
         return projected.ToArray();
     }
 
-    private static void ProjectVectorSymbols(
-        IReadOnlyList<VectorTileSymbol> symbols,
+    internal static void ProjectVectorSymbols(
+        VectorSymbolProjectionData data,
         VisibleTile tile,
         double viewportWidth,
         double viewportHeight,
         double heading,
         double pitch,
-        List<VectorSymbolPlacement> projected)
+        List<VectorSymbolPlacement> projected,
+        VectorSymbolProjectionWorkspace workspace)
     {
-        Dictionary<
-            (long SymbolGroupId, int StyleLayerOrder, VectorTilePoint[] Path),
-            List<VectorTileSymbol>>? lineGroups = null;
+        IReadOnlyList<VectorTileSymbol> symbols = data.Symbols;
         long projectedGroupId = long.MinValue;
         double projectedX = double.NaN;
         double projectedY = double.NaN;
         double anchorX = 0;
         double anchorY = 0;
         int pointStart = projected.Count;
-        HashSet<(long GroupId, int StyleLayerOrder)> visiblePointGroups = [];
-        foreach (VectorTileSymbol symbol in symbols)
+        HashSet<(long GroupId, int StyleLayerOrder)> visiblePointGroups =
+            workspace.VisiblePointGroups;
+        visiblePointGroups.Clear();
+        for (int symbolIndex = 0; symbolIndex < symbols.Count; symbolIndex++)
         {
-            if (symbol.LinePoints is not { Length: >= 2 } linePoints)
+            VectorTileSymbol symbol = symbols[symbolIndex];
+            if (symbol.LinePoints is not { Length: >= 2 })
             {
                 long groupId = symbol.SymbolGroupId >= 0
                     ? symbol.SymbolGroupId
@@ -972,23 +975,7 @@ internal sealed partial class MapRenderer
                 {
                     visiblePointGroups.Add((groupId, symbol.StyleLayerOrder));
                 }
-                continue;
             }
-
-            long symbolGroupId = symbol.SymbolGroupId >= 0
-                ? symbol.SymbolGroupId
-                : symbol.LabelId;
-            lineGroups ??= [];
-            (long SymbolGroupId, int StyleLayerOrder, VectorTilePoint[] Path) key =
-                (symbolGroupId, symbol.StyleLayerOrder, linePoints);
-            if (!lineGroups.TryGetValue(
-                    key,
-                    out List<VectorTileSymbol>? group))
-            {
-                group = [];
-                lineGroups.Add(key, group);
-            }
-            group.Add(symbol);
         }
         // Point glyphs must reach readiness, fade, and collision as complete groups,
         // just like line labels. Only the render target clips individual glyphs.
@@ -1005,20 +992,18 @@ internal sealed partial class MapRenderer
             }
         }
         projected.RemoveRange(writeIndex, projected.Count - writeIndex);
-        if (lineGroups is null)
-        {
-            return;
-        }
-        foreach (List<VectorTileSymbol> group in lineGroups.Values)
+        foreach (int[] group in data.LineGroups)
         {
             AddProjectedLineSymbols(
+                symbols,
                 group,
                 tile,
                 viewportWidth,
                 viewportHeight,
                 heading,
                 pitch,
-                projected);
+                projected,
+                workspace.Candidate);
         }
     }
 
@@ -1207,23 +1192,55 @@ internal sealed partial class MapRenderer
 
     private static void AddProjectedLineSymbols(
         IReadOnlyList<VectorTileSymbol> symbols,
+        ReadOnlySpan<int> group,
         VisibleTile tile,
         double viewportWidth,
         double viewportHeight,
         double heading,
         double pitch,
-        List<VectorSymbolPlacement> projected)
+        List<VectorSymbolPlacement> projected,
+        List<VectorSymbolPlacement> candidate)
     {
-        VectorTilePoint[] linePoints = symbols[0].LinePoints!;
-        MapScreenPoint[] path = ProjectVectorLine(
-            linePoints,
-            tile,
-            viewportWidth,
-            viewportHeight,
-            heading,
-            pitch);
-        double[] distances = new double[path.Length];
-        double[] anchorDistances = new double[path.Length];
+        VectorTilePoint[] linePoints = symbols[group[0]].LinePoints!;
+        MapScreenPoint[] path = ArrayPool<MapScreenPoint>.Shared.Rent(linePoints.Length);
+        double[]? distances = null;
+        try
+        {
+            distances = ArrayPool<double>.Shared.Rent(checked(linePoints.Length * 2));
+            ProjectVectorLine(linePoints, tile, viewportWidth, viewportHeight,
+                heading, pitch, path.AsSpan(0, linePoints.Length));
+            AddProjectedLineSymbols(
+                symbols, group, linePoints, path.AsSpan(0, linePoints.Length),
+                distances.AsSpan(0, linePoints.Length),
+                distances.AsSpan(linePoints.Length, linePoints.Length),
+                tile, viewportWidth, viewportHeight, heading, pitch, projected, candidate);
+        }
+        finally
+        {
+            ArrayPool<MapScreenPoint>.Shared.Return(path);
+            if (distances is not null)
+                ArrayPool<double>.Shared.Return(distances);
+            candidate.Clear();
+        }
+    }
+
+    private static void AddProjectedLineSymbols(
+        IReadOnlyList<VectorTileSymbol> symbols,
+        ReadOnlySpan<int> group,
+        VectorTilePoint[] linePoints,
+        ReadOnlySpan<MapScreenPoint> path,
+        Span<double> distances,
+        Span<double> anchorDistances,
+        VisibleTile tile,
+        double viewportWidth,
+        double viewportHeight,
+        double heading,
+        double pitch,
+        List<VectorSymbolPlacement> projected,
+        List<VectorSymbolPlacement> candidate)
+    {
+        distances[0] = 0;
+        anchorDistances[0] = 0;
         for (int index = 1; index < path.Length; index++)
         {
             double deltaX = path[index].X - path[index - 1].X;
@@ -1241,12 +1258,20 @@ internal sealed partial class MapRenderer
                 Math.Sqrt(anchorX * anchorX + anchorY * anchorY) * MapCamera.TileSize;
         }
         double pathLength = distances[^1];
-        double minimumOffset = symbols.Min(
-            symbol => symbol.OffsetX - (symbol.Width / 2));
-        double maximumOffset = symbols.Max(
-            symbol => symbol.OffsetX + (symbol.Width / 2));
+        double minimumOffset = double.PositiveInfinity;
+        double maximumOffset = double.NegativeInfinity;
+        VectorTileSymbol? textSymbol = null;
+        foreach (int index in group)
+        {
+            VectorTileSymbol symbol = symbols[index];
+            minimumOffset = Math.Min(minimumOffset, symbol.OffsetX - symbol.Width / 2);
+            maximumOffset = Math.Max(maximumOffset, symbol.OffsetX + symbol.Width / 2);
+            if (textSymbol is null && symbol.Kind == VectorSymbolKind.Text)
+                textSymbol = symbol;
+        }
         double symbolLength = maximumOffset - minimumOffset;
-        bool continuousPlacement = symbols[0].ContinuousLinePlacement;
+        VectorTileSymbol firstSymbol = symbols[group[0]];
+        bool continuousPlacement = firstSymbol.ContinuousLinePlacement;
         double endpointPadding = continuousPlacement ? 0 : 4;
         if (pathLength < symbolLength + (endpointPadding * 2))
         {
@@ -1254,8 +1279,8 @@ internal sealed partial class MapRenderer
         }
 
         double spacing = continuousPlacement
-            ? Math.Max(symbols[0].LineSpacing, symbolLength)
-            : Math.Max(symbols[0].LineSpacing, 16);
+            ? Math.Max(firstSymbol.LineSpacing, symbolLength)
+            : Math.Max(firstSymbol.LineSpacing, 16);
         // Repeats belong to tile geometry, not the changing screen-space path.
         // Re-centering after every projected repeat-count change moves every label
         // by half a spacing interval during a fractional zoom.
@@ -1270,16 +1295,6 @@ internal sealed partial class MapRenderer
         double firstCenter = continuousPlacement
             ? symbolLength / 2
             : Math.Min(spacing, placementPathLength) / 2;
-        VectorTileSymbol? textSymbol = null;
-        foreach (VectorTileSymbol symbol in symbols)
-        {
-            if (symbol.Kind == VectorSymbolKind.Text)
-            {
-                textSymbol = symbol;
-                break;
-            }
-        }
-        List<VectorSymbolPlacement> candidate = new(symbols.Count);
         for (int placementIndex = 0;
             placementIndex < placementCount;
             placementIndex++)
@@ -1339,8 +1354,9 @@ internal sealed partial class MapRenderer
             double maximumRelativeRotation = double.NegativeInfinity;
             bool valid = true;
             bool intersectsViewport = false;
-            foreach (VectorTileSymbol symbol in symbols)
+            foreach (int symbolIndex in group)
             {
+                VectorTileSymbol symbol = symbols[symbolIndex];
                 MapScreenPoint position;
                 MapScreenPoint tangent;
                 if (symbol.ViewportAligned)
@@ -1473,8 +1489,8 @@ internal sealed partial class MapRenderer
     }
 
     private static bool TryGetSmoothedPathPosition(
-        IReadOnlyList<MapScreenPoint> path,
-        IReadOnlyList<double> distances,
+        ReadOnlySpan<MapScreenPoint> path,
+        ReadOnlySpan<double> distances,
         double distance,
         double radius,
         out MapScreenPoint position,
@@ -1520,8 +1536,8 @@ internal sealed partial class MapRenderer
     }
 
     private static bool TryGetPathPosition(
-        IReadOnlyList<MapScreenPoint> path,
-        IReadOnlyList<double> distances,
+        ReadOnlySpan<MapScreenPoint> path,
+        ReadOnlySpan<double> distances,
         double distance,
         out MapScreenPoint position,
         out MapScreenPoint tangent)
@@ -1533,13 +1549,13 @@ internal sealed partial class MapRenderer
             return false;
         }
         int segment = 1;
-        while (segment < distances.Count && distances[segment] < distance)
+        while (segment < distances.Length && distances[segment] < distance)
         {
             segment++;
         }
-        if (segment >= distances.Count)
+        if (segment >= distances.Length)
         {
-            segment = distances.Count - 1;
+            segment = distances.Length - 1;
         }
         MapScreenPoint start = path[segment - 1];
         MapScreenPoint end = path[segment];
@@ -2127,6 +2143,7 @@ internal sealed partial class MapRenderer
         private double _resolvedTextScaleFactor = double.NaN;
         private VectorSymbolResolution _resolved =
             new([], 0, 0);
+        private VectorSymbolProjectionData? _symbolProjection;
         private double _resolvedLineZoom = double.NaN;
         private double _lastDrawableLineZoom = double.NaN;
         private VectorLineResolution _resolvedLines = new([], 0);
@@ -2145,6 +2162,14 @@ internal sealed partial class MapRenderer
 
         internal long ByteSize => features.ByteSize;
 
+        internal long SymbolPayloadBytes =>
+            (long)_resolved.Symbols.Length * Unsafe.SizeOf<VectorTileSymbol>();
+
+        internal long ProjectionIndexBytes => _symbolProjection?.IndexBytes ?? 0;
+
+        internal VectorSymbolProjectionData GetSymbolProjection(VectorTileSymbol[] symbols) =>
+            _symbolProjection ??= new(symbols);
+
         internal VectorSymbolResolution GetSymbols(
             double zoom,
             double textScaleFactor)
@@ -2160,6 +2185,7 @@ internal sealed partial class MapRenderer
                     features,
                     zoom,
                     textScaleFactor);
+                _symbolProjection = null;
                 _resolvedZoom = zoom;
                 _resolvedTextScaleFactor = textScaleFactor;
             }
@@ -2594,7 +2620,7 @@ internal sealed partial class MapRenderer
                 y.Key.StyleLayerOrder);
             return order != 0
                 ? order
-                : x.Key.Batch.Kind.CompareTo(y.Key.Batch.Kind);
+                : ((int)x.Key.Batch.Kind).CompareTo((int)y.Key.Batch.Kind);
         }
     }
 
@@ -2675,6 +2701,59 @@ internal sealed partial class MapRenderer
         int PlacementCapacity,
         int CollisionCapacity);
 
+    internal sealed class VectorSymbolProjectionData
+    {
+        internal VectorSymbolProjectionData(IReadOnlyList<VectorTileSymbol> symbols)
+        {
+            Symbols = symbols;
+            Dictionary<(long GroupId, int Order, VectorTilePoint[] Path), List<int>> groups = [];
+            for (int index = 0; index < symbols.Count; index++)
+            {
+                VectorTileSymbol symbol = symbols[index];
+                if (symbol.LinePoints is not { Length: >= 2 } path)
+                    continue;
+                var key = (symbol.SymbolGroupId >= 0 ? symbol.SymbolGroupId : symbol.LabelId,
+                    symbol.StyleLayerOrder, path);
+                if (!groups.TryGetValue(key, out List<int>? group))
+                    groups.Add(key, group = []);
+                group.Add(index);
+            }
+            LineGroups = new int[groups.Count][];
+            int groupIndex = 0;
+            foreach (List<int> group in groups.Values)
+            {
+                LineGroups[groupIndex++] = group.ToArray();
+            }
+        }
+
+        internal IReadOnlyList<VectorTileSymbol> Symbols { get; }
+        internal int[][] LineGroups { get; }
+        internal long IndexBytes
+        {
+            get
+            {
+                long bytes = 0;
+                foreach (int[] group in LineGroups)
+                    bytes += (long)group.Length * sizeof(int);
+                return bytes;
+            }
+        }
+    }
+
+    internal sealed class VectorSymbolProjectionWorkspace
+    {
+        internal HashSet<(long GroupId, int StyleLayerOrder)> VisiblePointGroups { get; } = [];
+        internal List<VectorSymbolPlacement> Candidate { get; } = [];
+
+        internal void ReleaseRetainedMemory()
+        {
+            VisiblePointGroups.Clear();
+            VisiblePointGroups.TrimExcess();
+            Candidate.Clear();
+            Candidate.TrimExcess();
+        }
+    }
+
     private sealed class VectorSymbolRenderWorkspace
     {
         private readonly Stack<List<LabelCollisionRectangle>>
@@ -2685,6 +2764,7 @@ internal sealed partial class MapRenderer
             _availableInstanceBuffers = [];
 
         internal List<VectorTileDrawData> DrawTiles { get; } = [];
+        internal VectorSymbolProjectionWorkspace Projection { get; } = new();
         internal List<VectorSymbolPlacement> Placements { get; } = [];
         internal List<VectorSymbolPlacement> DrawablePlacements { get; } = [];
         internal HashSet<long> IncompleteLabelGroups { get; } = [];
@@ -2813,15 +2893,18 @@ internal sealed partial class MapRenderer
                 instanceCapacity,
                 Placements.Capacity +
                     DrawablePlacements.Capacity +
-                    OrderSensitivePlacements.Capacity,
+                    OrderSensitivePlacements.Capacity +
+                    Projection.Candidate.Capacity,
                 CollisionCandidates.Capacity +
                     CollisionCandidateIndexes.Count +
                     AcceptedCollisionGroups.Count +
-                    OccupiedCollisionCells.Count);
+                    OccupiedCollisionCells.Count +
+                    Projection.VisiblePointGroups.Count);
         }
 
         internal void ReleaseRetainedMemory()
         {
+            Projection.ReleaseRetainedMemory();
             foreach (WorkingVectorSymbolBatch batch in WorkingBatches)
             {
                 batch.Instances.Clear();

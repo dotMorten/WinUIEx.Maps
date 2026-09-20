@@ -13,6 +13,17 @@ internal sealed partial class MapRenderer
         _completedVectorGeometryPreparations = new();
     private readonly object _vectorGeometryPreparationSync = new();
     private VectorGeometryPreparationJob? _vectorGeometryPreparationJob;
+    private VectorGeometryPreparationJob? _runningVectorGeometryPreparationJob;
+    internal Action? VectorGeometryPreparationStartingForTest { get; set; }
+
+    internal int ActiveVectorGeometryPreparations
+    {
+        get
+        {
+            lock (_vectorGeometryPreparationSync)
+                return _runningVectorGeometryPreparationJob is null ? 0 : 1;
+        }
+    }
 
     private bool DeferVectorGeometryRebuild(
         LayerRenderSnapshot layer,
@@ -47,6 +58,16 @@ internal sealed partial class MapRenderer
             {
                 return true;
             }
+            if (_runningVectorGeometryPreparationJob is { } running)
+            {
+                // The current renderer scene is the replaceable pending request.
+                // Capture it only after obsolete work releases its input/device.
+                if (running.Key.RuntimeId == key.RuntimeId)
+                    running.Cancellation.Cancel();
+                return true;
+            }
+            if (!_completedVectorGeometryPreparations.IsEmpty)
+                return true;
         }
 
         if (!TryCaptureVectorGeometryPreparation(
@@ -60,15 +81,14 @@ internal sealed partial class MapRenderer
 
         CancellationTokenSource cancellation = new();
         VectorGeometryPreparationJob job = new(key, cancellation);
-        VectorGeometryPreparationJob? previous;
         lock (_vectorGeometryPreparationSync)
         {
-            previous = _vectorGeometryPreparationJob;
             _vectorGeometryPreparationJob = job;
+            _runningVectorGeometryPreparationJob = job;
         }
-        previous?.Cancellation.Cancel();
         _ = Task.Run(
-                () => BuildVectorGeometryFrame(input, cancellation.Token))
+                () => BuildVectorGeometryFrame(input, cancellation.Token,
+                    VectorGeometryPreparationStartingForTest))
             .ContinueWith(
                 task =>
                 {
@@ -76,11 +96,15 @@ internal sealed partial class MapRenderer
                     lock (_vectorGeometryPreparationSync)
                     {
                         stale = Volatile.Read(ref _uploadDisposed) ||
+                            cancellation.IsCancellationRequested ||
                             !ReferenceEquals(
                                 _vectorGeometryPreparationJob,
                                 job);
+                        if (stale && ReferenceEquals(_vectorGeometryPreparationJob, job))
+                            _vectorGeometryPreparationJob = null;
                         if (!stale)
                         {
+                            _runningVectorGeometryPreparationJob = null;
                             _completedVectorGeometryPreparations.Enqueue(
                                 new CompletedVectorGeometryPreparation(
                                     job,
@@ -89,7 +113,6 @@ internal sealed partial class MapRenderer
                     }
                     if (stale)
                     {
-                        cancellation.Dispose();
                         if (task.Status == TaskStatus.RanToCompletion)
                         {
                             task.Result.Dispose();
@@ -98,6 +121,13 @@ internal sealed partial class MapRenderer
                         {
                             _ = task.Exception;
                         }
+                        lock (_vectorGeometryPreparationSync)
+                        {
+                            _runningVectorGeometryPreparationJob = null;
+                            cancellation.Dispose();
+                        }
+                        if (!Volatile.Read(ref _uploadDisposed))
+                            RequestRender();
                         return;
                     }
                     RequestRender();
@@ -178,6 +208,20 @@ internal sealed partial class MapRenderer
         LayerRenderSnapshot layer,
         RasterLayerState state)
     {
+        if (_completedVectorGeometryPreparations.TryPeek(out var next) &&
+            next.Job.Key.RuntimeId != layer.RuntimeId)
+        {
+            foreach (LayerRenderSnapshot candidate in _layerRenderPlan)
+            {
+                if (candidate.RuntimeId == next.Job.Key.RuntimeId &&
+                    candidate.IsVisible && candidate.Opacity > 0 &&
+                    _displayZoom >= candidate.MinZoom && _displayZoom < candidate.MaxZoom &&
+                    _rasterLayers.ContainsKey(candidate.RuntimeId))
+                {
+                    return;
+                }
+            }
+        }
         while (_completedVectorGeometryPreparations.TryDequeue(
             out CompletedVectorGeometryPreparation? completed))
         {
@@ -225,13 +269,7 @@ internal sealed partial class MapRenderer
                     _viewportWidth,
                     _viewportHeight))
             {
-                MapControlEventSource.Log.VectorGeometryPreparationSummary(
-                    prepared.Key.Style,
-                    0,
-                    prepared.LineVertexCount,
-                    prepared.PolygonVertexCount,
-                    prepared.PreparationMilliseconds,
-                    prepared.UploadMilliseconds);
+                prepared.ReportCompletion(accepted: false);
                 prepared.Dispose();
                 continue;
             }
@@ -289,13 +327,7 @@ internal sealed partial class MapRenderer
                 {
                     polygonBatches = null;
                 }
-                MapControlEventSource.Log.VectorGeometryPreparationSummary(
-                    prepared.Key.Style,
-                    1,
-                    prepared.LineVertexCount,
-                    prepared.PolygonVertexCount,
-                    prepared.PreparationMilliseconds,
-                    prepared.UploadMilliseconds);
+                prepared.ReportCompletion(accepted: true);
             }
             finally
             {
@@ -320,11 +352,10 @@ internal sealed partial class MapRenderer
 
     private void CancelVectorGeometryPreparation()
     {
-        VectorGeometryPreparationJob? active;
         List<CompletedVectorGeometryPreparation> completedJobs = [];
         lock (_vectorGeometryPreparationSync)
         {
-            active = _vectorGeometryPreparationJob;
+            _runningVectorGeometryPreparationJob?.Cancellation.Cancel();
             _vectorGeometryPreparationJob = null;
             while (_completedVectorGeometryPreparations.TryDequeue(
                 out CompletedVectorGeometryPreparation? completed))
@@ -335,7 +366,6 @@ internal sealed partial class MapRenderer
                 }
             }
         }
-        active?.Cancellation.Cancel();
         foreach (CompletedVectorGeometryPreparation completed in completedJobs)
         {
             completed.Job.Cancellation.Dispose();
@@ -352,25 +382,48 @@ internal sealed partial class MapRenderer
 
     private static PreparedVectorGeometryFrame BuildVectorGeometryFrame(
         VectorGeometryPreparationInput input,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? starting = null)
     {
-        long preparationStart = Stopwatch.GetTimestamp();
+        bool tracePreparation = MapControlEventSource.Log.IsEnabled(
+            System.Diagnostics.Tracing.EventLevel.Informational,
+            MapControlEventSource.Keywords.Tiles | MapControlEventSource.Keywords.VectorTiles);
+        long preparationStart = tracePreparation ? Stopwatch.GetTimestamp() : 0;
         PreparedVectorGeometryFrame? prepared = null;
         try
         {
-            prepared = new(input);
+            starting?.Invoke();
+            cancellationToken.ThrowIfCancellationRequested();
+            prepared = new(input) { TraceTiming = tracePreparation };
+            VectorPolygonPreparationTile[] polygonTiles = input.PolygonTiles;
+            foreach (VectorPolygonPreparationTile tile in polygonTiles)
+            {
+                foreach (VectorTileStyledPolygon polygon in tile.Resolution.Polygons)
+                {
+                    if (polygon.Style.HasPattern)
+                    {
+                        prepared.PolygonResult.HasPatternPolygons = true;
+                        break;
+                    }
+                }
+                if (prepared.PolygonResult.HasPatternPolygons)
+                    break;
+            }
+            if (prepared.PolygonResult.HasPatternPolygons)
+                polygonTiles = [];
             prepared.PolygonResult.CandidatePolygonCount +=
                 input.Backgrounds.Backgrounds.Length;
             prepared.PolygonResult.EvaluationFailureCount +=
                 input.Backgrounds.EvaluationFailureCount;
-            AppendVectorBackgrounds(
+            if (!prepared.PolygonResult.HasPatternPolygons)
+                AppendVectorBackgrounds(
                 input.Backgrounds,
                 input.Layer.Opacity,
                 input.ViewportWidth,
                 input.ViewportHeight,
                 VectorGeometryCachePadding,
                 prepared);
-            foreach (VectorPolygonPreparationTile tile in input.PolygonTiles)
+            foreach (VectorPolygonPreparationTile tile in polygonTiles)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 prepared.PolygonResult.CandidatePolygonCount +=
@@ -526,16 +579,17 @@ internal sealed partial class MapRenderer
             }
 
             prepared.Complete();
-            prepared.PreparationMilliseconds =
-                Stopwatch.GetElapsedTime(
-                    preparationStart).TotalMilliseconds;
+            if (tracePreparation)
+                prepared.PreparationMilliseconds =
+                    Stopwatch.GetElapsedTime(preparationStart).TotalMilliseconds;
             cancellationToken.ThrowIfCancellationRequested();
-            long uploadStart = Stopwatch.GetTimestamp();
+            long uploadStart = tracePreparation ? Stopwatch.GetTimestamp() : 0;
             prepared.PromoteToGpu(
                 input.DevicePointer,
                 cancellationToken);
-            prepared.UploadMilliseconds =
-                Stopwatch.GetElapsedTime(uploadStart).TotalMilliseconds;
+            if (tracePreparation)
+                prepared.UploadMilliseconds =
+                    Stopwatch.GetElapsedTime(uploadStart).TotalMilliseconds;
             return prepared;
         }
         catch
@@ -713,6 +767,20 @@ internal sealed partial class MapRenderer
         internal double PreparationMilliseconds { get; set; }
 
         internal double UploadMilliseconds { get; set; }
+
+        internal bool TraceTiming { get; init; }
+
+        internal void ReportCompletion(bool accepted)
+        {
+            if (TraceTiming)
+                MapControlEventSource.Log.VectorGeometryPreparationSummary(
+                    Key.Style,
+                    accepted ? 1 : 0,
+                    LineVertexCount,
+                    PolygonVertexCount,
+                    PreparationMilliseconds,
+                    UploadMilliseconds);
+        }
 
         private VectorLineCachedBatch[]? CachedLineBatches { get; set; }
 
