@@ -48,7 +48,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private readonly PitchAnimation _pitchAnimation = new();
     private readonly CameraAnimation _cameraAnimation = new();
     private readonly AutoResetEvent _uploadRequested = new(false);
-    private readonly AutoResetEvent _rasterUploadEnteredRenderLock = new(false);
+    private readonly AutoResetEvent _uploadEnteredRenderLock = new(false);
+    private int _uploadRenderLockWaiters;
     private readonly ManualResetEvent _uploadShutdown = new(false);
     private readonly ManualResetEvent _uploadThreadStopped = new(false);
     private Thread? _uploadThread;
@@ -677,14 +678,14 @@ internal sealed partial class MapRenderer : DirectXRenderer
     }
 
     /// <summary>
-    /// Hands the just-released render lock to the bounded raster upload worker when it is
+    /// Hands the just-released render lock to the bounded texture upload worker when it is
     /// waiting, avoiding starvation during continuous fades or camera animation.
     /// </summary>
     protected override void OnRenderPassCompleted()
     {
-        if (Volatile.Read(ref _rasterUploadRenderLockWaiters) != 0)
+        if (Volatile.Read(ref _uploadRenderLockWaiters) != 0)
         {
-            _rasterUploadEnteredRenderLock.WaitOne(TimeSpan.FromMilliseconds(16));
+            _uploadEnteredRenderLock.WaitOne(TimeSpan.FromMilliseconds(16));
         }
     }
 
@@ -1103,7 +1104,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _mapGeometries = [];
         }
         _uploadRequested.Dispose();
-        _rasterUploadEnteredRenderLock.Dispose();
+        _uploadEnteredRenderLock.Dispose();
         _uploadShutdown.Dispose();
         _uploadThreadStopped.Dispose();
     }
@@ -1165,8 +1166,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
                 try
                 {
                     DrainTextureDisposals();
-                    ProcessRasterPixelUploads();
                     ProcessIconPixelUploads();
+                    ProcessRasterPixelUploads();
                     DrainTextureDisposals();
                 }
                 finally

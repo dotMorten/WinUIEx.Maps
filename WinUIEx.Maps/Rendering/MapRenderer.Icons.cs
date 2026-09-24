@@ -21,8 +21,9 @@ namespace WinUIEx.Maps.Rendering;
 /// <c>QueueMapIconTexture</c>; no XAML object crosses into renderer workers.
 /// </para>
 /// <para>
-/// The dedicated upload thread discards superseded versions, retains the current device
-/// pointer for each texture creation, and publishes a completion tagged with the current
+/// The dedicated upload thread prioritizes map elements over vector textures, discards
+/// superseded versions, retains the current device pointer for each bounded upload pass,
+/// and publishes a completion tagged with the current
 /// device epoch. The render thread accepts only matching versions and epochs, replaces cache
 /// entries, and transfers stale or removed textures to deferred upload-thread disposal.
 /// </para>
@@ -43,7 +44,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private long _symbolUploadBytes;
     private long _symbolUploadTicks;
     private readonly object _iconSync = new();
-    private readonly ConcurrentQueue<MapIconPixelData> _iconPixelUploads = new();
+    private readonly MapIconUploadQueue _iconPixelUploads = new();
     private readonly ConcurrentQueue<CompletedIconUpload> _completedIconUploads = new();
     private readonly ConcurrentQueue<long> _removedIconTextureIds = new();
     private readonly Dictionary<long, MapIconPixelData> _iconPixels = [];
@@ -239,7 +240,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
                     1,
                     texture.Pixels,
                     texture.Width,
-                    texture.Height);
+                    texture.Height,
+                    IsMapElement: false);
                 _iconPixels[texture.TextureId] = data;
                 _iconPixelUploads.Enqueue(data);
                 queued = true;
@@ -282,85 +284,117 @@ internal sealed partial class MapRenderer : DirectXRenderer
     /// </remarks>
     private unsafe void ProcessIconPixelUploads()
     {
+        if (_iconPixelUploads.IsEmpty)
+        {
+            return;
+        }
+        bool traceTiming = MapControlEventSource.Log.IsEnabled(
+            System.Diagnostics.Tracing.EventLevel.Verbose,
+            MapControlEventSource.Keywords.Icons);
+        long started = traceTiming ? Stopwatch.GetTimestamp() : 0;
+        int queuedMapElements = traceTiming ? _iconPixelUploads.MapElementCount : 0;
+        int queuedVectorTextures = traceTiming ? _iconPixelUploads.VectorTextureCount : 0;
+        int uploadedMapElements = 0;
+        int uploadedVectorTextures = 0;
         int processedCount = 0;
         DrainTextureDisposals();
-        while (processedCount < MaximumUploadsPerPass &&
-            _iconPixelUploads.TryDequeue(out MapIconPixelData? data))
+        IntPtr devicePointer;
+        int deviceEpoch;
+        long lockStarted = traceTiming ? Stopwatch.GetTimestamp() : 0;
+        _uploadEnteredRenderLock.Reset();
+        Interlocked.Increment(ref _uploadRenderLockWaiters);
+        try
         {
-            if (++processedCount % 8 == 0)
-            {
-                DrainTextureDisposals();
-            }
-            if (data is null)
-            {
-                continue;
-            }
-            lock (_iconSync)
-            {
-                if (!_iconPixels.TryGetValue(data.TextureId, out MapIconPixelData? current) ||
-                    current.Version != data.Version)
-                {
-                    continue;
-                }
-            }
-
-            IntPtr devicePointer;
-            int deviceEpoch;
             lock (RenderLock)
             {
+                _uploadEnteredRenderLock.Set();
                 devicePointer = DevicePointer;
                 deviceEpoch = _deviceEpoch;
                 if (devicePointer == IntPtr.Zero)
                 {
-                    _iconPixelUploads.Enqueue(data);
                     return;
                 }
                 Marshal.AddRef(devicePointer);
             }
-
-            TileTexture? completedTexture = null;
-            try
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _uploadRenderLockWaiters);
+        }
+        double lockMilliseconds = traceTiming ? Stopwatch.GetElapsedTime(lockStarted).TotalMilliseconds : 0;
+        try
+        {
+            while (processedCount < MaximumUploadsPerPass &&
+                _iconPixelUploads.TryDequeue(out MapIconPixelData? data))
             {
-                completedTexture = CreateTileTexture(
-                    devicePointer,
-                    data.Pixels,
-                    data.Width,
-                    data.Height,
-                    "Failed to create a MapIcon shader resource.");
-
-                bool isCurrent;
+                if (++processedCount % 8 == 0)
+                {
+                    DrainTextureDisposals();
+                }
                 lock (_iconSync)
                 {
-                    isCurrent =
-                        _iconPixels.TryGetValue(data.TextureId, out MapIconPixelData? current) &&
-                        current.Version == data.Version;
+                    if (!_iconPixels.TryGetValue(data.TextureId, out MapIconPixelData? current) ||
+                        current.Version != data.Version)
+                    {
+                        continue;
+                    }
                 }
-                if (isCurrent &&
-                    deviceEpoch == Interlocked.CompareExchange(ref _deviceEpoch, 0, 0))
+
+                TileTexture? completedTexture = null;
+                try
                 {
-                    _completedIconUploads.Enqueue(new CompletedIconUpload(
+                    completedTexture = CreateTileTexture(
+                        devicePointer,
+                        data.Pixels,
+                        data.Width,
+                        data.Height,
+                        "Failed to create a MapIcon shader resource.");
+
+                    bool isCurrent;
+                    lock (_iconSync)
+                    {
+                        isCurrent =
+                            _iconPixels.TryGetValue(data.TextureId, out MapIconPixelData? current) &&
+                            current.Version == data.Version;
+                    }
+                    if (isCurrent &&
+                        deviceEpoch == Interlocked.CompareExchange(ref _deviceEpoch, 0, 0))
+                    {
+                        _completedIconUploads.Enqueue(new CompletedIconUpload(
+                            data.TextureId,
+                            data.Version,
+                            deviceEpoch,
+                            completedTexture!));
+                        completedTexture = null;
+                        if (data.IsMapElement) uploadedMapElements++;
+                        else uploadedVectorTextures++;
+                        RequestRender();
+                    }
+                }
+                catch (Exception exception)
+                {
+                    MapControlEventSource.Log.IconTextureUploadFailed(
                         data.TextureId,
-                        data.Version,
-                        deviceEpoch,
-                        completedTexture!));
-                    completedTexture = null;
-                    RequestRender();
+                        checked((int)data.Width),
+                        checked((int)data.Height),
+                        exception.GetType().FullName ?? exception.GetType().Name,
+                        exception.HResult);
+                }
+                finally
+                {
+                    completedTexture?.Dispose();
                 }
             }
-            catch (Exception exception)
-            {
-                MapControlEventSource.Log.IconTextureUploadFailed(
-                    data.TextureId,
-                    checked((int)data.Width),
-                    checked((int)data.Height),
-                    exception.GetType().FullName ?? exception.GetType().Name,
-                    exception.HResult);
-            }
-            finally
-            {
-                completedTexture?.Dispose();
-                Marshal.Release(devicePointer);
-            }
+        }
+        finally
+        {
+            Marshal.Release(devicePointer);
+        }
+        if (traceTiming)
+        {
+            MapControlEventSource.Log.IconUploadPassTiming(
+                queuedMapElements, queuedVectorTextures, uploadedMapElements, uploadedVectorTextures,
+                lockMilliseconds, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
         }
         DrainTextureDisposals();
         if (!_iconPixelUploads.IsEmpty)

@@ -538,16 +538,18 @@ internal sealed class MapIconSpatialIndex
 }
 
 /// <summary>
-/// Carries a versioned UI-rasterized icon BGRA buffer and pixel dimensions to the dedicated
-/// GPU upload thread.
+/// Carries a versioned icon or vector-texture BGRA buffer and pixel dimensions to the
+/// dedicated GPU upload thread.
 /// </summary>
 /// <remarks>
 /// The texture identifier and version reject superseded UI rasterizations. Pixel bytes are
 /// retained only for device recreation and must never be included in ETW.
+/// Map-element priority is retained with the pixels so device recreation preserves scheduling.
 /// </remarks>
 internal sealed record MapIconPixelData(
     long TextureId,
     long Version,
     byte[] Pixels,
     uint Width,
-    uint Height);
+    uint Height,
+    bool IsMapElement = true);

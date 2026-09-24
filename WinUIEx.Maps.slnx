@@ -26,4 +26,12 @@
     <Platform Solution="Release|Any CPU" Project="x64" />
     <Deploy />
   </Project>
+  <Project Path="WindowsMapsSample/WindowsMapsSample.csproj">
+    <Platform Solution="*|ARM64" Project="ARM64" />
+    <Platform Solution="*|x64" Project="x64" />
+    <Platform Solution="*|x86" Project="x86" />
+    <Platform Solution="Debug|Any CPU" Project="x64" />
+    <Platform Solution="Release|Any CPU" Project="x64" />
+    <Deploy />
+  </Project>
 </Solution>

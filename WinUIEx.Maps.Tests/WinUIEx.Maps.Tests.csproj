@@ -21,9 +21,12 @@
     <UseWinUI>true</UseWinUI>
     <WinUISDKReferences>false</WinUISDKReferences>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <NoWarn>$(NoWarn);CS8305</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Azure.Maps.Search" Version="1.0.0-beta.5" />
+    <PackageReference Include="Azure.Maps.Routing" Version="1.0.0-beta.4" />
     <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.0" />
     <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.10.0" />
     <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.321">
@@ -31,7 +34,7 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2526" />
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.1-experimental" />
     <PackageReference Include="MSTest" Version="4.3.3" />
   </ItemGroup>
 
@@ -42,6 +45,19 @@
   <ItemGroup>
     <Page Remove="TestApplication.xaml" />
     <ApplicationDefinition Include="TestApplication.xaml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\WindowsMapsSample\Models\*.cs" Link="WindowsMapsSample\Models\%(Filename)%(Extension)" />
+    <Content Include="..\WindowsMapsSample\Assets\**\*.svg" Link="Assets\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Compile Include="..\WindowsMapsSample\Services\*.cs" Link="WindowsMapsSample\Services\%(Filename)%(Extension)" />
+    <Compile Include="..\WindowsMapsSample\ViewModels\*.cs" Link="WindowsMapsSample\ViewModels\%(Filename)%(Extension)" />
+    <Compile Include="..\WindowsMapsSample\Controls\*.cs" Link="WindowsMapsSample\Controls\%(Filename)%(Extension)" />
+    <Compile Include="..\WindowsMapsSample\MainPage.xaml.cs" Link="WindowsMapsSample\MainPage.xaml.cs" />
+    <Compile Include="..\WindowsMapsSample\MainPage.Inking.cs" Link="WindowsMapsSample\MainPage.Inking.cs" />
+    <Compile Include="..\WindowsMapsSample\MainPage.SearchTabs.cs" Link="WindowsMapsSample\MainPage.SearchTabs.cs" />
+    <Page Include="..\WindowsMapsSample\MainPage.xaml" Link="WindowsMapsSample\MainPage.xaml" />
+    <Page Include="..\WindowsMapsSample\Themes\Generic.xaml" Link="WindowsMapsSample\Themes\Generic.xaml" />
   </ItemGroup>
 
 </Project>

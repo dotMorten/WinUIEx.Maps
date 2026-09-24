@@ -4,6 +4,7 @@ using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Foundation;
 using WinUIEx.Maps.Rendering;
@@ -351,15 +352,20 @@ internal sealed class MapIconService
         DependencyProperty property)
     {
         if (ReferenceEquals(sender, _elementBeingRasterized) ||
-            sender is not IconElement iconElement ||
-            !_references.TryGet(
-                iconElement,
-                out MapIconTextureReferences.Entry? entry) ||
-            entry is null)
+            sender is not IconElement iconElement)
         {
             return;
         }
 
+        InvalidateIconElement(iconElement);
+    }
+
+    private void InvalidateIconElement(IconElement iconElement)
+    {
+        if (!_references.TryGet(iconElement, out MapIconTextureReferences.Entry? entry) || entry is null)
+        {
+            return;
+        }
         entry.Version++;
         QueueRasterization(iconElement, entry);
     }
@@ -450,9 +456,33 @@ internal sealed class MapIconService
             };
             host.Width = rasterRoot.Width;
             host.Height = rasterRoot.Height;
-            host.Content = rasterRoot;
-            host.UpdateLayout();
-            _elementBeingRasterized = null;
+            TaskCompletionSource loaded = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            void OnRasterRootLoaded(object sender, RoutedEventArgs args) => loaded.TrySetResult();
+            rasterRoot.Loaded += OnRasterRootLoaded;
+            try
+            {
+                host.Content = rasterRoot;
+                host.UpdateLayout();
+                _elementBeingRasterized = null;
+                // Reparented ImageIcons can measure correctly while their image visual is still unloaded.
+                if (!rasterRoot.IsLoaded)
+                    await loaded.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                rasterRoot.Loaded -= OnRasterRootLoaded;
+            }
+            TaskCompletionSource rendering = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            void OnRendering(object? sender, object args) => rendering.TrySetResult();
+            CompositionTarget.Rendering += OnRendering;
+            try
+            {
+                await rendering.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                CompositionTarget.Rendering -= OnRendering;
+            }
 
             RenderTargetBitmap bitmap = new();
             await bitmap.RenderAsync(rasterRoot);
@@ -490,6 +520,19 @@ internal sealed class MapIconService
 
             current.Width = dimensions.LogicalWidth;
             current.Height = dimensions.LogicalHeight;
+            if (MapControlEventSource.Log.IsEnabled(
+                System.Diagnostics.Tracing.EventLevel.Verbose,
+                MapControlEventSource.Keywords.Icons))
+            {
+                int nontransparentPixelCount = 0;
+                for (int index = 3; index < pixels.Length; index += 4)
+                {
+                    if (pixels[index] != 0) nontransparentPixelCount++;
+                }
+                MapControlEventSource.Log.IconRasterized(
+                    current.TextureId, current.Version, bitmap.PixelWidth, bitmap.PixelHeight,
+                    nontransparentPixelCount);
+            }
             if (_runtimeResourcesAvailable)
             {
                 _renderer.QueueMapIconTexture(new MapIconPixelData(
@@ -745,6 +788,7 @@ internal sealed class MapIconService
         private readonly IconElement _iconElement;
         private readonly WeakReference<MapIconService> _owner;
         private readonly List<(DependencyProperty Property, long Token)> _callbacks = [];
+        private ImageSource? _imageSource;
 
         internal IconElementChangeSubscription(
             IconElement iconElement,
@@ -759,6 +803,7 @@ internal sealed class MapIconService
                     OnIconElementPropertyChanged);
                 _callbacks.Add((property, token));
             }
+            ObserveImageSource();
         }
 
         internal void Detach()
@@ -768,6 +813,51 @@ internal sealed class MapIconService
                 _iconElement.UnregisterPropertyChangedCallback(property, token);
             }
             _callbacks.Clear();
+            DetachImageSource();
+        }
+
+        private void ObserveImageSource()
+        {
+            ImageSource? source = (_iconElement as ImageIcon)?.Source;
+            if (ReferenceEquals(source, _imageSource))
+            {
+                return;
+            }
+            DetachImageSource();
+            _imageSource = source;
+            if (source is SvgImageSource svg)
+            {
+                svg.Opened += Svg_Opened;
+            }
+            else if (source is BitmapImage bitmap)
+            {
+                bitmap.ImageOpened += Bitmap_Opened;
+            }
+        }
+
+        private void DetachImageSource()
+        {
+            if (_imageSource is SvgImageSource svg)
+            {
+                svg.Opened -= Svg_Opened;
+            }
+            else if (_imageSource is BitmapImage bitmap)
+            {
+                bitmap.ImageOpened -= Bitmap_Opened;
+            }
+            _imageSource = null;
+        }
+
+        private void Svg_Opened(SvgImageSource sender, SvgImageSourceOpenedEventArgs args) => ImageOpened();
+
+        private void Bitmap_Opened(object sender, RoutedEventArgs args) => ImageOpened();
+
+        private void ImageOpened()
+        {
+            if (_owner.TryGetTarget(out MapIconService? owner))
+            {
+                owner.InvalidateIconElement(_iconElement);
+            }
         }
 
         private static DependencyProperty[] GetObservedProperties(IconElement iconElement) =>
@@ -834,6 +924,10 @@ internal sealed class MapIconService
             DependencyObject sender,
             DependencyProperty property)
         {
+            if (property == ImageIcon.SourceProperty)
+            {
+                ObserveImageSource();
+            }
             if (_owner.TryGetTarget(out MapIconService? owner))
             {
                 owner.OnIconElementPropertyChanged(sender, property);

@@ -4,6 +4,8 @@ WinUIEx.Maps is a WinUI 3 map control with Azure Maps raster and vector
 basemaps, custom raster tile layers, map elements, touch and pointer navigation,
 and Direct3D rendering.
 
+<img width="951" height="626" alt="Image" src="https://github.com/user-attachments/assets/0b91ddc2-6474-4819-a73a-946a1f50e134" />
+
 ## Installation
 
 Install the `WinUIEx.Maps` NuGet package, then add a map control:

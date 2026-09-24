@@ -15,6 +15,7 @@ accessible application design.
 
 - [Package overview](../README.md)
 - [Sample application](../MapSample)
+- [Windows Maps-style desktop sample](../WindowsMapsSample) ([setup and reusable controls](../README.md#samples))
 - [WCAG 2.2 engineering assessment](../WCAG-2.2.md)
 - [License](../LICENSE.md)
 

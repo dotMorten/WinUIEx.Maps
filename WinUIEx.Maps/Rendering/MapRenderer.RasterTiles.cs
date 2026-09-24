@@ -55,7 +55,6 @@ internal sealed partial class MapRenderer
     private readonly Dictionary<long, RasterLayerState> _rasterLayers = [];
     private readonly PendingTileTracker _pendingRasterTiles = new();
     private ulong _lastReportedRasterCachePressureBytes;
-    private int _rasterUploadRenderLockWaiters;
 
     internal event Action? RasterTileResourcesInvalidated;
 
@@ -404,13 +403,13 @@ internal sealed partial class MapRenderer
         List<QueuedRasterTileUpload> uploads =
             new(Math.Min(MaximumUploadsPerPass, queueStartCount));
         long renderLockStarted = traceTiming ? Stopwatch.GetTimestamp() : 0;
-        _rasterUploadEnteredRenderLock.Reset();
-        Interlocked.Increment(ref _rasterUploadRenderLockWaiters);
+        _uploadEnteredRenderLock.Reset();
+        Interlocked.Increment(ref _uploadRenderLockWaiters);
         try
         {
             lock (RenderLock)
             {
-                _rasterUploadEnteredRenderLock.Set();
+                _uploadEnteredRenderLock.Set();
                 if (traceTiming)
                 {
                     renderLockWaitTicks += Stopwatch.GetTimestamp() - renderLockStarted;
@@ -439,7 +438,7 @@ internal sealed partial class MapRenderer
         }
         finally
         {
-            Interlocked.Decrement(ref _rasterUploadRenderLockWaiters);
+            Interlocked.Decrement(ref _uploadRenderLockWaiters);
         }
 
         try

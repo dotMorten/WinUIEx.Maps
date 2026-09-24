@@ -173,6 +173,53 @@ public sealed class MapControlViewApiTests
     }
 
     [TestMethod]
+    [DataRow(0d, 0d, 0d)]
+    [DataRow(90d, 0d, 0d)]
+    [DataRow(45d, 45d, 0d)]
+    [DataRow(0d, 0d, 179.9d)]
+    public void BowZoomOutToContainingViewIsMonotonic(double heading, double pitch, double longitude)
+    {
+        const double startZoom = 15, targetZoom = 10;
+        Assert.IsTrue(MapCamera.TryGetLocationFromOffset(
+            longitude, 10, targetZoom, 800, 600, 700, 350, heading, pitch, out MapCenter source));
+        CameraAnimation animation = new();
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        animation.SetTarget(
+            source.Longitude, source.Latitude, startZoom, heading, pitch,
+            longitude, 10, targetZoom, heading, pitch, 800, 600,
+            start, MapAnimationKind.Bow, durationMilliseconds: 1000);
+        double previousZoom = startZoom;
+        for (int step = 0; step <= 100; step++)
+        {
+            animation.GetCamera(start + (System.Diagnostics.Stopwatch.Frequency * step / 100),
+                out _, out double zoom, out _, out _);
+            Assert.IsGreaterThanOrEqualTo(targetZoom - 0.000001, zoom,
+                $"Bow zoomed past the containing target at step {step}.");
+            Assert.IsLessThanOrEqualTo(previousZoom + 0.000001, zoom,
+                $"Bow reversed zoom direction at step {step}.");
+            previousZoom = zoom;
+        }
+        Assert.AreEqual(targetZoom, previousZoom, 0.000001);
+    }
+
+    [TestMethod]
+    public void BowZoomOutToDistantViewRetainsOutwardArc()
+    {
+        CameraAnimation animation = new();
+        long start = System.Diagnostics.Stopwatch.GetTimestamp();
+        animation.SetTarget(0, 0, 15, 0, 0, 20, 10, 10, 0, 0,
+            800, 600, start, MapAnimationKind.Bow, durationMilliseconds: 1000);
+        double minimumZoom = 15;
+        for (int step = 0; step <= 100; step++)
+        {
+            animation.GetCamera(start + (System.Diagnostics.Stopwatch.Frequency * step / 100),
+                out _, out double zoom, out _, out _);
+            minimumZoom = Math.Min(minimumZoom, zoom);
+        }
+        Assert.IsLessThan(10, minimumZoom);
+    }
+
+    [TestMethod]
     public void BowUsesTheStraightHeightPathWhenNoOutwardArcIsNeeded()
     {
         CameraAnimation animation = new();

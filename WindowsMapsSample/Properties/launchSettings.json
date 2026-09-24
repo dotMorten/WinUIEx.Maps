@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "WindowsMapsSample (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "WindowsMapsSample (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

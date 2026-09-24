@@ -16,6 +16,31 @@ public sealed class MapControlViewTests
     };
 
     [TestMethod]
+    public Task BowZoomOutToContainingViewDoesNotBounce() =>
+        MapControlTestHost.LoadMapControlAsync(
+            new BasicGeoposition { Longitude = 20.1, Latitude = 10 }, 15, async map =>
+            {
+                map.ApplyAnimationsEnabled(true);
+                await MapControlTestUtilities.WaitForDisplayedCameraAsync(map, map.Center!.Position, 15);
+                using var events = new RenderingEventListener("CameraViewChangeRequested", "CameraTargetChanged");
+                Task<bool> transition = map.TrySetViewAsync(
+                    new Geopoint(InitialCenter), 10, 0, 0, MapAnimationKind.Bow);
+                double minimumZoom = 15;
+                while (!transition.IsCompleted)
+                {
+                    Assert.IsTrue(map.TryGetDisplayedCamera(out _, out double zoom, out _, out _));
+                    minimumZoom = Math.Min(minimumZoom, zoom);
+                    await Task.Delay(10);
+                }
+                Assert.IsTrue(await transition);
+                Assert.IsGreaterThanOrEqualTo(10 - 0.001, minimumZoom);
+                Assert.AreEqual((int)MapAnimationKind.Bow,
+                    events.Events("CameraViewChangeRequested").Single().Payload[0]);
+                Assert.IsNotEmpty(events.Events("CameraTargetChanged"));
+                AssertDisplayedView(map, InitialCenter, 10, 0, 0);
+            });
+
+    [TestMethod]
     public Task NoneAppliesCenterZoomHeadingAndPitchImmediately() =>
         MapControlTestHost.LoadMapControlAsync(
             InitialCenter,

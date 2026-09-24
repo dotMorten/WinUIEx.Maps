@@ -163,7 +163,16 @@ internal sealed class CameraAnimation
                 targetLongitude,
                 targetLatitude));
 
-        double zoomOutLevels = animationKind == MapAnimationKind.Bow && centerChanged
+        bool zoomingOutWithinTarget = animationKind == MapAnimationKind.Bow &&
+            _targetZoom < _startZoom &&
+            MapCamera.TryProjectLocation(
+                currentLongitude, currentLatitude,
+                targetLongitude, targetLatitude, _targetZoom,
+                viewportWidth, viewportHeight, TargetHeading, _targetPitch,
+                out MapViewportPoint sourceInTarget) &&
+            sourceInTarget.X >= 0 && sourceInTarget.X <= viewportWidth &&
+            sourceInTarget.Y >= 0 && sourceInTarget.Y <= viewportHeight;
+        double zoomOutLevels = animationKind == MapAnimationKind.Bow && centerChanged && !zoomingOutWithinTarget
             ? GetBowZoomOutLevels(
                 currentLongitude,
                 currentLatitude,

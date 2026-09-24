@@ -1170,16 +1170,29 @@ public sealed partial class MapControl : Control
 
     private void RebuildMapElements()
     {
-        foreach (MapElement element in _elementCounts.Keys)
-        {
-            element.Changed -= OnMapElementChanged;
-        }
-        _iconService.DetachAllReferences();
-        _elementCounts.Clear();
+        Dictionary<MapElement, int> counts = new(ReferenceEqualityComparer.Instance);
         foreach (MapElementsLayer layer in _layers.OfType<MapElementsLayer>())
         {
-            AddMapElements(layer.MapElements);
+            foreach (MapElement element in layer.MapElements)
+            {
+                counts.TryGetValue(element, out int count);
+                counts[element] = count + 1;
+            }
         }
+        List<MapElement> added = [], removed = [];
+        foreach ((MapElement element, int count) in counts)
+        {
+            _elementCounts.TryGetValue(element, out int previousCount);
+            for (int index = previousCount; index < count; index++) added.Add(element);
+        }
+        foreach ((MapElement element, int count) in _elementCounts)
+        {
+            counts.TryGetValue(element, out int nextCount);
+            for (int index = nextCount; index < count; index++) removed.Add(element);
+        }
+        // Add first so replacing an icon can retain a shared IconElement's texture.
+        AddMapElements(added);
+        RemoveMapElements(removed);
     }
 
     private void MarkMapElementSnapshotDirty()

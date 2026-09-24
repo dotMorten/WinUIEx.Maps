@@ -2028,4 +2028,47 @@ internal sealed class MapControlEventSource : EventSource
             WriteEventCore(84, 8, data);
         }
     }
+
+    /// <summary>
+    /// Distinguishes empty XAML captures from downstream texture or drawing failures.
+    /// </summary>
+    [Event(85, Level = EventLevel.Verbose, Keywords = Keywords.Icons, Task = Tasks.Icons)]
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The fixed event payload contains only Int32 and Int64 primitives.")]
+    public unsafe void IconRasterized(long textureId, long version, int pixelWidth, int pixelHeight, int nontransparentPixelCount)
+    {
+        if (IsEnabled(EventLevel.Verbose, Keywords.Icons))
+        {
+            EventData* data = stackalloc EventData[5];
+            data[0] = new() { DataPointer = (IntPtr)(&textureId), Size = sizeof(long) };
+            data[1] = new() { DataPointer = (IntPtr)(&version), Size = sizeof(long) };
+            data[2] = new() { DataPointer = (IntPtr)(&pixelWidth), Size = sizeof(int) };
+            data[3] = new() { DataPointer = (IntPtr)(&pixelHeight), Size = sizeof(int) };
+            data[4] = new() { DataPointer = (IntPtr)(&nontransparentPixelCount), Size = sizeof(int) };
+            WriteEventCore(85, 5, data);
+        }
+    }
+
+    /// <summary>
+    /// Separates interactive-icon backlog from vector textures and render-lock contention.
+    /// </summary>
+    [Event(86, Level = EventLevel.Verbose, Keywords = Keywords.Icons, Task = Tasks.Icons)]
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The fixed event payload contains only Int32 and Double primitives.")]
+    public unsafe void IconUploadPassTiming(
+        int queuedMapElements, int queuedVectorTextures, int uploadedMapElements, int uploadedVectorTextures,
+        double renderLockMilliseconds, double totalMilliseconds)
+    {
+        if (IsEnabled(EventLevel.Verbose, Keywords.Icons))
+        {
+            EventData* data = stackalloc EventData[6];
+            data[0] = new() { DataPointer = (IntPtr)(&queuedMapElements), Size = sizeof(int) };
+            data[1] = new() { DataPointer = (IntPtr)(&queuedVectorTextures), Size = sizeof(int) };
+            data[2] = new() { DataPointer = (IntPtr)(&uploadedMapElements), Size = sizeof(int) };
+            data[3] = new() { DataPointer = (IntPtr)(&uploadedVectorTextures), Size = sizeof(int) };
+            data[4] = new() { DataPointer = (IntPtr)(&renderLockMilliseconds), Size = sizeof(double) };
+            data[5] = new() { DataPointer = (IntPtr)(&totalMilliseconds), Size = sizeof(double) };
+            WriteEventCore(86, 6, data);
+        }
+    }
 }

@@ -10,6 +10,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Windows.Devices.Geolocation;
 using Windows.Foundation;
 using WinUIEx.Maps.Tests.UITestHelpers;
+using WinUIEx.Maps.Rendering;
 
 namespace WinUIEx.Maps.Tests.UITests;
 
@@ -21,6 +22,132 @@ public sealed class MapIconTests
     private const double TileSize = 256;
     private const double ZoomTolerance = 0.001;
     private static readonly TimeSpan RenderTimeout = TimeSpan.FromSeconds(5);
+
+    [TestMethod]
+    public Task MapIconUploadsAndDrawsAheadOfVectorTextureBacklog() =>
+        MapControlTestHost.LoadUIAsync(
+            () => new SwapChainPanel { Width = 640, Height = 480 },
+            async element =>
+        {
+            using var events = new RenderingEventListener(
+                "IconUploadPassTiming", "IconRenderBatch", "IconTextureUploadFailed");
+            using MapRenderer renderer = new();
+            for (int index = 1; index <= 4096; index++)
+                renderer.QueueMapIconTexture(new(index, 1, [0, 0, 0, 255], 1, 1, IsMapElement: false));
+            renderer.QueueMapIconTexture(new(4097, 1, [0, 0, 255, 255], 1, 1));
+            renderer.SetMapIcons([new(4097, 0, 0, 32, 32)]);
+            renderer.SetLayerRenderPlan(
+                [new(LayerRenderKind.MapElements, 0, 0, true, 1, TimeSpan.Zero, 0, 24, 0, 256)]);
+            renderer.SetCameraTargetImmediately(0, 0, 5, 640, 480);
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            renderer.Attach((SwapChainPanel)element);
+
+            await WaitForAsync(() => events.Events("IconRenderBatch")
+                .Any(value => Convert.ToInt32(value.Payload[1]) == 1));
+
+            Assert.IsLessThan(2000d, elapsed.Elapsed.TotalMilliseconds,
+                "An interactive map icon must not wait for thousands of vector textures.");
+            var firstPass = events.Events("IconUploadPassTiming").First();
+            Assert.IsGreaterThan(0, Convert.ToInt32(firstPass.Payload[2]));
+            Assert.IsGreaterThan(32, Convert.ToInt32(firstPass.Payload[1]));
+            Assert.IsLessThanOrEqualTo(32,
+                Convert.ToInt32(firstPass.Payload[2]) + Convert.ToInt32(firstPass.Payload[3]));
+            Assert.IsEmpty(events.Events("IconTextureUploadFailed"));
+        });
+
+    [TestMethod]
+    public Task ClearingAnotherLayerPreservesExistingIconTexture()
+        => MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            map.MapStyle = MapStyle.Blank;
+            map.Center = new Geopoint(new BasicGeoposition());
+            using var events = new RenderingEventListener("IconRasterized");
+            var symbol = new PathIcon
+            {
+                Width = 16,
+                Height = 16,
+                Data = new EllipseGeometry { Center = new Point(8, 8), RadiusX = 8, RadiusY = 8 },
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.Red),
+            };
+            var retained = new MapElementsLayer();
+            retained.MapElements.Add(new MapIcon(symbol, map.Center!));
+            var other = new MapElementsLayer();
+            other.MapElements.Add(new MapIcon(symbol, map.Center!));
+            map.Layers.Add(retained);
+            map.Layers.Add(other);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await WaitForAsync(() => events.Events("IconRasterized").Length > 0);
+            await map.CaptureRenderedFrameAsync(timeout.Token);
+            int captures = events.Events("IconRasterized").Length;
+
+            other.MapElements.Clear();
+            await map.CaptureRenderedFrameAsync(timeout.Token);
+
+            Assert.AreEqual(1, map.GetIconTextureReferenceCount(symbol));
+            Assert.AreEqual(captures, events.Events("IconRasterized").Length,
+                "Resetting another layer must not recapture the retained icon.");
+        });
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public Task ImageIcon_RerasterizesWhenImageFinishesLoading(bool bitmap) =>
+        MapControlTestHost.LoadMapControlAsync(async map =>
+        {
+            map.MapStyle = MapStyle.Blank;
+            map.Center = new Geopoint(new BasicGeoposition());
+            using var events = new RenderingEventListener("IconTextureUploadSummary", "IconRasterizationFailed", "IconRasterized");
+            ImageSource source = bitmap ? new BitmapImage() : new SvgImageSource();
+            var icon = new ImageIcon { Width = 32, Height = 32, Source = source };
+            var layer = new MapElementsLayer();
+            layer.MapElements.Add(new MapIcon(icon, map.Center!));
+            map.Layers.Add(layer);
+            await WaitForAsync(() => events.Events("IconTextureUploadSummary").Length > 0);
+
+            using var stream = new InMemoryRandomAccessStream();
+            if (source is BitmapImage bitmapSource)
+            {
+                var encoder = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(
+                    Windows.Graphics.Imaging.BitmapEncoder.PngEncoderId, stream);
+                var pixels = new byte[32 * 32 * 4];
+                for (int i = 0; i < pixels.Length; i += 4)
+                    pixels[i + 2] = pixels[i + 3] = 255;
+                encoder.SetPixelData(Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                    Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied, 32, 32, 96, 96, pixels);
+                await encoder.FlushAsync();
+                stream.Seek(0);
+                await bitmapSource.SetSourceAsync(stream);
+            }
+            else
+            {
+                using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
+                {
+                    writer.WriteString("""<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><circle cx="16" cy="16" r="14" fill="#ff0000"/></svg>""");
+                    await writer.StoreAsync();
+                }
+                stream.Seek(0);
+                Assert.AreEqual(SvgImageSourceLoadStatus.Success, await ((SvgImageSource)source).SetSourceAsync(stream));
+            }
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (true)
+            {
+                var frame = await map.CaptureRenderedFrameAsync(timeout.Token);
+                if (ConnectedComponentAnalyzer.Find(frame, ConnectedComponentAnalyzer.Near(255, 0, 0), minimumPixelCount: 20).Any())
+                    break;
+                await Task.Delay(20, timeout.Token);
+            }
+            Assert.IsEmpty(events.Events("IconRasterizationFailed"));
+            Assert.IsGreaterThanOrEqualTo(2, events.Events("IconTextureUploadSummary").Length);
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                int captures = events.Events("IconRasterized").Length;
+                icon.Width = attempt % 2 == 0 ? 33 : 32;
+                await WaitForAsync(() => events.Events("IconRasterized").Length > captures);
+                var capture = events.Events("IconRasterized")[captures];
+                Assert.IsGreaterThan(0, (int)capture.Payload[4]!,
+                    "Reattaching a loaded image must not publish a transparent texture.");
+            }
+        });
 
     [TestMethod]
     public Task MapIcon_RendersAtCenter() =>

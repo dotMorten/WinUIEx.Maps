@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="140" viewBox="0 0 240 140">
+  <rect width="240" height="140" fill="#d9dfb8"/>
+  <path d="M50 0Q100 40 160 5T240 25V140H80Q110 95 50 0" fill="#b1c58b"/>
+  <path d="M120 0Q90 38 145 60T180 140H240V0" fill="#91b079"/>
+  <path d="M153 0Q110 32 170 58T195 140 M180 0Q132 32 190 54T220 140 M205 0Q156 28 214 51T241 130 M115 0Q74 35 126 71T153 140" fill="none" stroke="#778b64" stroke-width="1.5"/>
+  <path d="M0 0H40Q93 32 41 71T50 140H0Z" fill="#9acde0"/>
+  <path d="M37 147Q124 109 82 77T156 35L240 18" fill="none" stroke="#e7bb68" stroke-width="7"/>
+  <path d="M37 147Q124 109 82 77T156 35L240 18" fill="none" stroke="#fff8d6" stroke-width="4"/>
+</svg>

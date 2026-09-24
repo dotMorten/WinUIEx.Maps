@@ -158,6 +158,8 @@ payload inspection is best in PerfView's Events view.
 | 82 | `VectorSymbolFallbackSummary` | Verbose/Icons+VectorTiles | cached fallback symbol tiles considered and omitted because their visible footprint has opaque same-source replacement coverage; unrelated missing tiles no longer keep covered old tiers in collision candidates |
 | 83 | `VectorRetainedMemory` | Verbose/Frames | renderer/frame-correlated decoded-feature estimates, cached symbol struct payloads, cached line-group index payloads, retained line/polygon geometry-buffer bytes, and running/completed preparation counts |
 | 84 | `SymbolInstanceUploadTiming` | Verbose/Frames | renderer/frame-correlated icon/glyph instance uploads, discard/no-overwrite counts, copied bytes, dynamic-buffer capacity and CPU map/copy/unmap time |
+| 85 | `IconRasterized` | Verbose/Icons | texture/version-correlated XAML capture dimensions and nontransparent pixel count; distinguishes an empty capture from GPU upload/draw failures without recording pixels |
+| 86 | `IconUploadPassTiming` | Verbose/Icons | queued and uploaded map-element versus vector-texture counts, render-lock wait, and total bounded upload-pass duration |
 
 ### Frame-time investigations
 
@@ -246,6 +248,9 @@ and request URLs out of traces.
   `CameraTargetChanged`, `CameraHeadingTargetChanged`, and `CameraPitchTargetChanged` as the intent,
   `TileWaveStart/Stop` as the work, and generation plus sceneVersion as correlation.
   Repeated cancellations without camera/style changes suggest a scheduling regression.
+  A Bow request (ID 70) that zooms out to a viewport containing the displayed source center
+  keeps Bow easing but omits the additional outward arc. Containment uses the target
+  heading, pitch, and wrapped longitude; such transitions must not undershoot target zoom.
 - **Missing/slow tiles:** filter IDs 11–18, 31, and 43–46. Compare scheduler duration and counts. HTTP status is
   present for service failures; `failureKind` distinguishes `ServiceResponse`, `Network`,
   and `Decode`. A completed request followed by upload failure localizes the issue to D3D.
@@ -302,8 +307,20 @@ and request URLs out of traces.
   instances to drawable instances, texture count/batches, and draw calls. IDs 23/24
   distinguish UI-thread XAML rasterization from background GPU upload. Use ID 32 to
   correlate layer ownership/replacement with IDs 21–22 and verify expected current counts.
+  For startup latency, compare ID 85 with the first drawable ID 26 and inspect ID 86.
+  Map-element textures receive priority over queued vector sprites/glyphs within the same
+  bounded upload worker, allowing one vector texture after eight map-element uploads.
+  Each pass retains the device once and participates in the render-lock handoff used by
+  raster uploads; it must not reacquire the render lock for every glyph.
+  ID 85 identifies fully transparent captures even when upload and draw succeed. An
+  unchanged icon must retain its texture when another layer is reset; legitimate recaptures
+  wait for the reattached XAML capture root to load and reach a XAML rendering pass before
+  capturing it. `Loaded` alone does not guarantee that an ImageIcon's image visual is ready.
   Texture batches are per layer, so the same texture used in two layers contributes two
   batches in ID 26; layers render from the first (bottom-most) to the last (top-most).
+  `ImageIcon` SVG/bitmap load completion invalidates its raster and produces another
+  ID 22/25 update/upload. A successful initial upload can still contain blank pixels if
+  the image has not loaded yet; confirm the completion upload before blaming drawing.
 - **Device/blank surface:** use Lifecycle+Device+Errors (`0x43`). Pair IDs 5/6, then look for
   ID 8 and HRESULT. Verify resource release and recreation around unload/resume.
 

@@ -1,0 +1,186 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:WindowsMapsSample.Controls">
+    <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Default">
+            <SolidColorBrush x:Key="MapPanelBackgroundBrush" Color="#202020" />
+            <SolidColorBrush x:Key="MapToolbarBackgroundBrush" Color="#292929" />
+            <SolidColorBrush x:Key="CompassNorthBrush" Color="#FF6464" />
+            <SvgImageSource x:Key="RoadMapPreviewSource" UriSource="ms-appx:///Assets/MapViews/RoadDark.svg" />
+            <StaticResource x:Key="TabViewItemHeaderBackgroundSelected" ResourceKey="AccentFillColorDefaultBrush" />
+            <StaticResource x:Key="TabViewItemHeaderForegroundSelected" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
+            <StaticResource x:Key="TabViewItemHeaderSelectedCloseButtonForeground" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Light">
+            <SolidColorBrush x:Key="MapPanelBackgroundBrush" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="MapToolbarBackgroundBrush" Color="#F3F3F3" />
+            <SolidColorBrush x:Key="CompassNorthBrush" Color="#C42B1C" />
+            <SvgImageSource x:Key="RoadMapPreviewSource" UriSource="ms-appx:///Assets/MapViews/RoadLight.svg" />
+            <StaticResource x:Key="TabViewItemHeaderBackgroundSelected" ResourceKey="AccentFillColorDefaultBrush" />
+            <StaticResource x:Key="TabViewItemHeaderForegroundSelected" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
+            <StaticResource x:Key="TabViewItemHeaderSelectedCloseButtonForeground" ResourceKey="TextOnAccentFillColorPrimaryBrush" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="HighContrast">
+            <SolidColorBrush x:Key="MapPanelBackgroundBrush" Color="{ThemeResource SystemColorWindowColor}" />
+            <SolidColorBrush x:Key="MapToolbarBackgroundBrush" Color="{ThemeResource SystemColorWindowColor}" />
+            <SolidColorBrush x:Key="CompassNorthBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+            <SvgImageSource x:Key="RoadMapPreviewSource" UriSource="ms-appx:///Assets/MapViews/RoadLight.svg" />
+            <SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="{ThemeResource SystemColorHighlightColor}" />
+            <SolidColorBrush x:Key="TabViewItemHeaderForegroundSelected" Color="{ThemeResource SystemColorHighlightTextColor}" />
+            <SolidColorBrush x:Key="TabViewItemHeaderSelectedCloseButtonForeground" Color="{ThemeResource SystemColorHighlightTextColor}" />
+        </ResourceDictionary>
+    </ResourceDictionary.ThemeDictionaries>
+    <Style x:Key="MapCommandButton" TargetType="Button">
+        <Setter Property="Height" Value="48" />
+        <Setter Property="Padding" Value="16,8" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="0" />
+    </Style>
+    <Style x:Key="MapToolButton" TargetType="Button">
+        <Setter Property="Width" Value="44" />
+        <Setter Property="Height" Value="44" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+    </Style>
+    <Style TargetType="controls:MapNavigationControl">
+        <Setter Property="Background" Value="{ThemeResource MapPanelBackgroundBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="6" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="controls:MapNavigationControl">
+                    <Border Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}"
+                            BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+                        <StackPanel>
+                            <Button x:Name="PART_NorthUp" Style="{StaticResource MapToolButton}"
+                                    AutomationProperties.Name="Reset north" ToolTipService.ToolTip="Reset north">
+                                <Grid x:Name="PART_NorthIndicator" Width="20" Height="28" RenderTransformOrigin="0.5,0.5">
+                                    <Path Data="M10,1 L16,14 10,12 4,14 Z" Fill="{ThemeResource CompassNorthBrush}" />
+                                    <Path Data="M10,27 L16,14 10,16 4,14 Z" Fill="{ThemeResource TextFillColorPrimaryBrush}" />
+                                </Grid>
+                            </Button>
+                            <Button x:Name="PART_Tilt" Style="{StaticResource MapToolButton}"
+                                    AutomationProperties.Name="Toggle map tilt" ToolTipService.ToolTip="Toggle map tilt">
+                                <Viewbox Width="24" Height="24">
+                                    <Path Width="24" Height="24" Data="M2,21 L6,4 18,4 22,21 Z M10,4 L9,21 M14,4 L15,21 M5,9 L19,9 M4,15 L20,15"
+                                          Stroke="{ThemeResource TextFillColorPrimaryBrush}" StrokeThickness="1.5" />
+                                </Viewbox>
+                            </Button>
+                            <Button x:Name="PART_Locate" Style="{StaticResource MapToolButton}"
+                                    AutomationProperties.Name="My location" ToolTipService.ToolTip="My location">
+                                <PathIcon Data="F0 M10,1 A9,9 0 1 1 10,19 A9,9 0 1 1 10,1 Z M10,3 A7,7 0 1 0 10,17 A7,7 0 1 0 10,3 Z M10,6 A4,4 0 1 1 10,14 A4,4 0 1 1 10,6 Z" Width="20" Height="20" />
+                            </Button>
+                            <Button x:Name="PART_ZoomIn" Style="{StaticResource MapToolButton}"
+                                    AutomationProperties.Name="Zoom in" ToolTipService.ToolTip="Zoom in">
+                                <FontIcon Glyph="&#xE710;" FontSize="16" />
+                            </Button>
+                            <Button x:Name="PART_ZoomOut" Style="{StaticResource MapToolButton}"
+                                    AutomationProperties.Name="Zoom out" ToolTipService.ToolTip="Zoom out">
+                                <FontIcon Glyph="&#xE738;" FontSize="16" />
+                            </Button>
+                        </StackPanel>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style x:Key="MapPreviewChoice" TargetType="RadioButton">
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <Border x:Name="PreviewBorder" BorderThickness="2" BorderBrush="Transparent" CornerRadius="3"
+                            Background="{ThemeResource MapPanelBackgroundBrush}" Padding="1">
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="PreviewBorder.BorderBrush" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed" />
+                                <VisualState x:Name="Disabled" />
+                            </VisualStateGroup>
+                            <VisualStateGroup x:Name="CheckStates">
+                                <VisualState x:Name="Unchecked" />
+                                <VisualState x:Name="Checked">
+                                    <VisualState.Setters>
+                                        <Setter Target="PreviewBorder.BorderBrush" Value="{ThemeResource AccentFillColorDefaultBrush}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                        <ContentPresenter Content="{TemplateBinding Content}" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="controls:MapStylePicker">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="controls:MapStylePicker">
+                    <DropDownButton Height="48" Padding="12,8" Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="{TemplateBinding CornerRadius}"
+                                    AutomationProperties.Name="Map views" ToolTipService.ToolTip="Map views">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Image x:Name="PART_SelectedPreview" Width="18" Height="18" Stretch="UniformToFill" />
+                            <TextBlock x:Name="PART_SelectedLabel" VerticalAlignment="Center" />
+                        </StackPanel>
+                        <DropDownButton.Flyout>
+                            <Flyout Placement="BottomEdgeAlignedRight">
+                                <Flyout.FlyoutPresenterStyle>
+                                    <Style TargetType="FlyoutPresenter">
+                                        <Setter Property="MaxWidth" Value="340" />
+                                        <Setter Property="Padding" Value="10" />
+                                        <Setter Property="Background" Value="{ThemeResource MapPanelBackgroundBrush}" />
+                                    </Style>
+                                </Flyout.FlyoutPresenterStyle>
+                                <StackPanel Spacing="16">
+                                    <StackPanel Orientation="Horizontal" Spacing="4">
+                                        <RadioButton x:Name="PART_Road" Style="{StaticResource MapPreviewChoice}" AutomationProperties.Name="Road map">
+                                            <Grid Width="80" Height="80">
+                                                <Image Stretch="UniformToFill" Source="{ThemeResource RoadMapPreviewSource}" />
+                                                <Border VerticalAlignment="Bottom" Background="#DD202020" Padding="5,2">
+                                                    <TextBlock Text="Road" Foreground="White" FontSize="12" />
+                                                </Border>
+                                            </Grid>
+                                        </RadioButton>
+                                        <RadioButton x:Name="PART_Aerial" Style="{StaticResource MapPreviewChoice}" AutomationProperties.Name="Aerial map">
+                                            <Grid Width="80" Height="80">
+                                                <Image Stretch="UniformToFill" Source="ms-appx:///Assets/MapViews/Aerial.svg" />
+                                                <Border VerticalAlignment="Bottom" Background="#DD202020" Padding="5,2">
+                                                    <TextBlock Text="Aerial" Foreground="White" FontSize="12" />
+                                                </Border>
+                                            </Grid>
+                                        </RadioButton>
+                                        <RadioButton x:Name="PART_Terrain" Style="{StaticResource MapPreviewChoice}" AutomationProperties.Name="Terrain map">
+                                            <Grid Width="80" Height="80">
+                                                <Image Stretch="UniformToFill" Source="ms-appx:///Assets/MapViews/Terrain.svg" />
+                                                <Border VerticalAlignment="Bottom" Background="#DD202020" Padding="5,2">
+                                                    <TextBlock Text="Terrain" Foreground="White" FontSize="12" />
+                                                </Border>
+                                            </Grid>
+                                        </RadioButton>
+                                    </StackPanel>
+                                    <ToggleSwitch x:Name="PART_Ink" Header="Windows Ink" OnContent="Show" OffContent="Hide"
+                                                  AutomationProperties.Name="Windows Ink" />
+                                </StackPanel>
+                            </Flyout>
+                        </DropDownButton.Flyout>
+                    </DropDownButton>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>

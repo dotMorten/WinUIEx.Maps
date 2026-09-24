@@ -12,6 +12,40 @@ namespace WinUIEx.Maps.Tests;
 public sealed class MapControlEventSourceTests
 {
     [TestMethod]
+    public void IconUploadPassDiagnosticsAreOptInAndContainOnlyCountsAndDurations()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.Icons);
+        MapControlEventSource.Log.IconUploadPassTiming(1, 200, 1, 31, 0.5, 2.5);
+        Assert.DoesNotContain(value => value.Id == 86, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.Icons);
+        MapControlEventSource.Log.IconUploadPassTiming(1, 200, 1, 31, 0.5, 2.5);
+        CapturedEvent captured = listener.Single(86);
+        Assert.AreSequenceEqual(
+            ["queuedMapElements", "queuedVectorTextures", "uploadedMapElements", "uploadedVectorTextures",
+             "renderLockMilliseconds", "totalMilliseconds"], captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>([1, 200, 1, 31, 0.5d, 2.5d], captured.Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
+    public void IconRasterDiagnosticsAreOptInAndContainOnlyNumericCounts()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.Icons);
+        MapControlEventSource.Log.IconRasterized(7, 2, 48, 48, 320);
+        Assert.DoesNotContain(value => value.Id == 85, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.Icons);
+        MapControlEventSource.Log.IconRasterized(7, 2, 48, 48, 320);
+        CapturedEvent captured = listener.Single(85);
+        Assert.AreSequenceEqual(
+            ["textureId", "version", "pixelWidth", "pixelHeight", "nontransparentPixelCount"],
+            captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>([7L, 2L, 48, 48, 320], captured.Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
     public void SymbolUploadDiagnosticsAreOptInAndContainOnlyNumericCosts()
     {
         using TestEventListener listener = new();
@@ -559,7 +593,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 84),
+            Enumerable.Range(1, 86),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }
