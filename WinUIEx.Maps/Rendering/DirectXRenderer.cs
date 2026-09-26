@@ -74,6 +74,8 @@ internal abstract class DirectXRenderer : IDisposable
     protected object RenderLock => _renderLock;
     protected IntPtr DevicePointer => _devicePointer;
     protected IntPtr ContextPointer => _contextPointer;
+    protected IntPtr RenderTargetPointer => _renderTargetPointer;
+    protected RenderSurfaceSize SurfaceSize => _surfaceSize;
     // Draw constants stay in DIPs; only the native rasterizer and readback use pixels.
     protected D3D11_VIEWPORT Viewport => new()
     {

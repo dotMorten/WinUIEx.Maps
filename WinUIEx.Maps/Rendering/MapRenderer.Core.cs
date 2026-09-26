@@ -134,6 +134,9 @@ internal sealed partial class MapRenderer : DirectXRenderer
         {
             CancelVectorGeometryPreparation();
             ClearVectorSymbolFrameCaches();
+            if (!plan.Select(layer => (layer.RuntimeId, layer.MinZoom, layer.MaxZoom))
+                .SequenceEqual(_layerRenderPlan.Select(layer => (layer.RuntimeId, layer.MinZoom, layer.MaxZoom))))
+                _lastRequiredTiles.Clear();
             _layerRenderPlan = plan;
             _layerRenderPlanVersion++;
         }
@@ -544,8 +547,10 @@ internal sealed partial class MapRenderer : DirectXRenderer
         }
         int accessibilityStyle = 0;
         long accessibilitySceneVersion = 0;
-        foreach (LayerRenderSnapshot layer in plan)
+        bool usedLineComposite = false;
+        for (int planIndex = 0; planIndex < plan.Length; planIndex++)
         {
+            LayerRenderSnapshot layer = plan[planIndex];
             if (!layer.IsVisible || layer.Opacity <= 0)
             {
                 continue;
@@ -576,14 +581,27 @@ internal sealed partial class MapRenderer : DirectXRenderer
                 LayerRenderKind.VectorPoints or LayerRenderKind.HybridTiles)
             {
                 long stageStart = traceFrame ? Stopwatch.GetTimestamp() : 0;
-                hasRasterFade |= DrawVectorPolygonLayer(context, layer);
+                if (layer.LineCompositeOpacity >= 1)
+                    hasRasterFade |= DrawVectorPolygonLayer(context, layer);
                 if (traceFrame)
                 {
                     long end = Stopwatch.GetTimestamp();
                     polygonTicks += end - stageStart;
                     stageStart = end;
                 }
-                hasRasterFade |= DrawVectorLineLayer(context, layer);
+                if (layer.LineCompositeOpacity < 1)
+                {
+                    if (planIndex == 0 || plan[planIndex - 1].LayerIndex != layer.LayerIndex ||
+                        plan[planIndex - 1].LineCompositeOpacity >= 1)
+                    {
+                        hasRasterFade |= DrawCompositedTrafficLines(context, plan, planIndex, out bool used);
+                        usedLineComposite |= used;
+                    }
+                }
+                else
+                {
+                    hasRasterFade |= DrawVectorLineLayer(context, layer);
+                }
                 if (traceFrame)
                 {
                     long end = Stopwatch.GetTimestamp();
@@ -609,6 +627,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
                 DrawMapElements(context, layer.LayerIndex, layer.Opacity);
             }
         }
+        if (!usedLineComposite && _lineCompositeTarget != IntPtr.Zero)
+            ReleaseLineComposite();
         if (updateAccessibility)
         {
             PublishAccessibilitySnapshot(
@@ -788,6 +808,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         }
         int tileZoom = Math.Min((int)Math.Floor(_displayZoom), _maximumTileZoom);
         MapScene? scene = _scene;
+        double previousZoom = scene?.Zoom ?? double.NaN;
         if (scene is null ||
             scene.Longitude != _displayLongitude ||
             scene.Latitude != _displayLatitude ||
@@ -813,7 +834,11 @@ internal sealed partial class MapRenderer : DirectXRenderer
         DisplayedCameraChanged?.Invoke(scene);
 
         IReadOnlyList<TileId> requiredTiles = scene.RequiredTiles;
-        if (!_lastRequiredTiles.SetEquals(requiredTiles))
+        bool crossedLayerZoomLimit = previousZoom != scene.Zoom &&
+            _layerRenderPlan.Any(layer =>
+                (previousZoom >= layer.MinZoom && previousZoom < layer.MaxZoom) !=
+                (scene.Zoom >= layer.MinZoom && scene.Zoom < layer.MaxZoom));
+        if (crossedLayerZoomLimit || !_lastRequiredTiles.SetEquals(requiredTiles))
         {
             _lastRequiredTiles.Clear();
             _lastRequiredTiles.UnionWith(requiredTiles);

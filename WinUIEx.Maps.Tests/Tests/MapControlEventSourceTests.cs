@@ -12,6 +12,30 @@ namespace WinUIEx.Maps.Tests;
 public sealed class MapControlEventSourceTests
 {
     [TestMethod]
+    public void LineCompositeReportsOnlyDimensionsOpacityAndResourceCounts()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.VectorTiles);
+        MapControlEventSource.Log.VectorLineComposite(2, 800, 600, 4, 0.5, 9600000);
+        CapturedEvent captured = listener.Single(88);
+        Assert.AreSequenceEqual(["sourceCount", "width", "height", "samples", "opacity", "retainedBytes"], captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>([2, 800, 600, 4, 0.5, 9600000L], captured.Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
+    public void AzureOverlayRefreshContainsOnlyLayerCounts()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.Tiles);
+        MapControlEventSource.Log.AzureOverlayRefresh(1, 2, 3);
+        CapturedEvent captured = listener.Single(87);
+        Assert.AreSequenceEqual(["trafficLayers", "radarLayers", "infraredLayers"], captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>([1, 2, 3], captured.Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
     public void IconUploadPassDiagnosticsAreOptInAndContainOnlyCountsAndDurations()
     {
         using TestEventListener listener = new();
@@ -593,7 +617,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 86),
+            Enumerable.Range(1, 88),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }

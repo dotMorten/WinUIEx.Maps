@@ -12,6 +12,7 @@ using WindowsMapsSample.Models;
 using WindowsMapsSample.Services;
 using WinUIEx.Maps.Tests.UITestHelpers;
 using WinUIEx.Maps.Tests.Input;
+using WinUIEx.Maps.Rendering;
 
 namespace WinUIEx.Maps.Tests.UITests;
 
@@ -677,15 +678,160 @@ public sealed class WindowsMapsSampleUITests
                 picker.SelectedStyle = MapStyle.RoadShadedRelief;
                 Assert.IsTrue(choices[2].IsChecked);
                 Assert.IsFalse(choices[1].IsChecked);
-                var ink = Descendants(content).OfType<ToggleSwitch>().Single();
+                var ink = Descendants(content).OfType<ToggleSwitch>().Single(toggle => toggle.Name == "PART_Ink");
                 ink.IsOn = true;
                 Assert.IsTrue(picker.IsInkEnabled);
                 picker.IsInkEnabled = false;
                 Assert.IsFalse(ink.IsOn);
+                var traffic = Descendants(content).OfType<ToggleSwitch>().Single(toggle => toggle.Name == "PART_Traffic");
+                Assert.IsFalse(traffic.IsOn);
+                traffic.IsOn = true;
+                Assert.IsTrue(picker.IsTrafficEnabled);
+                picker.IsTrafficEnabled = false;
+                Assert.IsFalse(traffic.IsOn);
                 var preview = Descendants(picker).OfType<Image>().Single();
                 Assert.EndsWith("Terrain.svg", Assert.IsInstanceOfType<SvgImageSource>(preview.Source).UriSource.AbsolutePath);
             }
             finally { button.Flyout.Hide(); }
+        });
+
+    [TestMethod]
+    public Task TrafficSwitch_AddsOneOverlayBelowApplicationElements() =>
+        LoadSampleAsync(new MemoryTokenStore { Token = "saved-key" }, new FakeMapsService(), (page, _, _) =>
+        {
+            var picker = Find<MapStylePicker>(page, "StylePicker");
+            var map = Find<MapControl>(page, "Map");
+            MapLayer[] original = map.Layers.ToArray();
+            picker.IsTrafficEnabled = true;
+            AzureTrafficLayer traffic = Assert.IsInstanceOfType<AzureTrafficLayer>(map.Layers[0]);
+            Assert.IsTrue(traffic.ShowIncidents);
+            Assert.AreEqual(12d, traffic.MinIncidentZoom);
+            Assert.AreSequenceEqual(original, map.Layers.Skip(1).ToArray());
+            picker.IsTrafficEnabled = true;
+            Assert.AreEqual(1, map.Layers.OfType<AzureTrafficLayer>().Count());
+            picker.IsTrafficEnabled = false;
+            Assert.AreSequenceEqual(original, map.Layers.ToArray());
+            return Task.CompletedTask;
+        });
+
+    [TestMethod]
+    public Task TrafficIncidentClick_ShowsDetailsWithoutDroppingPin() =>
+        LoadSampleAsync(new MemoryTokenStore { Token = "saved-key" }, new FakeMapsService(), async (page, _, service) =>
+        {
+            var picker = Find<MapStylePicker>(page, "StylePicker");
+            var map = Find<MapControl>(page, "Map");
+            picker.IsTrafficEnabled = true;
+            var traffic = map.Layers.OfType<AzureTrafficLayer>().Single();
+            traffic.MinIncidentZoom = 0;
+            Assert.IsTrue(traffic.HasIncidentTappedHandler);
+            TileId tileId = new(4, 8, 8);
+            byte[] encoded = new MapboxVectorTileBuilder()
+                .AddPoint("Traffic incident POI", 2048, 2048, new Dictionary<string, object>
+                {
+                    ["id"] = "fixture-incident", ["icon_category_0"] = 9,
+                    ["description_0"] = "Fixture road works", ["delay"] = 120, ["magnitude"] = 2,
+                })
+                .AddLine("Traffic incident flow", [new(0, 2048), new(4096, 2048)],
+                    new Dictionary<string, object> { ["description"] = "Underlying road segment" })
+                .Build();
+            map.Layers.Insert(0, new TestTrafficTileLayer(traffic.IncidentRuntimeId, tileId, encoded));
+            await map.TrySetViewAsync(new(new()
+            {
+                Longitude = 11.25, Latitude = MapCamera.WorldYToLatitude(8.5 / 16),
+            }), 4, 0, 0, MapAnimationKind.None);
+            await MapControlTestUtilities.WaitForDisplayedCameraAsync(map, map.Center!.Position, 4);
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+            while (true)
+            {
+                var frame = await map.CaptureRenderedFrameAsync(timeout.Token);
+                if (ConnectedComponentAnalyzer.Find(frame,
+                    ConnectedComponentAnalyzer.Near(255, 213, 79, tolerance: 8),
+                    minimumPixelCount: 20).Length > 0)
+                    break;
+                await Task.Delay(20, timeout.Token);
+            }
+            int unhandledTaps = 0;
+            map.Tapped += (_, _) => unhandledTaps++;
+            var input = UiInputInjector.ForElement(MapControlTestHost.Window, map);
+            input.Mouse.Click(input.PointAt(0.5 + 10 / map.ActualWidth, 0.5 + 8 / map.ActualHeight));
+            var flyout = (Flyout)page.Resources["TrafficIncidentFlyout"];
+            var content = (StackPanel)flyout.Content;
+            try
+            {
+                await WaitAsync(() => content.IsLoaded);
+                string text = string.Join("\n", Descendants(content).OfType<TextBlock>().Select(t => t.Text));
+                Assert.Contains("Fixture road works", text);
+                Assert.Contains("Road works", text);
+                Assert.DoesNotContain("fixture-incident", text);
+                Assert.Contains("2 min delay", text);
+                Assert.DoesNotContain("Underlying road segment", text);
+                Assert.AreEqual(0, unhandledTaps);
+                Assert.AreEqual(0, service.ReverseCalls);
+                Assert.IsEmpty(Find<TabView>(page, "SearchTabs").TabItems);
+                picker.IsTrafficEnabled = false;
+                await WaitAsync(() => !content.IsLoaded);
+            }
+            finally
+            {
+                flyout.Hide();
+            }
+        });
+
+    [TestMethod]
+    [DataRow(ElementTheme.Light)]
+    [DataRow(ElementTheme.Dark)]
+    public Task TrafficIncidentCallout_UsesTypeDelayAndOptionalLocalTimes(ElementTheme theme) =>
+        LoadSampleAsync(new MemoryTokenStore { Token = "saved-key" }, new FakeMapsService(), async (page, _, _) =>
+        {
+            page.RequestedTheme = theme;
+            var map = Find<MapControl>(page, "Map");
+            DateTimeOffset start = new(2026, 9, 24, 14, 54, 0, TimeSpan.FromHours(-7));
+            DateTimeOffset end = start.AddHours(4).AddMinutes(40);
+            page.UpdateTrafficIncidentDetails(new(map.Center!, "fixture-id", 6, 3,
+                "Stopped traffic", TimeSpan.FromMinutes(18), title: "A road name",
+                startTime: start, endTime: end));
+            var flyout = (Flyout)page.Resources["TrafficIncidentFlyout"];
+            var content = (StackPanel)flyout.Content;
+            flyout.ShowAt(map, new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions
+            {
+                Position = new(map.ActualWidth / 2, map.ActualHeight / 2),
+            });
+            try
+            {
+                await WaitAsync(() => content.IsLoaded && content.ActualWidth > 0);
+                var title = Find<TextBlock>(page, "TrafficIncidentTitle");
+                var delay = Find<TextBlock>(page, "TrafficIncidentDelay");
+                var description = Find<TextBlock>(page, "TrafficIncidentDescription");
+                var startText = Find<TextBlock>(page, "TrafficIncidentStart");
+                var endText = Find<TextBlock>(page, "TrafficIncidentEnd");
+                Assert.AreEqual("Congestion", title.Text);
+                Assert.AreEqual("18 min delay", delay.Text);
+                Assert.AreEqual("Stopped traffic", description.Text);
+                Assert.AreEqual($"Start: {start.ToLocalTime():ddd, MMM d} - {start.ToLocalTime():t}", startText.Text);
+                Assert.AreEqual($"Est. end: {end.ToLocalTime():ddd, MMM d} - {end.ToLocalTime():t}", endText.Text);
+                var titlePosition = title.TransformToVisual(content).TransformPoint(default);
+                var delayPosition = delay.TransformToVisual(content).TransformPoint(default);
+                Assert.AreEqual(titlePosition.Y, delayPosition.Y, 1);
+                Assert.IsGreaterThan(titlePosition.X + title.ActualWidth, delayPosition.X);
+                Assert.IsGreaterThan(titlePosition.Y, description.TransformToVisual(content).TransformPoint(default).Y);
+                DependencyObject? presenter = content;
+                while (presenter is not null && presenter is not FlyoutPresenter)
+                    presenter = VisualTreeHelper.GetParent(presenter);
+                var flyoutPresenter = Assert.IsInstanceOfType<FlyoutPresenter>(presenter);
+                Assert.AreEqual(new CornerRadius(12), flyoutPresenter.CornerRadius);
+                Assert.AreEqual(new Thickness(16), flyoutPresenter.Padding);
+                Assert.AreEqual(theme, flyoutPresenter.ActualTheme);
+                Assert.AreNotEqual(
+                    Assert.IsInstanceOfType<SolidColorBrush>(title.Foreground).Color,
+                    Assert.IsInstanceOfType<SolidColorBrush>(delay.Foreground).Color);
+                page.UpdateTrafficIncidentDetails(new(map.Center!, null, null, null));
+                Assert.AreEqual("Traffic incident", title.Text);
+                Assert.AreEqual(Visibility.Collapsed, delay.Visibility);
+                Assert.AreEqual(Visibility.Collapsed, description.Visibility);
+                Assert.AreEqual(Visibility.Collapsed, startText.Visibility);
+                Assert.AreEqual(Visibility.Collapsed, endText.Visibility);
+            }
+            finally { flyout.Hide(); }
         });
 
     [TestMethod]

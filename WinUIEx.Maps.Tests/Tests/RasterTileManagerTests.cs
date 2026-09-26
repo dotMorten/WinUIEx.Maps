@@ -406,6 +406,38 @@ public sealed class RasterTileManagerTests
         await acquisition.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    [TestMethod]
+    public async Task CrossingDisplayZoomLimitCancelsAndResumesTilesAndAttributionAtSameSourceZoom()
+    {
+        MapScene eligible = MapCamera.CreateScene(0, 0, 6.75, 6, 256, 256);
+        MapScene hidden = MapCamera.CreateScene(0, 0, 6.25, 6, 256, 256);
+        HeldTileAcquisition acquisition = new([eligible.RequiredTiles[0]], [], holdAttribution: true);
+        using MapRenderer renderer = new();
+        using RasterTileManager manager = new(renderer);
+        manager.SetLayers([new TileLayerSnapshot(42, 1, acquisition, 6.5, 24, true, 1, TimeSpan.Zero)]);
+        manager.UpdateScene(eligible);
+        manager.Resume();
+        try
+        {
+            await acquisition.OldStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await acquisition.AttributionStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            manager.UpdateScene(hidden);
+            Assert.IsTrue(acquisition.HeldToken.IsCancellationRequested);
+            Assert.IsTrue(acquisition.AttributionToken.IsCancellationRequested);
+            Assert.AreEqual(1, acquisition.HeldStarts);
+            manager.UpdateScene(eligible);
+            await acquisition.HeldRestarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await acquisition.AttributionRestarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.IsFalse(acquisition.HeldToken.IsCancellationRequested);
+            Assert.IsFalse(acquisition.AttributionToken.IsCancellationRequested);
+        }
+        finally
+        {
+            acquisition.ReleaseHeld.TrySetResult();
+            acquisition.ReleaseOther.TrySetResult();
+        }
+    }
+
     private sealed class EligibilityGateAcquisition(TileId tile) : RasterTileAcquisitionSession
     {
         private int _armed;
@@ -446,7 +478,7 @@ public sealed class RasterTileManagerTests
         }
     }
 
-    private sealed class HeldTileAcquisition(TileId[] oldTiles, TileId[] latestTiles)
+    private sealed class HeldTileAcquisition(TileId[] oldTiles, TileId[] latestTiles, bool holdAttribution = false)
         : RasterTileAcquisitionSession
     {
         internal TaskCompletionSource OldStarted { get; } =
@@ -457,12 +489,20 @@ public sealed class RasterTileManagerTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource ReleaseOther { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource HeldRestarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource AttributionStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource AttributionRestarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal CancellationToken AttributionToken { get; private set; }
         internal CancellationToken HeldToken { get; private set; }
         internal int OverLimit;
         internal int HeldStarts;
         private int _oldStarted;
         private int _latestStarted;
         private int _active;
+        private int _attributionStarts;
 
         internal override object SourceKey => this;
         internal override RasterSourceKind SourceKind => RasterSourceKind.Custom;
@@ -470,6 +510,17 @@ public sealed class RasterTileManagerTests
         internal override int MinSourceZoom => 0;
         internal override int MaxSourceZoom => 22;
         internal override bool CanAcquire => true;
+        internal override bool SupportsAttribution => holdAttribution;
+        internal override async Task<string?> GetAttributionAsync(int zoom, CancellationToken cancellationToken)
+        {
+            AttributionToken = cancellationToken;
+            if (Interlocked.Increment(ref _attributionStarts) == 1)
+                AttributionStarted.TrySetResult();
+            else
+                AttributionRestarted.TrySetResult();
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            return null;
+        }
         internal override int GetSourceZoom(MapScene scene) => scene.TileZoom;
         internal override bool IncludesTile(TileId id) =>
             oldTiles.Contains(id) || latestTiles.Contains(id);
@@ -489,7 +540,8 @@ public sealed class RasterTileManagerTests
                     if (id == oldTiles[0])
                     {
                         HeldToken = cancellationToken;
-                        Interlocked.Increment(ref HeldStarts);
+                        if (Interlocked.Increment(ref HeldStarts) == 2)
+                            HeldRestarted.TrySetResult();
                     }
                     if (Interlocked.Increment(ref _oldStarted) == oldTiles.Length)
                     {

@@ -437,7 +437,8 @@ internal sealed class RasterTileManager : IDisposable
         }
         foreach (LayerWorker worker in reset)
         {
-            _renderer.RemoveRasterTileSource(worker.RuntimeId);
+            if (!worker.RetainsRefreshTiles)
+                _renderer.RemoveRasterTileSource(worker.RuntimeId);
             worker.QueueCurrentScene();
         }
         if (!hasAzureSource)
@@ -708,6 +709,9 @@ internal sealed class RasterTileManager : IDisposable
             {
                 bool sourceChanged = !Equals(_sourceKey, layer.SourceKey);
                 WasSourceChanged = sourceChanged;
+                RetainsRefreshTiles = sourceChanged &&
+                    layer.Acquisition.RefreshIdentity is { } refreshIdentity &&
+                    Equals(refreshIdentity, _layer.Acquisition.RefreshIdentity);
                 _layer = layer;
                 _scene = scene;
                 _suspended = suspended;
@@ -722,7 +726,9 @@ internal sealed class RasterTileManager : IDisposable
                     _generation++;
                     _authenticationFailureReported = false;
                     _activeSourceZoom = -1;
-                    _activationRequired = true;
+                    _activationRequired = !RetainsRefreshTiles;
+                    if (RetainsRefreshTiles)
+                        _renderer.RefreshRasterTileSource(RuntimeId, _generation);
                     _attempted.Clear();
                     _attributionCache.Clear();
                     CancelWaveLocked("SourceChanged");
@@ -731,6 +737,7 @@ internal sealed class RasterTileManager : IDisposable
                 else if (!ShouldAcquire(layer, scene?.Zoom ?? 0))
                 {
                     CancelWaveLocked("LayerNotEligible");
+                    CancelAttributionLocked();
                 }
                 if (!sourceChanged)
                 {
@@ -739,6 +746,8 @@ internal sealed class RasterTileManager : IDisposable
                 return sourceChanged;
             }
         }
+
+        internal bool RetainsRefreshTiles { get; private set; }
 
         /// <summary>
         /// Queues eligible work for the currently retained scene.
@@ -767,7 +776,12 @@ internal sealed class RasterTileManager : IDisposable
                 }
                 _sceneVersion++;
                 _attempted.Clear();
-                if (scene is not null && _activeSourceZoom >= 0)
+                if (scene is null || !ShouldAcquire(_layer, scene.Zoom))
+                {
+                    CancelWaveLocked("LayerNotEligible");
+                    CancelAttributionLocked();
+                }
+                else if (_activeSourceZoom >= 0)
                 {
                     int requestedSourceZoom =
                         NormalizeSourceZoom(
@@ -1476,6 +1490,10 @@ internal sealed class RasterTileManager : IDisposable
             (int Zoom, long Generation) key = (zoom, generation);
             lock (_sync)
             {
+                if (_disposed || _suspended || _scene is null ||
+                    !ShouldAcquire(_layer, _scene.Zoom) ||
+                    generation != _generation || !Equals(acquisition.SourceKey, _sourceKey))
+                    return;
                 if (_attributionCache.TryGetValue(zoom, out string? attribution))
                 {
                     cachedAttribution = attribution;
@@ -1486,6 +1504,9 @@ internal sealed class RasterTileManager : IDisposable
                     attributionCancellation =
                         CancellationTokenSource.CreateLinkedTokenSource(processingToken);
                     _attributionCancellation = attributionCancellation;
+                    // Register before completion can remove ownership under this lock.
+                    _attributionTasks[key] = Task.Run(() =>
+                        LoadAttributionAndRemoveAsync(key, acquisition, attributionCancellation));
                 }
             }
             if (cachedAttribution is not null)
@@ -1493,16 +1514,8 @@ internal sealed class RasterTileManager : IDisposable
                 _attributionChanged(new RasterAttributionUpdate(
                     RuntimeId,
                     generation,
-                    cachedAttribution));
-            }
-            else if (attributionCancellation is not null)
-            {
-                _attributionTasks.TryAdd(
-                    key,
-                    LoadAttributionAndRemoveAsync(
-                        key,
-                        acquisition,
-                        attributionCancellation));
+                    cachedAttribution,
+                    acquisition.SourceKey));
             }
         }
 
@@ -1542,7 +1555,8 @@ internal sealed class RasterTileManager : IDisposable
                 _attributionChanged(new RasterAttributionUpdate(
                     RuntimeId,
                     key.Generation,
-                    attribution));
+                    attribution,
+                    acquisition.SourceKey));
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1580,13 +1594,16 @@ internal sealed class RasterTileManager : IDisposable
             }
             finally
             {
-                _attributionTasks.TryRemove(key, out _);
                 lock (_sync)
                 {
+                    _attributionTasks.TryRemove(key, out _);
                     if (ReferenceEquals(_attributionCancellation, attributionCancellation))
                     {
                         _attributionCancellation = null;
                     }
+                    if (cancellationToken.IsCancellationRequested &&
+                        key.Generation == _generation && Equals(acquisition.SourceKey, _sourceKey))
+                        QueueLocked();
                 }
                 attributionCancellation.Dispose();
             }
@@ -1618,7 +1635,8 @@ internal sealed class RasterTileManager : IDisposable
             _authenticationFailed(new RasterAuthenticationFailure(
                 RuntimeId,
                 generation,
-                statusCode));
+                statusCode,
+                acquisition.SourceKey));
         }
 
         /// <summary>
@@ -1782,7 +1800,8 @@ internal sealed class RasterTileManager : IDisposable
 internal readonly record struct RasterAuthenticationFailure(
     long RuntimeId,
     long Generation,
-    int StatusCode);
+    int StatusCode,
+    object SourceKey);
 
 /// <summary>
 /// Summarizes one bounded continuously fed scheduling run.

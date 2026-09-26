@@ -31,6 +31,11 @@ The project is `WinUIEx.Maps.Benchmarks`.
   Its fractional-zoom case alternates exact zoom values within one source level to
   exercise zoom-dependent style/geometry invalidation. It excludes tile arrivals and
   Present; do not equate this case with integer-level replacement or displayed FPS.
+- `TrafficLineCompositeBenchmarks` compares direct per-fragment road opacity with uniform
+  composited road opacity at 1920x1080, with one/two sources and 1x/4x sampling. It reuses
+  embedded urban line geometry with the traffic flow style, not live traffic data. Setup
+  and target creation are excluded; each frame waits for GPU completion. Native scratch
+  memory is reported separately by `VectorLineComposite` ETW, not `MemoryDiagnoser`.
 - `VectorSymbolResolutionBenchmarks` measures text/icon style resolution and label
   construction using deterministic generated point features, glyph bitmaps, and a sprite
   atlas at two symbol densities.

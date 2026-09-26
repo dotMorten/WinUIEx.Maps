@@ -176,7 +176,7 @@ public sealed partial class MapControl
     }
 
     /// <summary>
-    /// Gets or sets the Azure Maps subscription key used by the hidden base-map layer.
+    /// Gets or sets the Azure Maps subscription key used by the hidden base map and Azure overlays.
     /// </summary>
     /// <value>
     /// An Azure Maps Primary Key or Secondary Key, or an empty string when no key is
@@ -184,7 +184,7 @@ public sealed partial class MapControl
     /// </value>
     /// <remarks>
     /// This property implements Azure Maps shared-key authentication and is used only for
-    /// nonblank Azure base-map styles. Obtain a key from the <c>Authentication</c> page of an
+    /// nonblank Azure base-map styles and their Azure overlays. Obtain a key from the <c>Authentication</c> page of an
     /// Azure Maps account in the Azure portal; see the
     /// <see href="https://learn.microsoft.com/azure/azure-maps/how-to-manage-authentication">
     /// Azure Maps authentication documentation</see>. Load keys from secure configuration or

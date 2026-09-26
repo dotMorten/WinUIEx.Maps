@@ -7,6 +7,7 @@ accessible application design.
 | --- | --- |
 | [Getting started](getting-started.md) | Install the package, display an Azure map, and navigate it with input or code. |
 | [Map elements and interaction](map-elements-and-interaction.md) | Add icons, lines, and polygons, then implement hover, click, and context actions. |
+| [Azure traffic and weather](azure-traffic-and-weather.md) | Add traffic flow, interactive incidents, and radar or infrared weather overlays. |
 | [Custom raster tiles](custom-raster-tiles.md) | Add an XYZ, TMS, quadkey, or bounding-box raster source, starting with OpenStreetMap. |
 | [Custom vector tiles](custom-vector-tiles.md) | Render Mapbox Vector Tile data with a Style Specification, sprites, and glyphs. |
 | [Configuration and accessibility](configuration-and-accessibility.md) | Configure language, layers, themes, text scaling, animation behavior, and automation. |

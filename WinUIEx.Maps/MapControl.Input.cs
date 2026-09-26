@@ -322,16 +322,71 @@ public sealed partial class MapControl
     private void OnMapElementTapped(object sender, TappedRoutedEventArgs e)
     {
         Point mapPosition = e.GetPosition(this);
-        if ((_elementInputHandlers & MapElementInputEventKind.Tapped) == 0 ||
-            !TryHitTestMapElement(
-                e.GetPosition((UIElement?)_panel ?? this),
-                out MapElementHitTarget hit) ||
-            !TryGetLocationFromOffset(mapPosition, out Geopoint location))
+        if (!TryGetLocationFromOffset(mapPosition, out Geopoint location))
         {
             return;
         }
+        Point panelPoint = e.GetPosition((UIElement?)_panel ?? this);
+        bool hasElement = TryHitTestMapElement(panelPoint, out MapElementHitTarget hit);
+        int elementLayerIndex = hasElement ? _layers.IndexOf(hit.Layer) : -1;
+        for (int i = _layers.Count - 1; i > elementLayerIndex; i--)
+        {
+            if (_layers[i] is AzureTrafficLayer
+                { IsVisible: true, Opacity: > 0, ShowIncidents: true, HasIncidentTappedHandler: true } traffic &&
+                !_runtimeResourcesReleased &&
+                _renderer.TryHitTestIncident(traffic.IncidentRuntimeId, panelPoint.X, panelPoint.Y,
+                    out VectorTileFeature? incident))
+            {
+                AzureTrafficIncidentEventArgs incidentArgs = CreateIncidentEventArgs(incident!, location, mapPosition);
+                traffic.RaiseIncidentTapped(incidentArgs);
+                e.Handled = incidentArgs.Handled;
+                return;
+            }
+        }
+        if (hasElement && (_elementInputHandlers & MapElementInputEventKind.Tapped) != 0)
+            hit.Layer.RaiseTapped(hit.Element, location, e);
+    }
 
-        hit.Layer.RaiseTapped(hit.Element, location, e);
+    internal static AzureTrafficIncidentEventArgs CreateIncidentEventArgs(
+        VectorTileFeature feature, Geopoint location, Point position = default)
+    {
+        string? id = feature.TryGetProperty("id", out var value) ? value.ToInvariantString() : null;
+        List<string> descriptions = [];
+        AddDescription("description");
+        for (int index = 0; index <= 12; index++)
+            AddDescription($"description_{index}");
+        TimeSpan? delay = feature.TryGetProperty("delay", out var delayValue) &&
+            delayValue.TryGetNumber(out double seconds) && double.IsFinite(seconds) &&
+            seconds >= 0 && seconds < TimeSpan.MaxValue.TotalSeconds
+                ? TimeSpan.FromSeconds(seconds) : null;
+        return new(location, id, ReadCode("icon_category") ?? ReadCode("icon_category_0"),
+            ReadCode("magnitude"), descriptions.Count == 0 ? null : string.Join("; ", descriptions),
+            delay, ReadText("title"), ReadText("incidentType"), position,
+            ReadTime("startTime") ?? ReadTime("start_time"),
+            ReadTime("endTime") ?? ReadTime("end_time"));
+
+        DateTimeOffset? ReadTime(string name) =>
+            DateTimeOffset.TryParseExact(ReadText(name),
+                ["yyyy-MM-dd'T'HH:mm:ss.FFFFFFFzzz", "yyyy-MM-dd'T'HH:mm:sszzz",
+                 "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF'Z'", "yyyy-MM-dd'T'HH:mm:ss'Z'"],
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal |
+                System.Globalization.DateTimeStyles.AdjustToUniversal, out var time) ? time : null;
+
+        string? ReadText(string name) =>
+            feature.TryGetProperty(name, out var text) && !string.IsNullOrWhiteSpace(text.StringValue)
+                ? text.StringValue.Trim() : null;
+
+        void AddDescription(string name)
+        {
+            if (ReadText(name) is { } text && !descriptions.Contains(text, StringComparer.Ordinal))
+                descriptions.Add(text);
+        }
+
+        int? ReadCode(string name) =>
+            feature.TryGetProperty(name, out var code) && code.TryGetNumber(out double number) &&
+            double.IsFinite(number) && number >= int.MinValue && number <= int.MaxValue &&
+            number == Math.Truncate(number) ? (int)number : null;
     }
 
     private void OnMapElementRightTapped(object sender, RightTappedRoutedEventArgs e)

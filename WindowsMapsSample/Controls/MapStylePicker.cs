@@ -11,12 +11,14 @@ namespace WindowsMapsSample.Controls;
 [TemplatePart(Name = "PART_SelectedPreview", Type = typeof(Image))]
 [TemplatePart(Name = "PART_SelectedLabel", Type = typeof(TextBlock))]
 [TemplatePart(Name = "PART_Ink", Type = typeof(ToggleSwitch))]
+[TemplatePart(Name = "PART_Traffic", Type = typeof(ToggleSwitch))]
 public sealed partial class MapStylePicker : Control
 {
     private RadioButton? _road, _aerial, _terrain;
     private Image? _preview;
     private TextBlock? _label;
     private ToggleSwitch? _ink;
+    private ToggleSwitch? _traffic;
     private bool _updating;
 
     public MapStylePicker()
@@ -49,12 +51,23 @@ public sealed partial class MapStylePicker : Control
         set => SetValue(IsInkEnabledProperty, value);
     }
 
+    public static readonly DependencyProperty IsTrafficEnabledProperty = DependencyProperty.Register(
+        nameof(IsTrafficEnabled), typeof(bool), typeof(MapStylePicker),
+        new PropertyMetadata(false, (sender, _) => ((MapStylePicker)sender).UpdateSelection()));
+
+    public bool IsTrafficEnabled
+    {
+        get => (bool)GetValue(IsTrafficEnabledProperty);
+        set => SetValue(IsTrafficEnabledProperty, value);
+    }
+
     protected override void OnApplyTemplate()
     {
         if (_road is not null) _road.Checked -= Road_Checked;
         if (_aerial is not null) _aerial.Checked -= Aerial_Checked;
         if (_terrain is not null) _terrain.Checked -= Terrain_Checked;
         if (_ink is not null) _ink.Toggled -= Ink_Toggled;
+        if (_traffic is not null) _traffic.Toggled -= Traffic_Toggled;
         base.OnApplyTemplate();
         _road = GetTemplateChild("PART_Road") as RadioButton;
         _aerial = GetTemplateChild("PART_Aerial") as RadioButton;
@@ -62,11 +75,13 @@ public sealed partial class MapStylePicker : Control
         _preview = GetTemplateChild("PART_SelectedPreview") as Image;
         _label = GetTemplateChild("PART_SelectedLabel") as TextBlock;
         _ink = GetTemplateChild("PART_Ink") as ToggleSwitch;
+        _traffic = GetTemplateChild("PART_Traffic") as ToggleSwitch;
         UpdateSelection();
         if (_road is not null) _road.Checked += Road_Checked;
         if (_aerial is not null) _aerial.Checked += Aerial_Checked;
         if (_terrain is not null) _terrain.Checked += Terrain_Checked;
         if (_ink is not null) _ink.Toggled += Ink_Toggled;
+        if (_traffic is not null) _traffic.Toggled += Traffic_Toggled;
     }
 
     private void UpdateSelection()
@@ -76,6 +91,7 @@ public sealed partial class MapStylePicker : Control
         if (_aerial is not null) _aerial.IsChecked = SelectedStyle is MapStyle.Satellite or MapStyle.SatelliteWithRoads;
         if (_terrain is not null) _terrain.IsChecked = SelectedStyle == MapStyle.RoadShadedRelief;
         if (_ink is not null) _ink.IsOn = IsInkEnabled;
+        if (_traffic is not null) _traffic.IsOn = IsTrafficEnabled;
         if (_label is not null) _label.Text = SelectedStyle switch
         {
             MapStyle.Satellite or MapStyle.SatelliteWithRoads => "Aerial",
@@ -99,4 +115,5 @@ public sealed partial class MapStylePicker : Control
     private void Aerial_Checked(object sender, RoutedEventArgs e) { if (!_updating) SelectedStyle = MapStyle.SatelliteWithRoads; }
     private void Terrain_Checked(object sender, RoutedEventArgs e) { if (!_updating) SelectedStyle = MapStyle.RoadShadedRelief; }
     private void Ink_Toggled(object sender, RoutedEventArgs e) { if (!_updating) IsInkEnabled = _ink!.IsOn; }
+    private void Traffic_Toggled(object sender, RoutedEventArgs e) { if (!_updating) IsTrafficEnabled = _traffic!.IsOn; }
 }

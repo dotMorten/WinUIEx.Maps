@@ -116,8 +116,7 @@ public sealed partial class MapControl : Control
     private readonly MapRenderer _renderer;
     private readonly MapIconService _iconService;
     private readonly RasterTileManager _rasterTileManager;
-    private AzureTileLayer? _azureTileLayer;
-    private long _attributionGeneration;
+    private AzureBaseTileLayer? _azureTileLayer;
     private SwapChainPanel? _panel;
     private Border? _attributionContainer;
     private TextBlock? _attributionText;
@@ -156,7 +155,7 @@ public sealed partial class MapControl : Control
 
     internal int TrackedIconTextureCount => _iconService.TrackedTextureCount;
 
-    internal AzureTileLayer? AzureBaseLayer => _azureTileLayer;
+    internal AzureBaseTileLayer? AzureBaseLayer => _azureTileLayer;
 
     internal MapElementInputEventKind ElementInputHandlers => _elementInputHandlers;
 
@@ -451,6 +450,7 @@ public sealed partial class MapControl : Control
         }
         UpdateAzureAuthenticationInfoBar();
         UpdateCameraTarget(forceImmediate: true);
+        PublishLayerSnapshots();
         _iconService.QueueAllRasterizations(force: runtimeRecreated);
         if (_accessibilitySnapshot is not null)
         {
@@ -469,6 +469,7 @@ public sealed partial class MapControl : Control
         _iconService.SetLoaded(false);
         StopAccessibilityAnnouncementTimer();
         StopMissingAzureTokenTimer();
+        _azureRefreshTimer?.Stop();
         if (_azureAuthenticationInfoBar is not null)
         {
             _azureAuthenticationInfoBar.IsOpen = false;
@@ -494,6 +495,7 @@ public sealed partial class MapControl : Control
                 _iconService.SetLoaded(true);
                 _renderer.Resume();
                 _rasterTileManager.Resume();
+                PublishLayerSnapshots();
                 return;
             }
 
@@ -670,6 +672,7 @@ public sealed partial class MapControl : Control
         }
 
         _runtimeResourcesReleased = true;
+        _azureRefreshTimer?.Stop();
         _iconService.SetRuntimeResourcesAvailable(false);
         DetachIconXamlRoot();
         _iconService.ReleaseDormantResources();
@@ -939,12 +942,16 @@ public sealed partial class MapControl : Control
         LayerSnapshotPublication publication = CreateLayerSnapshotPublication(
             _azureTileLayer,
             _layers,
-            _animationsEnabled);
+            _animationsEnabled,
+            MapStyle == MapStyle.Blank ? null : MapServiceToken,
+            GetAzureRequestLanguage());
+        SynchronizeAzureSources(publication.RasterLayers);
         _renderer.SetLayerRenderPlan(publication.RenderPlan);
         if (!_runtimeResourcesReleased)
         {
             _rasterTileManager.SetLayers(publication.RasterLayers);
         }
+        ScheduleAzureRefresh();
     }
 
     /// <summary>
@@ -955,12 +962,16 @@ public sealed partial class MapControl : Control
     /// are immutable and are the only raster state passed to render/scheduler workers.
     /// </remarks>
     internal static LayerSnapshotPublication CreateLayerSnapshotPublication(
-        AzureTileLayer? azureLayer,
+        AzureBaseTileLayer? azureLayer,
         IReadOnlyList<MapLayer> layers,
-        bool animationsEnabled = true)
+        bool animationsEnabled = true,
+        string? azureToken = null,
+        string? language = null,
+        DateTimeOffset? now = null)
     {
         LayerRenderPlanBuilder renderPlan = new();
         List<TileLayerSnapshot> tileLayers = [];
+        DateTimeOffset snapshotTime = now ?? DateTimeOffset.UtcNow;
         for (int index = 0; index < layers.Count; index++)
         {
             MapLayer layer = layers[index];
@@ -972,6 +983,14 @@ public sealed partial class MapControl : Control
                     animationsEnabled,
                     renderPlan,
                     tileLayers);
+            }
+            else if (layer is AzureTileLayer azure && azureToken is not null)
+            {
+                foreach (TileLayerSnapshot snapshot in azure.CreateSnapshots(
+                    azureToken, language, snapshotTime))
+                {
+                    AddTileSnapshot(snapshot, index, animationsEnabled, renderPlan, tileLayers);
+                }
             }
             else if (layer is MapElementsLayer)
             {
@@ -1012,6 +1031,16 @@ public sealed partial class MapControl : Control
         List<TileLayerSnapshot> tileLayers)
     {
         TileLayerSnapshot snapshot = tileLayer.CreateSnapshot();
+        AddTileSnapshot(snapshot, layerIndex, animationsEnabled, renderPlan, tileLayers);
+    }
+
+    private static void AddTileSnapshot(
+        TileLayerSnapshot snapshot,
+        int layerIndex,
+        bool animationsEnabled,
+        LayerRenderPlanBuilder renderPlan,
+        List<TileLayerSnapshot> tileLayers)
+    {
         if (!animationsEnabled)
         {
             snapshot = snapshot with { FadeDuration = TimeSpan.Zero };
@@ -1029,7 +1058,8 @@ public sealed partial class MapControl : Control
             snapshot.MaxZoom,
             snapshot.MinSourceZoom,
             snapshot.TileSize,
-            -1));
+            -1,
+            snapshot.Acquisition.LineCompositeOpacity));
     }
 
     /// <summary>
@@ -1038,7 +1068,7 @@ public sealed partial class MapControl : Control
     private void ReplaceAzureTileLayer()
     {
         string? language = GetAzureRequestLanguage();
-        AzureTileLayer? replacement = MapStyle == MapStyle.Blank
+        AzureBaseTileLayer? replacement = MapStyle == MapStyle.Blank
             ? null
             : _azureTileLayer is not null &&
                 _azureTileLayer.Matches(
@@ -1055,22 +1085,21 @@ public sealed partial class MapControl : Control
             return;
         }
         _azureTileLayer = replacement;
-        _attributionGeneration = 0;
         UpdateAttribution();
     }
 
     internal string? GetAzureRequestLanguage() =>
         AzureTileAcquisitionSession.GetRequestLanguage(Language);
 
-    internal static AzureTileLayer? CreateAzureBaseLayer(MapStyle style, string? token) =>
+    internal static AzureBaseTileLayer? CreateAzureBaseLayer(MapStyle style, string? token) =>
         CreateAzureBaseLayer(style, token, null);
 
-    internal static AzureTileLayer? CreateAzureBaseLayer(
+    internal static AzureBaseTileLayer? CreateAzureBaseLayer(
         MapStyle style,
         string? token,
         string? language) =>
         HasAzureBaseLayer(style)
-            ? new AzureTileLayer(style, token, language)
+            ? new AzureBaseTileLayer(style, token, language)
             : null;
 
     internal static bool HasAzureBaseLayer(MapStyle style) => style != MapStyle.Blank;
@@ -1421,6 +1450,8 @@ public sealed partial class MapControl : Control
     private void OnRendererSceneChanged(MapScene scene)
     {
         _rasterTileManager.UpdateScene(scene);
+        if (_hasAzureZoomLimits)
+            DispatcherQueue.TryEnqueue(() => OnAzureDisplayZoomChanged(scene.Zoom));
     }
 
     private void OnRendererAccessibilitySnapshotChanged(
@@ -1615,22 +1646,14 @@ public sealed partial class MapControl : Control
             {
                 return;
             }
-            if (update.SourceId == 0)
-            {
-                if (_azureTileLayer is null)
-                {
-                    _attributionGeneration = 0;
-                    UpdateAttribution();
-                }
-                return;
-            }
-            if (_azureTileLayer?.RuntimeId != update.SourceId ||
-                update.Generation < _attributionGeneration)
+            if (!_azureSourceAttributions.TryGetValue(update.SourceId, out AzureSourceAttribution? state) ||
+                !Equals(state.SourceKey, update.SourceKey) ||
+                update.Generation < state.Generation)
             {
                 return;
             }
-            _attributionGeneration = update.Generation;
-            _azureTileLayer.Attribution = update.Text;
+            state.Generation = update.Generation;
+            state.Text = update.Text;
             UpdateAttribution();
         });
     }
@@ -1689,11 +1712,15 @@ public sealed partial class MapControl : Control
         if (layer is null ||
             !layer.IsVisible ||
             layer.Opacity <= 0 ||
-            string.IsNullOrWhiteSpace(layer.Attribution))
+            (layer is AzureTileLayer && MapStyle == MapStyle.Blank))
         {
             return;
         }
 
+        string text = layer is AzureTileLayer azure
+            ? GetAzureAttribution(azure) : layer.Attribution.Trim();
+        if (string.IsNullOrWhiteSpace(text))
+            return;
         if (hasAttribution)
         {
             _attributionText!.Inlines.Add(new Run
@@ -1703,7 +1730,6 @@ public sealed partial class MapControl : Control
             });
         }
 
-        string text = layer.Attribution.Trim();
         if (layer.AttributionLink is Uri link)
         {
             Hyperlink hyperlink = new() { NavigateUri = link };
@@ -1726,7 +1752,9 @@ public sealed partial class MapControl : Control
         DispatcherQueue.TryEnqueue(() =>
         {
             if (_azureAuthenticationInfoBar is null ||
-                _azureTileLayer?.RuntimeId != failure.RuntimeId)
+                !_azureSourceAttributions.TryGetValue(failure.RuntimeId, out var state) ||
+                !Equals(state.SourceKey, failure.SourceKey) ||
+                failure.Generation < state.Generation)
             {
                 return;
             }

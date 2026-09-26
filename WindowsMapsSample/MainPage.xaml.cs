@@ -25,6 +25,7 @@ public sealed partial class MainPage : Page
     private readonly Dictionary<AutoSuggestBox, LatestRequest> _searchRequests = [];
     private readonly MapElementsLayer _routeLayer = new(), _favoritesLayer = new(), _resultsLayer = new(), _locationLayer = new();
     private readonly MapElementsLayer _selectedLayer = new();
+    private readonly AzureTrafficLayer _trafficLayer = new() { ShowIncidents = true };
     private readonly Dictionary<MapElement, Place> _places = [];
     private readonly Dictionary<string, ImageIcon> _pinSymbols = [];
     private readonly List<Place> _recentPlaces = [];
@@ -71,6 +72,7 @@ public sealed partial class MainPage : Page
         _selectedLayer.Tapped += Marker_Tapped;
         _routeLayer.Tapped += Marker_Tapped;
         _locationLayer.Tapped += Marker_Tapped;
+        _trafficLayer.IncidentTapped += TrafficIncident_Tapped;
         foreach (var layer in new[] { _resultsLayer, _favoritesLayer, _selectedLayer, _routeLayer, _locationLayer })
             layer.RightTapped += Marker_RightTapped;
         Map.Tapped += Map_Tapped;
@@ -82,6 +84,7 @@ public sealed partial class MainPage : Page
         FavoritesList.ItemsSource = _favorites.Items;
         RestoreFavoriteMarkers();
         StylePicker.RegisterPropertyChangedCallback(MapStylePicker.SelectedStyleProperty, (_, _) => ApplyMapStyle());
+        StylePicker.RegisterPropertyChangedCallback(MapStylePicker.IsTrafficEnabledProperty, (_, _) => ApplyTraffic());
         ActualThemeChanged += (_, _) => ApplyMapStyle();
         Loaded += Page_Loaded;
         Unloaded += Page_Unloaded;
@@ -371,6 +374,47 @@ public sealed partial class MainPage : Page
             ShowPinMenu(place, Map, args.GetPosition(Map));
         }
     }
+
+    private void TrafficIncident_Tapped(object? sender, AzureTrafficIncidentEventArgs args)
+    {
+        if (!_active || StylePicker.IsInkEnabled) return;
+        args.Handled = true;
+        _selectionRequest.Cancel();
+        UpdateTrafficIncidentDetails(args);
+        var options = new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions { Position = args.Position };
+        ((Flyout)Resources["TrafficIncidentFlyout"]).ShowAt(Map, options);
+    }
+
+    internal void UpdateTrafficIncidentDetails(AzureTrafficIncidentEventArgs args)
+    {
+        TrafficIncidentContent.MaxWidth = Math.Max(0, Map.ActualWidth - 48);
+        TrafficIncidentTitle.Text = args.IncidentType ??
+            (args.Category is { } category ? IncidentCategoryName(category) : "Traffic incident");
+        SetDetail(TrafficIncidentDelay, args.Delay is { } delay ? $"{delay.TotalMinutes:0.#} min delay" : null);
+        SetDetail(TrafficIncidentDescription, args.Description);
+        SetDetail(TrafficIncidentStart, FormatIncidentTime("Start", args.StartTime));
+        SetDetail(TrafficIncidentEnd, FormatIncidentTime("Est. end", args.EndTime));
+        TrafficIncidentTimes.Visibility = args.StartTime is null && args.EndTime is null
+            ? Visibility.Collapsed : Visibility.Visible;
+
+        static void SetDetail(TextBlock element, string? text)
+        {
+            element.Text = text ?? string.Empty;
+            element.Visibility = string.IsNullOrWhiteSpace(text) ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        static string? FormatIncidentTime(string label, DateTimeOffset? time) =>
+            time is { } value ? $"{label}: {value.ToLocalTime():ddd, MMM d} - {value.ToLocalTime():t}" : null;
+    }
+
+    private static string IncidentCategoryName(int category) => category switch
+    {
+        0 => "Unknown", 1 => "Accident", 2 => "Fog", 3 => "Dangerous conditions",
+        4 => "Rain", 5 => "Ice", 6 => "Congestion", 7 => "Lane closed",
+        8 => "Road closed", 9 => "Road works", 10 => "Wind", 11 => "Flooding",
+        12 => "Detour", 13 => "Multiple incidents", 14 => "Broken-down vehicle",
+        _ => "Traffic incident",
+    };
 
     private void Map_RightTapped(object sender, RightTappedRoutedEventArgs args)
     {
@@ -1001,11 +1045,29 @@ public sealed partial class MainPage : Page
         Map.MapStyle = StylePicker.SelectedStyle is MapStyle.Road or MapStyle.Night
             ? ActualTheme == ElementTheme.Dark ? MapStyle.Night : MapStyle.Road
             : StylePicker.SelectedStyle;
+        ApplyTraffic();
+    }
+
+    private void ApplyTraffic()
+    {
+        _trafficLayer.FlowStyle = ActualTheme == ElementTheme.Dark
+            ? TrafficFlowStyle.RelativeDark : TrafficFlowStyle.Relative;
+        if (StylePicker.IsTrafficEnabled)
+        {
+            if (!Map.Layers.Contains(_trafficLayer))
+                Map.Layers.Insert(0, _trafficLayer);
+        }
+        else
+        {
+            ((Flyout)Resources["TrafficIncidentFlyout"]).Hide();
+            Map.Layers.Remove(_trafficLayer);
+        }
     }
 
     private void Exit_Click(object sender, RoutedEventArgs e) => _window.Close();
     private void CancelRequests()
     {
+        ((Flyout)Resources["TrafficIncidentFlyout"]).Hide();
         ((MenuFlyout)Resources["MapContextMenu"]).Hide();
         _contextLocation = null;
         ((MenuFlyout)Resources["PinContextMenu"]).Hide();

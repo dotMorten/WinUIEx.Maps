@@ -68,8 +68,10 @@ public sealed class TileLayerTests
         Assert.IsTrue(createSnapshot.IsVirtual);
         Assert.IsFalse(createSnapshot.IsPublic);
         Assert.IsNull(typeof(TileLayer).Assembly.GetType("WinUIEx.Maps.TileSource"));
-        Assert.IsTrue(typeof(TileLayer).IsAssignableFrom(typeof(AzureTileLayer)));
-        Assert.IsTrue(typeof(AzureTileLayer).IsSealed);
+        Assert.AreEqual(typeof(MapLayer), typeof(AzureTileLayer).BaseType);
+        Assert.IsTrue(typeof(AzureTileLayer).IsAbstract);
+        Assert.IsTrue(typeof(AzureTileLayer).IsAssignableFrom(typeof(AzureBaseTileLayer)));
+        Assert.IsTrue(typeof(AzureBaseTileLayer).IsSealed);
         Assert.IsNull(typeof(TileLayer).Assembly.GetType(
             "WinUIEx.Maps.Rendering.TileManager"));
         Assert.IsNull(typeof(TileLayer).Assembly.GetType(

@@ -89,7 +89,7 @@ payload inspection is best in PerfView's Events view.
 | 7 | `DeviceResourcesReleased` | Info/Device | released tile/icon texture counts |
 | 8 | `RendererFailure` | Error/Device+Errors | resize, initialization, or render failure |
 | 9 | `CameraTargetChanged` | Info/Camera | requested center/zoom/viewport; emitted on target changes, not every frame |
-| 10 | `SceneChanged` | Verbose/Camera | required tile set changed |
+| 10 | `SceneChanged` | Verbose/Camera | required tile set or layer display-zoom eligibility changed |
 | 11–12 | `TileWaveStart/Stop` | Info/Tiles | generation/scene-correlated batch, duration, completion/failure/cancel counts |
 | 13 | `TileRequestFailed` | Error/Tiles+Errors | tile/style/generation/status and sanitized failure category |
 | 14 | `AttributionRequestFailed` | Error/Tiles+Errors | style/zoom/status and sanitized failure category |
@@ -160,8 +160,32 @@ payload inspection is best in PerfView's Events view.
 | 84 | `SymbolInstanceUploadTiming` | Verbose/Frames | renderer/frame-correlated icon/glyph instance uploads, discard/no-overwrite counts, copied bytes, dynamic-buffer capacity and CPU map/copy/unmap time |
 | 85 | `IconRasterized` | Verbose/Icons | texture/version-correlated XAML capture dimensions and nontransparent pixel count; distinguishes an empty capture from GPU upload/draw failures without recording pixels |
 | 86 | `IconUploadPassTiming` | Verbose/Icons | queued and uploaded map-element versus vector-texture counts, render-lock wait, and total bounded upload-pass duration |
+| 88 | `VectorLineComposite` | Verbose/Tiles+VectorTiles | traffic road composite source count, physical width/height, sample count, final opacity, and retained native target bytes; no source identifiers or feature data |
 
 ### Frame-time investigations
+
+Traffic roads share one reusable, surface-sized composite target across public traffic
+layers. Event 88 reports its retained bytes, not a new allocation per frame or per layer.
+At 1x sampling it retains `width * height * 4` bytes; at 4x it retains five times that
+(multisample target plus resolved texture). It is recreated on size/sample changes and
+released when no eligible traffic composite is drawn or when device resources are released.
+Managed allocation measurements do not include these native GPU resources.
+
+Event **87**, `AzureOverlayRefresh` (Informational/Tiles), records counts of visible live
+traffic, radar, and infrared layers considered at a cadence boundary. It contains no source
+IDs, timestamps, credentials, or service data. Correlate with generation changes in events
+15/30 and request waves to distinguish live refresh from camera work. Built-in Azure layers
+are suppressed under `MapStyle.Blank`; fixed weather timestamps do not auto-advance.
+Incident point icons use a shared local 32-DIP, 2x sprite atlas selected by numeric category.
+Warning triangles are red with white pictograms for major severity (3), otherwise yellow
+with dark pictograms.
+Events 49 and 51 report sprite preparation/rendering through the existing pipeline; unknown
+categories use a warning pictogram. No category values, descriptions, or icon content are
+added to events. Marker picking follows the triangular badge bounds; road picking retains its
+8-DIP tolerance.
+Traffic flow and incidents both use the vector pipeline: correlate commits (49) with
+line draws (56) and incident symbol draws (51). Weather uses raster upload events.
+Incident descriptions, identifiers, and click-detail text must never appear in ETW.
 
 ID 84 distinguishes bytes copied for small symbol batches from full-buffer discards.
 Repeated discards can cause driver backing-allocation churn much larger than the copied

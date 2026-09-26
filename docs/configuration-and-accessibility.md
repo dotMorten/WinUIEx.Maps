@@ -49,6 +49,27 @@ Every layer supports:
 Tile layers add source URLs, headers, bounds, source/display zoom ranges, tile size, row
 scheme, subdomains, and fade duration.
 
+`AzureTrafficLayer` and `AzureWeatherLayer` instead derive from the public abstract `AzureTileLayer`.
+They expose only Azure-specific options, inherit the map's token/language, and aggregate
+automatic service attribution. Their public collection position controls their order above
+the complete base map. Traffic flow and incidents use Azure vector tiles; weather remains
+raster imagery. Incident icons render above traffic roads within one traffic layer.
+Road lines have an internal, fixed `0.5` opacity, applied once after compositing flow and
+affected-incident roads to avoid darker overlapping segments. Incident icons are not
+faded by this setting. Inherited `Opacity` multiplies both the road composite and icons.
+`AzureTrafficLayer.MinIncidentZoom` defaults to `12` and is inclusive. Below that camera zoom,
+incident acquisition, rendering, hit testing, and automatic incident attribution are
+suppressed, without affecting traffic flow. Set it to `0` for all supported zooms;
+fractional values are allowed within `[0, 24]`.
+Handle `AzureTrafficLayer.IncidentTapped` to show its optional description, delay, and category;
+set `Handled` to prevent other map-tap actions. `Position` anchors UI to the selected point
+in map-relative device-independent pixels. Optional `StartTime` and `EndTime` carry
+unambiguous tile-supplied timestamps. The Windows sample shows the incident type and delay
+above its description and local start/estimated-end times; missing fields are hidden.
+The flyout follows light, dark, and system contrast theme resources.
+See the [Azure traffic and weather guide](azure-traffic-and-weather.md).
+`MapStyle.Blank` suppresses these built-in Azure overlays as well as the hidden base map.
+
 ## 3. Localize Azure map content
 
 Set the map's inherited `Language` property to an IETF language tag:

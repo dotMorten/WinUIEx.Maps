@@ -53,11 +53,14 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private string? _currentSampleTag;
+
     private void Navigate(string tag, string title)
     {
         Type pageType = tag switch
         {
             "basemaps" => typeof(BasemapPage),
+            "azure-traffic" or "azure-weather" => typeof(AzureOverlaysPage),
             "openstreetmap" => typeof(OpenStreetMapPage),
             "arcgis-vector" => typeof(CustomVectorTilesPage),
             "elements" => typeof(MapElementsPage),
@@ -71,12 +74,14 @@ public sealed partial class MainWindow : Window
             "lifetime-stress" => typeof(LifetimeStressPage),
             _ => typeof(HomePage),
         };
-        if (SampleFrame.CurrentSourcePageType != pageType)
+        if (SampleFrame.CurrentSourcePageType != pageType || _currentSampleTag != tag)
         {
             FrameworkElement? previousSample = SampleFrame.Content as FrameworkElement;
             if (previousSample is not null)
                 previousSample.Unloaded += PreviousSample_Unloaded;
-            if (!SampleFrame.Navigate(pageType) && previousSample is not null)
+            if (SampleFrame.Navigate(pageType, tag))
+                _currentSampleTag = tag;
+            else if (previousSample is not null)
                 previousSample.Unloaded -= PreviousSample_Unloaded;
         }
         AppTitleBar.Subtitle = title;

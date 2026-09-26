@@ -7,6 +7,33 @@
     xmlns:maps="using:WinUIEx.Maps">
     <Page.Resources>
         <controls:RouteStepIconConverter x:Key="RouteStepIconConverter" />
+        <Flyout x:Key="TrafficIncidentFlyout">
+            <Flyout.FlyoutPresenterStyle>
+                <Style TargetType="FlyoutPresenter">
+                    <Setter Property="Padding" Value="16" />
+                    <Setter Property="CornerRadius" Value="12" />
+                    <Setter Property="Background" Value="{ThemeResource SolidBackgroundFillColorBaseBrush}" />
+                </Style>
+            </Flyout.FlyoutPresenterStyle>
+            <StackPanel x:Name="TrafficIncidentContent" Width="320" Spacing="14"
+                        AutomationProperties.AutomationId="TrafficIncidentDetails">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                    <TextBlock x:Name="TrafficIncidentTitle" Text="Traffic incident" FontWeight="SemiBold" FontSize="16"
+                               TextWrapping="Wrap" AutomationProperties.HeadingLevel="Level2" />
+                    <TextBlock x:Name="TrafficIncidentDelay" Grid.Column="1" FontWeight="SemiBold" FontSize="16"
+                               MaxWidth="140" TextWrapping="Wrap" TextAlignment="Right"
+                               Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                </Grid>
+                <TextBlock x:Name="TrafficIncidentDescription" FontSize="16"
+                           TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                <StackPanel x:Name="TrafficIncidentTimes" Spacing="2">
+                    <TextBlock x:Name="TrafficIncidentStart" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock x:Name="TrafficIncidentEnd" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+            </StackPanel>
+        </Flyout>
         <DataTemplate x:Key="EndpointSuggestionTemplate" x:DataType="models:EndpointSuggestion">
             <Grid ColumnDefinitions="24,*" ColumnSpacing="10" Padding="4,8">
                 <FontIcon Glyph="{x:Bind Glyph}" FontSize="18" />

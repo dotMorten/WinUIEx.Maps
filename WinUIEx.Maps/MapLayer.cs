@@ -8,7 +8,8 @@ namespace WinUIEx.Maps;
 /// <remarks>
 /// Layers and their collections must be created, assigned, and mutated on the owning
 /// <see cref="MapControl"/>'s UI thread. The built-in renderer recognizes
-/// <see cref="TileLayer"/> and <see cref="MapElementsLayer"/>; deriving directly from this
+/// <see cref="TileLayer"/>, <see cref="AzureTrafficLayer"/>, <see cref="AzureWeatherLayer"/>,
+/// and <see cref="MapElementsLayer"/>; deriving directly from this
 /// class does not by itself establish a custom rendering contract.
 /// </remarks>
 public class MapLayer : DependencyObject

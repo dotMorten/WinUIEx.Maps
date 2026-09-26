@@ -90,6 +90,7 @@ internal sealed partial class MapRenderer
             int previousTileZoom = state.Scene?.TileZoom ?? -1;
             if (clearExistingTiles)
             {
+                state.RefreshTimestamp = 0;
                 RemoveRasterTilesLocked(sourceId);
                 RemoveVectorTilesLocked(
                     sourceId,
@@ -154,6 +155,26 @@ internal sealed partial class MapRenderer
         RequestRender();
     }
 
+    internal void RefreshRasterTileSource(long sourceId, long generation)
+    {
+        lock (RenderLock)
+        {
+            if (_rasterLayers.TryGetValue(sourceId, out RasterLayerState? state))
+            {
+                state.Generation = generation;
+                state.RefreshTimestamp = Stopwatch.GetTimestamp();
+                _pendingRasterTiles.RemoveSource(sourceId);
+            }
+        }
+    }
+
+    private bool ContainsCurrentTile(RasterLayerState state, RasterTileKey key) =>
+        ContainsTile(state.RenderKind, key) &&
+        (state.RefreshTimestamp == 0 ||
+         (state.RenderKind == LayerRenderKind.VectorPoints
+            ? _vectorTiles[key].ContentTimestamp >= state.RefreshTimestamp
+            : _rasterTiles[key].ContentTimestamp >= state.RefreshTimestamp));
+
     /// <summary>
     /// Stops drawing and requesting a source while retaining its cached textures for
     /// potential reactivation.
@@ -194,7 +215,7 @@ internal sealed partial class MapRenderer
             foreach (TileId id in required)
             {
                 RasterTileKey key = new(sourceId, id);
-                if (ContainsTile(state.RenderKind, key))
+                if (ContainsCurrentTile(state, key))
                 {
                     hitCount++;
                 }
@@ -240,7 +261,7 @@ internal sealed partial class MapRenderer
             if (!_rasterLayers.TryGetValue(tile.Key.SourceId, out RasterLayerState? state) ||
                 tile.Generation != state.Generation ||
                 state.RenderKind != LayerRenderKind.RasterTiles ||
-                _rasterTiles.ContainsKey(tile.Key) ||
+                ContainsCurrentTile(state, tile.Key) ||
                 reservation == 0)
             {
                 if (reservation != 0)
@@ -307,11 +328,17 @@ internal sealed partial class MapRenderer
                 continue;
             }
 
-            bool canCommit = !_rasterTiles.ContainsKey(completed.Key) &&
+            bool canCommit = !ContainsCurrentTile(state, completed.Key) &&
                 (completed.VectorTile is null ||
                  !_vectorTiles.ContainsKey(completed.Key));
             if (canCommit)
             {
+                if (_rasterTiles.Remove(completed.Key, out TileTexture? previous))
+                {
+                    // Revalidation replaces pixels without restarting their initial fade.
+                    completed.Texture.ReadyTimestamp = previous.ReadyTimestamp;
+                    QueueTextureDisposal(previous);
+                }
                 _rasterTiles.Add(completed.Key, completed.Texture);
                 // A useful parent can finish after the zoom scene was published.
                 // It must cover holes in that very commit frame, not one scene later.
@@ -1422,6 +1449,7 @@ internal sealed partial class MapRenderer
     private sealed class RasterLayerState
     {
         internal long Generation;
+        internal long RefreshTimestamp;
         internal long SceneVersion;
         internal long CoverageStartTimestamp;
         internal bool FirstCoverageReported;

@@ -175,6 +175,9 @@
                                     </StackPanel>
                                     <ToggleSwitch x:Name="PART_Ink" Header="Windows Ink" OnContent="Show" OffContent="Hide"
                                                   AutomationProperties.Name="Windows Ink" />
+                                    <ToggleSwitch x:Name="PART_Traffic" Header="Traffic" OnContent="Show" OffContent="Hide"
+                                                  AutomationProperties.Name="Traffic"
+                                                  AutomationProperties.AutomationId="TrafficToggle" />
                                 </StackPanel>
                             </Flyout>
                         </DropDownButton.Flyout>

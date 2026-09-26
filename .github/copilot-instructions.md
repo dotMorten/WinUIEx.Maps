@@ -6,8 +6,8 @@
   rasterization, and publication of immutable icon snapshots.
 - `MapControl.Layers` owns ordered `MapLayer` instances; the first layer is bottom-most.
   `MapLayer.IsVisible` and `MapLayer.Opacity` apply to all layer kinds. `TileLayer` exposes
-  dependency properties, directly inherits `MapLayer`, and is the single representation of
-  every public raster source. It is non-sealed only for internal acquisition specialization;
+  dependency properties and directly inherits `MapLayer` for custom raster/MVT sources.
+  It is non-sealed only for internal acquisition specialization;
   there is no public tile-source abstraction. Only immutable `TileLayerSnapshot` and
   `RasterTileAcquisitionSession` values cross to rendering and scheduling; the internal Azure
   session may return raster pixels or decoded MVT point geometry.
@@ -21,12 +21,23 @@
   backpressure, and per-source generations for Azure raster/vector and custom raster
   sessions. Do not add a parallel Azure/custom/vector manager or independent backpressure
   pipeline.
-- `MapControl` owns an internal `AzureTileLayer` that is never inserted into or exposed
+- Public abstract `AzureTileLayer : MapLayer` has an internal constructor. `AzureTrafficLayer`
+  and `AzureWeatherLayer` inherit it and participate in public layer order without exposing custom
+  URL/style properties. `MapControl` owns an internal `AzureBaseTileLayer` that is never inserted into or exposed
   through public `Layers`. A non-Blank style creates/configures that hidden layer and its
   immutable Azure acquisition session; `Blank` sets it to null. Snapshot publication
   prepends it below the unchanged public layer plan. Azure style/tileset/authentication,
   raster/vector selection, MVT decoding, maximum-zoom, and attribution behavior stays in
-  `AzureTileLayer`/`AzureTileAcquisitionSession`. Vector geometry is decoded on acquisition
+  `AzureBaseTileLayer`/`AzureTileAcquisitionSession` and shared Azure acquisition helpers.
+  Traffic flow uses Azure's absolute/relative/delay MVT tilesets with local vector styling;
+  weather remains raster. Traffic incidents use a second immutable vector source within
+  the same public traffic layer. Tile-supplied descriptions are UI-only, never diagnostics.
+  `AzureTileLayer` shares UI-thread property validation, snapshot defaults, refresh versions,
+  and attribution-source enumeration; immutable worker acquisition stays separate.
+  `AzureTrafficLayer.MinIncidentZoom` defaults to 12 and gates only incident acquisition,
+  rendering, picking, and automatic attribution, including fractional camera-zoom crossings.
+  `Blank` suppresses all built-in Azure layers, not just the hidden base.
+  Vector geometry is decoded on acquisition
   workers, committed to the renderer's bounded source cache, and drawn as GPU-instanced
   point textures without rasterizing vector tiles into image tiles.
 - Preserve `MapLayer : DependencyObject` and the lightweight, non-`DependencyObject`
@@ -39,7 +50,7 @@
   thread-safe, must honor `CancellationToken` promptly, and must never access a
   `TileLayer`, dependency property, or other `DependencyObject`.
 - Preserve layer identity/order in immutable render and icon snapshots. Render the Azure
-  base map first unless `MapStyle.Blank`, then render `TileLayer` and `MapElementsLayer`
+  base map first unless `MapStyle.Blank`, then render custom, Azure, and map-element layer
   entries strictly bottom-to-top. Batch shared icon textures within, never across, layer
   boundaries.
 - `MapStyle.Blank` must perform no Azure tile or attribution request and must not require

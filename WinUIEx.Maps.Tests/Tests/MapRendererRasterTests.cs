@@ -8,6 +8,44 @@ namespace WinUIEx.Maps.Tests;
 public sealed class MapRendererRasterTests
 {
     [TestMethod]
+    public async Task LiveRefreshRetainsVectorGeometryButRequestsAndCommitsNewGeneration()
+    {
+        using MapRenderer renderer = new();
+        const long sourceId = 42;
+        TileId id = new(3, 4, 4);
+        MapScene scene = MapCamera.CreateScene(0, 0, 3, 3, 640, 480, 0, 0);
+        renderer.ActivateRasterTileSet(sourceId, 1, 1, scene, _ => true,
+            RasterSourceKind.Azure, LayerRenderKind.VectorPoints, false);
+        var tile = CreateHybridTile(null) with { Background = null };
+        Assert.IsTrue(await renderer.QueueVectorTileAsync(tile, CancellationToken.None));
+        MethodInfo processCompleted = typeof(MapRenderer).GetMethod(
+            "ProcessCompletedVectorTiles", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        processCompleted.Invoke(renderer, null);
+        Assert.IsEmpty(renderer.GetMissingRasterTiles(sourceId, 1, [id]).MissingTiles);
+
+        renderer.RefreshRasterTileSource(sourceId, 2);
+        Assert.AreSequenceEqual([id], renderer.GetMissingRasterTiles(sourceId, 2, [id]).MissingTiles);
+        var cache = (System.Collections.IDictionary)typeof(MapRenderer).GetField(
+            "_vectorTiles", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(renderer)!;
+        object previous = cache[tile.Key]!;
+        Assert.HasCount(1, cache);
+        Assert.IsFalse(await renderer.QueueVectorTileAsync(tile, CancellationToken.None));
+        Assert.IsTrue(await renderer.QueueVectorTileAsync(tile with { Generation = 2 }, CancellationToken.None));
+        Assert.HasCount(1, cache);
+        Assert.AreSame(previous, cache[tile.Key]);
+        processCompleted.Invoke(renderer, null);
+        Assert.HasCount(1, cache);
+        Assert.AreNotSame(previous, cache[tile.Key]);
+        Assert.IsEmpty(renderer.GetMissingRasterTiles(sourceId, 2, [id]).MissingTiles);
+        Assert.IsFalse(await renderer.QueueVectorTileAsync(tile with { Generation = 2 }, CancellationToken.None));
+
+        renderer.ActivateRasterTileSet(sourceId, 3, 2, scene, _ => true,
+            RasterSourceKind.Azure, LayerRenderKind.VectorPoints, true);
+        Assert.HasCount(0, cache);
+        Assert.AreSequenceEqual([id], renderer.GetMissingRasterTiles(sourceId, 3, [id]).MissingTiles);
+    }
+
+    [TestMethod]
     public async Task QueueRasterUploadRejectsTileWithoutActiveSource()
     {
         using MapRenderer renderer = new();

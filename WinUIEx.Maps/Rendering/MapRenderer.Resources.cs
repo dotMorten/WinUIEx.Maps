@@ -124,6 +124,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     /// </remarks>
     protected override void ReleaseRendererResources()
     {
+        ReleaseLineComposite();
         MapControlEventSource.Log.DeviceResourcesReleased(
             GetType().Name,
             _rasterTiles.Count,
@@ -602,6 +603,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
             _texturePointer = texturePointer;
             ViewPointer = viewPointer;
             ReadyTimestamp = Stopwatch.GetTimestamp();
+            ContentTimestamp = ReadyTimestamp;
             LastUsedTimestamp = ReadyTimestamp;
             ByteSize = (ulong)width * height * 4;
             GC.AddMemoryPressure(checked((long)ByteSize));
@@ -612,7 +614,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
             Dispose(disposing: false);
         }
 
-        public long ReadyTimestamp { get; }
+        public long ReadyTimestamp { get; internal set; }
+        internal long ContentTimestamp { get; }
         internal Vector4 TextureTransform { get; set; } = new(1, 1, 0, 0);
         public long LastUsedTimestamp { get; private set; }
         public ulong ByteSize { get; }

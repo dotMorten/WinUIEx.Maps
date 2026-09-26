@@ -59,7 +59,7 @@ internal sealed partial class MapRenderer
                     out RasterLayerState? state) ||
                 tile.Generation != state.Generation ||
                 state.RenderKind != LayerRenderKind.VectorPoints ||
-                _vectorTiles.ContainsKey(tile.Key) ||
+                ContainsCurrentTile(state, tile.Key) ||
                 reservation == 0)
             {
                 if (reservation != 0)
@@ -163,20 +163,22 @@ internal sealed partial class MapRenderer
                     out RasterLayerState? state) ||
                 state.Generation != completed.Tile.Generation ||
                 state.RenderKind != LayerRenderKind.VectorPoints ||
-                _vectorTiles.ContainsKey(completed.Tile.Key))
+                ContainsCurrentTile(state, completed.Tile.Key))
             {
                 staleDroppedCount++;
                 continue;
             }
 
-            _vectorTiles.Add(
-                completed.Tile.Key,
-                new VectorTileCacheEntry(
-                    completed.Tile.Features,
-                    completed.Tile.StyleAssets,
-                    completed.Tile.Style));
+            bool replacing = _vectorTiles.TryGetValue(completed.Tile.Key, out var previous);
+            var entry = new VectorTileCacheEntry(
+                completed.Tile.Features,
+                completed.Tile.StyleAssets,
+                completed.Tile.Style);
+            if (previous is not null)
+                entry.ReadyTimestamp = previous.ReadyTimestamp;
+            _vectorTiles[completed.Tile.Key] = entry;
             state.VectorStyleAssets = completed.Tile.StyleAssets;
-            OnVectorTilesChanged();
+            OnVectorTilesChanged(disposeGeometryCaches: replacing);
             acceptedCount++;
             acceptedPointCount += completed.Tile.Features.PointCount;
             preparedSpriteCount += completed.Tile.SpriteTextures.Length;
@@ -2154,13 +2156,18 @@ internal sealed partial class MapRenderer
         private VectorTileAccessibilityFeature[] _resolvedAccessibility = [];
 
         internal int Style { get; } = style;
+        private IncidentSpatialIndex? _incidentIndex;
 
-        internal long ReadyTimestamp { get; } = Stopwatch.GetTimestamp();
+        internal IncidentSpatialIndex GetIncidentIndex() =>
+            _incidentIndex ??= new IncidentSpatialIndex(features);
+
+        internal long ContentTimestamp { get; } = Stopwatch.GetTimestamp();
+        internal long ReadyTimestamp { get; set; } = Stopwatch.GetTimestamp();
 
         internal long LastUsedTimestamp { get; private set; } =
             Stopwatch.GetTimestamp();
 
-        internal long ByteSize => features.ByteSize;
+        internal long ByteSize => features.ByteSize + (_incidentIndex?.ByteSize ?? 0);
 
         internal long SymbolPayloadBytes =>
             (long)_resolved.Symbols.Length * Unsafe.SizeOf<VectorTileSymbol>();

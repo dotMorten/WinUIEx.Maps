@@ -49,6 +49,14 @@
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem
+                    Content="Azure traffic"
+                    AutomationProperties.AutomationId="AzureTrafficNavigationItem"
+                    Tag="azure-traffic" />
+                <NavigationViewItem
+                    Content="Azure weather"
+                    AutomationProperties.AutomationId="AzureWeatherNavigationItem"
+                    Tag="azure-weather" />
+                <NavigationViewItem
                     AutomationProperties.AutomationId="CustomImageTilesNavigationItem"
                     Content="Custom Image tiles"
                     Tag="openstreetmap">

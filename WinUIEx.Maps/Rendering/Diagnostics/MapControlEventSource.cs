@@ -77,6 +77,21 @@ internal sealed class MapControlEventSource : EventSource
     {
     }
 
+    /// <summary>Reports a cadence-driven overlay refresh without source identities or service data.</summary>
+    [Event(87, Level = EventLevel.Informational, Keywords = Keywords.Tiles, Task = Tasks.TileRequest)]
+    public void AzureOverlayRefresh(int trafficLayers, int radarLayers, int infraredLayers)
+    {
+        if (IsEnabled(EventLevel.Informational, Keywords.Tiles))
+            WriteEvent(87, trafficLayers, radarLayers, infraredLayers);
+    }
+
+    [Event(88, Level = EventLevel.Verbose, Keywords = Keywords.Tiles | Keywords.VectorTiles)]
+    public void VectorLineComposite(int sourceCount, int width, int height, int samples, double opacity, long retainedBytes)
+    {
+        if (IsEnabled(EventLevel.Verbose, Keywords.Tiles | Keywords.VectorTiles))
+            WriteEvent(88, sourceCount, width, height, samples, opacity, retainedBytes);
+    }
+
     /// <summary>
     /// Records creation of a map control instance.
     /// </summary>

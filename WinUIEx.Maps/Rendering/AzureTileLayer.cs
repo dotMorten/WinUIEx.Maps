@@ -23,7 +23,7 @@ namespace WinUIEx.Maps.Rendering;
 /// rendering workers: it captures style, credential, and language into immutable acquisition
 /// state so no background path reads UI-thread properties.
 /// </remarks>
-internal sealed class AzureTileLayer : TileLayer
+internal sealed class AzureBaseTileLayer : AzureTileLayer
 {
     private readonly MapStyle _style;
     private readonly string _token;
@@ -34,24 +34,15 @@ internal sealed class AzureTileLayer : TileLayer
     /// Initializes the hidden base-map layer with the selected Azure style and the
     /// credential and language that will be captured by later acquisition snapshots.
     /// </summary>
-    internal AzureTileLayer(MapStyle style, string? token)
+    internal AzureBaseTileLayer(MapStyle style, string? token)
         : this(style, token, null)
     {
     }
 
-    internal AzureTileLayer(
+    internal AzureBaseTileLayer(
         MapStyle style,
         string? token,
         string? language)
-        : base(
-            new TileLayerOptions
-            {
-                TileSize = 256,
-                MinSourceZoom = 0,
-                MaxSourceZoom = MapCamera.MaximumTileZoom,
-                FadeDuration = TimeSpan.FromMilliseconds(250),
-            },
-            "AzureBaseMap")
     {
         if (style == MapStyle.Blank)
         {
@@ -88,20 +79,16 @@ internal sealed class AzureTileLayer : TileLayer
     /// UI-thread-only. The returned session owns all data used by background requests and
     /// never reads this dependency object.
     /// </remarks>
-    internal override TileLayerSnapshot CreateSnapshot() =>
-        new(
-            RuntimeId,
-            Revision,
+    internal TileLayerSnapshot CreateSnapshot() =>
+        Snapshot(
             new AzureTileAcquisitionSession(
                 _style,
                 _token,
                 _vectorStyleProvider,
-                _language),
-            MinZoom,
-            MaxZoom,
-            IsVisible,
-            Opacity,
-            FadeDuration);
+                _language));
+
+    internal override IEnumerable<TileLayerSnapshot> CreateSnapshots(
+        string token, string? language, DateTimeOffset now) => [CreateSnapshot()];
 }
 
 /// <summary>
@@ -470,27 +457,54 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         };
     }
 
-    private async Task<PooledByteBuffer> GetVectorTileBytesAsync(
+    private Task<PooledByteBuffer> GetVectorTileBytesAsync(
         TileId id,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        GetTileBytesAsync(
+            BuildTileRequestPath(id, VectorTileset, _language),
+            _token, VectorTileMediaType, MaximumEncodedVectorTileBytes,
+            cancellationToken);
+
+    internal static async Task<PooledByteBuffer> GetTileBytesAsync(
+        string path,
+        string token,
+        string acceptMediaType,
+        int maximumBytes,
+        CancellationToken cancellationToken,
+        bool revalidate = false)
     {
-        string path =
-            $"map/tile?api-version={ApiVersion}&tilesetId={VectorTileset}&zoom={id.Zoom}&x={id.X}&y={id.Y}";
-        path = AddLanguageToQuery(path, _language);
         using Windows.Web.Http.HttpResponseMessage response = await SendAsync(
             path,
-            _token,
-            VectorTileMediaType,
-            cancellationToken).ConfigureAwait(false);
+            token,
+            acceptMediaType,
+            cancellationToken,
+            revalidate).ConfigureAwait(false);
         await EnsureSuccessAsync(
             response,
-            $"vector tile '{VectorTileset}'",
+            "tile",
             cancellationToken).ConfigureAwait(false);
         return await WinRtHttpContentReader.ReadBoundedAsync(
                 response.Content,
-                MaximumEncodedVectorTileBytes,
+                maximumBytes,
                 cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    internal static string BuildTileRequestPath(
+        TileId id,
+        string tileset,
+        string? language,
+        int? tileSize = null,
+        DateTimeOffset? timestamp = null)
+    {
+        string path = FormattableString.Invariant(
+            $"map/tile?api-version={ApiVersion}&tilesetId={Uri.EscapeDataString(tileset)}&zoom={id.Zoom}&x={id.X}&y={id.Y}");
+        if (tileSize is int size)
+            path += "&tileSize=" + size.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (timestamp is DateTimeOffset time)
+            path += "&timeStamp=" + Uri.EscapeDataString(time.UtcDateTime.ToString(
+                "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", System.Globalization.CultureInfo.InvariantCulture));
+        return AddLanguageToQuery(path, language);
     }
 
     /// <summary>
@@ -666,7 +680,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     /// Requests attribution for one tileset and removes service-supplied HTML markup before
     /// exposing the text to the UI.
     /// </summary>
-    private async Task<string> GetAttributionForTilesetAsync(
+    internal static async Task<string> GetAttributionForTilesetAsync(
         string token,
         string tileset,
         int zoom,
@@ -831,7 +845,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     /// The credential is carried only in the authenticated request header and is not placed
     /// in request paths, errors, or telemetry.
     /// </remarks>
-    private static async Task<DecodedTile> DownloadAndDecodeTileAsync(
+    internal static async Task<DecodedTile> DownloadAndDecodeTileAsync(
         TileId id,
         string tileset,
         int tileSize,
@@ -839,26 +853,36 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         BitmapTransform transform,
         string token,
         string? language,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DateTimeOffset? timestamp = null,
+        bool revalidate = false,
+        bool requireExactDimensions = false)
     {
         long downloadStarted = Stopwatch.GetTimestamp();
-        string path = $"map/tile?api-version={ApiVersion}&tilesetId={tileset}&zoom={id.Zoom}&x={id.X}&y={id.Y}&tileSize={tileSize}";
-        path = AddLanguageToQuery(path, language);
+        string path = BuildTileRequestPath(id, tileset, language, tileSize, timestamp);
         int maximumEncodedBytes = checked(
             (tileSize * tileSize * 4) + EncodedTileOverheadAllowance);
-        using Windows.Web.Http.HttpResponseMessage response = await SendAsync(
-            path,
-            token,
-            "*/*",
-            cancellationToken).ConfigureAwait(false);
-        await EnsureSuccessAsync(response, $"tile '{tileset}'", cancellationToken).ConfigureAwait(false);
-        using PooledByteBuffer encodedPixels = await WinRtHttpContentReader.ReadBoundedAsync(
-                response.Content,
+        using PooledByteBuffer encodedPixels = await GetTileBytesAsync(
+                path, token, "*/*",
                 maximumEncodedBytes,
-                cancellationToken)
+                cancellationToken, revalidate)
             .ConfigureAwait(false);
         double downloadMilliseconds =
             Stopwatch.GetElapsedTime(downloadStarted).TotalMilliseconds;
+        return await DecodeTilePixelsAsync(
+            encodedPixels, tileSize, alphaMode, transform, downloadMilliseconds,
+            cancellationToken, requireExactDimensions).ConfigureAwait(false);
+    }
+
+    internal static async Task<DecodedTile> DecodeTilePixelsAsync(
+        PooledByteBuffer encodedPixels,
+        int tileSize,
+        BitmapAlphaMode alphaMode,
+        BitmapTransform transform,
+        double downloadMilliseconds,
+        CancellationToken cancellationToken,
+        bool requireExactDimensions = false)
+    {
         long decodeStarted = Stopwatch.GetTimestamp();
         cancellationToken.ThrowIfCancellationRequested();
         using MemoryStream stream = encodedPixels.CreateReadStream();
@@ -868,6 +892,13 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
             .AsTask(cancellationToken)
             .ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
+        if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0 ||
+            decoder.PixelWidth > tileSize || decoder.PixelHeight > tileSize ||
+            (requireExactDimensions &&
+                (decoder.PixelWidth != tileSize || decoder.PixelHeight != tileSize)))
+        {
+            throw new InvalidDataException("Azure tile dimensions exceed the configured bounds.");
+        }
         PixelDataProvider pixelData = await decoder
             .GetPixelDataAsync(
                 BitmapPixelFormat.Bgra8,
@@ -978,12 +1009,13 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         string path,
         string token,
         string acceptMediaType,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool revalidate = false)
     {
         using WinRtHttpRequestMessage request = new(
             WinRtHttpMethod.Get,
             new Uri(AzureBaseUri, path));
-        ApplyRequestHeaders(request, token, acceptMediaType);
+        ApplyRequestHeaders(request, token, acceptMediaType, revalidate);
         return await HttpClient
             .SendRequestAsync(request, WinRtHttpCompletionOption.ResponseHeadersRead)
             .AsTask(cancellationToken)
@@ -993,7 +1025,8 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     internal static void ApplyRequestHeaders(
         WinRtHttpRequestMessage request,
         string token,
-        string acceptMediaType)
+        string acceptMediaType,
+        bool revalidate = false)
     {
         if (!string.IsNullOrWhiteSpace(token))
         {
@@ -1001,6 +1034,11 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         }
         request.Headers.Accept.ParseAdd(acceptMediaType);
         request.Headers.UserAgent.ParseAdd("WinUIEx.Maps/1.0");
+        if (revalidate)
+        {
+            // Live overlays keep stable service URLs but must not reuse a fresh cached frame.
+            request.Headers.CacheControl.ParseAdd("no-cache");
+        }
     }
 
     internal static WinRtHttpClient CreateHttpClient()
@@ -1128,7 +1166,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     /// Carries a transient decoded BGRA buffer and dimensions between Azure decode,
     /// stitching, and composition stages.
     /// </summary>
-    private readonly record struct DecodedTile(
+    internal readonly record struct DecodedTile(
         byte[] Pixels,
         uint Width,
         uint Height,

@@ -31,7 +31,8 @@ internal readonly record struct LayerRenderSnapshot(
     double MaxZoom,
     int MinSourceZoom,
     int TileSize,
-    int Style = -1);
+    int Style = -1,
+    double LineCompositeOpacity = 1);
 
 /// <summary>
 /// Classifies built-in Azure and custom raster sources for acquisition behavior and
@@ -125,7 +126,8 @@ internal readonly record struct LayerSnapshotPublication(
 internal readonly record struct RasterAttributionUpdate(
     long SourceId,
     long Generation,
-    string Text);
+    string Text,
+    object? SourceKey = null);
 
 /// <summary>
 /// Immutable, source-specific raster acquisition state captured on the UI thread.
@@ -146,6 +148,9 @@ internal readonly record struct RasterAttributionUpdate(
 /// </remarks>
 internal abstract class RasterTileAcquisitionSession
 {
+    /// <summary>Post-composite opacity for traffic's line-and-symbol-only sources.</summary>
+    internal virtual double LineCompositeOpacity => 1;
+
     /// <summary>
     /// Gets an immutable equality key containing every value that changes acquired pixels.
     /// </summary>
@@ -154,6 +159,12 @@ internal abstract class RasterTileAcquisitionSession
     /// only and must never be written to ETW, exceptions surfaced to callers, or diagnostics.
     /// </remarks>
     internal abstract object SourceKey { get; }
+
+    /// <summary>
+    /// Identifies compatible live refreshes whose cached imagery may remain until replaced.
+    /// Like SourceKey, this private configuration must never be logged.
+    /// </summary>
+    internal virtual object? RefreshIdentity => null;
 
     internal abstract RasterSourceKind SourceKind { get; }
 
