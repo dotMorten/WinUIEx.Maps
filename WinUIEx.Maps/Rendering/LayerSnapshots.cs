@@ -19,6 +19,8 @@ internal enum LayerRenderKind
 /// Instances are created on the UI thread and published as an ordered array to the render
 /// thread. <see cref="LayerIndex"/> preserves public map-element ordering, while
 /// <see cref="RuntimeId"/> joins raster plan entries to manager and renderer state.
+/// A nonzero <see cref="RasterOverlayParentId"/> inserts an auxiliary raster into
+/// its parent's style order rather than drawing it as a separate public layer.
 /// </remarks>
 internal readonly record struct LayerRenderSnapshot(
     LayerRenderKind Kind,
@@ -32,7 +34,10 @@ internal readonly record struct LayerRenderSnapshot(
     int MinSourceZoom,
     int TileSize,
     int Style = -1,
-    double LineCompositeOpacity = 1);
+    double LineCompositeOpacity = 1,
+    long RasterOverlayParentId = 0,
+    bool RasterPremultiplied = false,
+    bool RoundRasterSourceZoom = false);
 
 /// <summary>
 /// Classifies built-in Azure and custom raster sources for acquisition behavior and
@@ -74,7 +79,8 @@ internal sealed class LayerRenderPlanBuilder
 /// <see cref="MapControl"/> sends <see cref="RenderPlan"/> to the renderer and
 /// <see cref="RasterLayers"/> to <see cref="RasterTileManager"/>. A hidden Azure snapshot,
 /// when present, is prepended to both arrays so acquisition identity and base-map render
-/// ordering stay aligned.
+/// ordering stay aligned. An optional road-detail source follows that hidden snapshot
+/// in both arrays but draws within its parent's vector style.
 /// </remarks>
 internal readonly record struct LayerSnapshotPublication(
     LayerRenderSnapshot[] RenderPlan,
@@ -90,7 +96,8 @@ internal readonly record struct LayerSnapshotPublication(
     internal static LayerSnapshotPublication PrependHiddenAzure(
         TileLayerSnapshot? azureSnapshot,
         LayerRenderSnapshot[] publicRenderPlan,
-        TileLayerSnapshot[] publicRasterLayers)
+        TileLayerSnapshot[] publicRasterLayers,
+        TileLayerSnapshot? roadDetails = null)
     {
         if (azureSnapshot is null)
         {
@@ -110,6 +117,19 @@ internal readonly record struct LayerSnapshotPublication(
             snapshot.MinSourceZoom,
             snapshot.TileSize,
             snapshot.Acquisition.TelemetryStyle);
+        if (roadDetails is not null)
+        {
+            LayerRenderSnapshot overlay = new(
+                LayerRenderKind.RasterTiles, -1, roadDetails.RuntimeId,
+                roadDetails.IsVisible, roadDetails.Opacity, roadDetails.FadeDuration,
+                roadDetails.MinZoom, roadDetails.MaxZoom, roadDetails.MinSourceZoom,
+                roadDetails.TileSize, roadDetails.Acquisition.TelemetryStyle,
+                RasterOverlayParentId: snapshot.RuntimeId,
+                RasterPremultiplied: true,
+                RoundRasterSourceZoom: true);
+            return new([hiddenRender, overlay, .. publicRenderPlan],
+                [snapshot, roadDetails, .. publicRasterLayers]);
+        }
         return new LayerSnapshotPublication(
             [hiddenRender, .. publicRenderPlan],
             [snapshot, .. publicRasterLayers]);

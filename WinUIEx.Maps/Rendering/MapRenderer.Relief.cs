@@ -8,18 +8,19 @@ namespace WinUIEx.Maps.Rendering;
 internal sealed partial class MapRenderer
 {
     // Raster fallback's painter order is correct for opaque imagery, not for
-    // straight-alpha terrain. Partition map-plane coverage before projection:
+    // transparent style overlays. Partition map-plane coverage before projection:
     // active tiles win, then the finest retained fallback fills only the holes.
     // The ordinary raster/satellite fade path is deliberately unchanged.
-    private unsafe bool DrawExclusiveReliefCoverage(
-        IntPtr context, LayerRenderSnapshot layer, RasterLayerState state)
+    private unsafe bool DrawExclusiveRasterOverlayCoverage(
+        IntPtr context, LayerRenderSnapshot layer, RasterLayerState state,
+        double maximumSourceZoom)
     {
         int activeZoom = state.Scene!.TileZoom;
         List<CachedRasterTileDraw> draws = [];
         foreach (var (key, texture) in _rasterTiles)
         {
             if (key.SourceId != layer.RuntimeId ||
-                key.Id.Zoom >= state.VectorStyleAssets!.Relief!.MaxZoom ||
+                key.Id.Zoom >= maximumSourceZoom ||
                 (key.Id.Zoom != activeZoom && !state.FallbackTileZooms.Contains(key.Id.Zoom)))
                 continue;
             foreach (VisibleTile tile in GetVisibleCachedTileInstances(key.Id,
@@ -68,6 +69,7 @@ internal sealed partial class MapRenderer
                 constants = constants with
                 {
                     Transform = quad.Transform,
+                    Opacity = new Vector4((float)opacity, layer.RasterPremultiplied ? 1 : 0, 0, 0),
                     TextureTransform = new Vector4(
                         (float)((region.Right - region.Left) / tile.Size),
                         (float)((region.Bottom - region.Top) / tile.Size),
@@ -107,31 +109,59 @@ internal sealed partial class MapRenderer
         }
     }
 
-    // Called at the style-order boundary in every polygon path (fresh, prepared,
-    // cached, and deferred). Terrain alpha blends over the canvas/land fills and
-    // remains below later polygon details, roads, and labels.
-    private bool DrawReliefBefore(
+    // Every polygon path (fresh, prepared, cached, and deferred) inserts the
+    // raster over earlier fills but below later details, roads, and labels.
+    private bool DrawStyleRasterBefore(
         IntPtr context, LayerRenderSnapshot layer, int nextOrder, ref bool hasDrawn)
     {
-        if (hasDrawn || layer.Kind != LayerRenderKind.HybridTiles ||
-            layer.Style != (int)MapStyle.RoadShadedRelief ||
+        if (hasDrawn ||
             !_rasterLayers.TryGetValue(layer.RuntimeId, out var state) ||
-            state.VectorStyleAssets?.Relief is not { } relief ||
-            relief.Order >= nextOrder)
+            state.VectorStyleAssets is not { } assets)
+            return false;
+        AzureRasterStyle? rasterStyle;
+        LayerRenderSnapshot rasterLayer = layer;
+        if (layer.Kind == LayerRenderKind.HybridTiles &&
+            layer.Style == (int)MapStyle.RoadShadedRelief)
+        {
+            rasterStyle = assets.Relief;
+        }
+        else if (layer.Style == (int)MapStyle.Road &&
+            assets.RoadDetails is { } roadDetails)
+        {
+            rasterStyle = roadDetails;
+            bool found = false;
+            foreach (var candidate in _layerRenderPlan)
+            {
+                if (candidate.RasterOverlayParentId != layer.RuntimeId ||
+                    !candidate.IsVisible || candidate.Opacity <= 0)
+                    continue;
+                rasterLayer = candidate;
+                found = true;
+                break;
+            }
+            if (!found)
+                return false;
+        }
+        else
+        {
+            return false;
+        }
+        if (rasterStyle is null || rasterStyle.Order >= nextOrder)
             return false;
         hasDrawn = true;
-        double opacity = relief.GetOpacity(_displayZoom);
+        double opacity = rasterStyle.GetOpacity(assets.GetStyleZoom(_displayZoom));
         if (opacity <= 0)
             return false;
-        SetBlendState(context, _blendStatePointer);
+        SetBlendState(context, rasterLayer.RasterPremultiplied
+            ? _premultipliedBlendStatePointer : _blendStatePointer);
         SetInputLayout(context, _inputLayoutPointer);
         SetVertexBuffer(context, _vertexBufferPointer, (uint)Marshal.SizeOf<TileVertex>());
         SetIndexBuffer(context, _indexBufferPointer);
         SetVertexShader(context, _vertexShaderPointer, _constantBufferPointer);
-        return DrawRasterTileLayer(context, layer with
+        return DrawRasterTileLayer(context, rasterLayer with
         {
-            Opacity = layer.Opacity * opacity,
-            FadeDuration = relief.FadeDuration,
+            Opacity = rasterLayer.Opacity * opacity,
+            FadeDuration = rasterStyle.FadeDuration,
         });
     }
 }

@@ -239,4 +239,11 @@ internal sealed partial class MapRenderer
             OnVectorTilesChanged();
         }
     }
+
+    internal void SetVectorTileAgeForBenchmark(RasterTileKey key, TimeSpan age)
+    {
+        lock (RenderLock)
+            _vectorTiles[key].ReadyTimestamp = System.Diagnostics.Stopwatch.GetTimestamp() -
+                (long)(age.TotalSeconds * System.Diagnostics.Stopwatch.Frequency);
+    }
 }

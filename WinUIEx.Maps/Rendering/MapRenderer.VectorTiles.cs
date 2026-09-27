@@ -128,7 +128,7 @@ internal sealed partial class MapRenderer
                 }
                 if (removedVector)
                 {
-                    OnVectorTilesChanged(disposeGeometryCaches: true);
+                    OnVectorTilesChanged(disposeGeometryCaches: true, tile.Key.SourceId);
                 }
             }
             QueueVectorSpriteTextures(
@@ -178,7 +178,7 @@ internal sealed partial class MapRenderer
                 entry.ReadyTimestamp = previous.ReadyTimestamp;
             _vectorTiles[completed.Tile.Key] = entry;
             state.VectorStyleAssets = completed.Tile.StyleAssets;
-            OnVectorTilesChanged(disposeGeometryCaches: replacing);
+            OnVectorTilesChanged(disposeGeometryCaches: replacing, completed.Tile.Key.SourceId);
             acceptedCount++;
             acceptedPointCount += completed.Tile.Features.PointCount;
             preparedSpriteCount += completed.Tile.SpriteTextures.Length;
@@ -191,7 +191,7 @@ internal sealed partial class MapRenderer
                 System.Diagnostics.Tracing.EventLevel.Informational,
                 MapControlEventSource.Keywords.Tiles |
                     MapControlEventSource.Keywords.VectorTiles)
-                ? _vectorTiles.Values.Sum(tile => tile.ByteSize)
+                ? _vectorTiles.Values.Sum(tile => tile.DecodedByteSize)
                 : 0;
             MapControlEventSource.Log.VectorTileCommitSummary(
                 style,
@@ -1204,17 +1204,19 @@ internal sealed partial class MapRenderer
         List<VectorSymbolPlacement> candidate)
     {
         VectorTilePoint[] linePoints = symbols[group[0]].LinePoints!;
-        MapScreenPoint[] path = MapScreenPointPool.Rent(linePoints.Length);
+        int pointCount = linePoints.Length +
+            (symbols[group[0]].IsClosedLine && linePoints[0] != linePoints[^1] ? 1 : 0);
+        MapScreenPoint[] path = MapScreenPointPool.Rent(pointCount);
         double[]? distances = null;
         try
         {
-            distances = ArrayPool<double>.Shared.Rent(checked(linePoints.Length * 2));
+            distances = ArrayPool<double>.Shared.Rent(checked(pointCount * 2));
             ProjectVectorLine(linePoints, tile, viewportWidth, viewportHeight,
-                heading, pitch, path.AsSpan(0, linePoints.Length));
+                heading, pitch, path.AsSpan(0, pointCount));
             AddProjectedLineSymbols(
-                symbols, group, linePoints, path.AsSpan(0, linePoints.Length),
-                distances.AsSpan(0, linePoints.Length),
-                distances.AsSpan(linePoints.Length, linePoints.Length),
+                symbols, group, linePoints, path.AsSpan(0, pointCount),
+                distances.AsSpan(0, pointCount),
+                distances.AsSpan(pointCount, pointCount),
                 tile, viewportWidth, viewportHeight, heading, pitch, projected, candidate);
         }
         finally
@@ -1254,8 +1256,9 @@ internal sealed partial class MapRenderer
                 return;
             }
             distances[index] = distances[index - 1] + segmentLength;
-            double anchorX = linePoints[index].X - linePoints[index - 1].X;
-            double anchorY = linePoints[index].Y - linePoints[index - 1].Y;
+            VectorTilePoint sourceEnd = linePoints[index == linePoints.Length ? 0 : index];
+            double anchorX = sourceEnd.X - linePoints[index - 1].X;
+            double anchorY = sourceEnd.Y - linePoints[index - 1].Y;
             anchorDistances[index] = anchorDistances[index - 1] +
                 Math.Sqrt(anchorX * anchorX + anchorY * anchorY) * MapCamera.TileSize;
         }
@@ -1313,7 +1316,7 @@ internal sealed partial class MapRenderer
                     ? (centerDistance - anchorDistances[segment - 1]) / segmentLength
                     : 0;
                 VectorTilePoint start = linePoints[segment - 1];
-                VectorTilePoint end = linePoints[segment];
+                VectorTilePoint end = linePoints[segment == linePoints.Length ? 0 : segment];
                 MapScreenPoint anchor = ProjectVectorPoint(
                     new VectorTilePoint(
                         start.X + fraction * (end.X - start.X),
@@ -1335,6 +1338,16 @@ internal sealed partial class MapRenderer
                     out MapScreenPoint centerTangent))
             {
                 continue;
+            }
+            if (firstSymbol.IsClosedLine)
+            {
+                MapCamera.UntransformViewportOffset(
+                    centerPosition.X - viewportWidth / 2, centerPosition.Y - viewportHeight / 2,
+                    heading, pitch, viewportHeight, out double mapX, out double mapY);
+                double tileX = (mapX + viewportWidth / 2 - tile.Left) / tile.Size;
+                double tileY = (mapY + viewportHeight / 2 - tile.Top) / tile.Size;
+                if (tileX < 0 || tileX > 1 || tileY < 0 || tileY > 1)
+                    continue;
             }
             bool reverse = !continuousPlacement &&
                 (textSymbol?.KeepUpright ?? true) &&
@@ -2044,7 +2057,7 @@ internal sealed partial class MapRenderer
         }
         if (removed || releaseGeometryCaches)
         {
-            OnVectorTilesChanged(disposeGeometryCaches: true);
+            OnVectorTilesChanged(disposeGeometryCaches: true, sourceId);
         }
     }
 
@@ -2136,11 +2149,13 @@ internal sealed partial class MapRenderer
         }
     }
 
-    private sealed class VectorTileCacheEntry(
+    internal sealed class VectorTileCacheEntry(
         VectorTileFeatureCollection features,
         VectorStyleAssets styleAssets,
         int style)
     {
+        // Entry, resolution records, membership dictionary, and cache lookup overhead.
+        private const long RetainedOwnerOverheadBytes = 512;
         private double _resolvedZoom = double.NaN;
         private double _resolvedTextScaleFactor = double.NaN;
         private VectorSymbolResolution _resolved =
@@ -2152,8 +2167,14 @@ internal sealed partial class MapRenderer
         private double _resolvedPolygonZoom = double.NaN;
         private double _lastDrawablePolygonZoom = double.NaN;
         private VectorPolygonResolution _resolvedPolygons = new([], 0);
+        private bool _hasPatternPolygons;
+        private readonly VectorGeometryMembership _geometryMembership = new();
         private double _resolvedAccessibilityZoom = double.NaN;
         private VectorTileAccessibilityFeature[] _resolvedAccessibility = [];
+        private long _lineBytes;
+        private long _polygonBytes;
+        private long _symbolBytes;
+        private long _accessibilityBytes;
 
         internal int Style { get; } = style;
         private IncidentSpatialIndex? _incidentIndex;
@@ -2167,7 +2188,14 @@ internal sealed partial class MapRenderer
         internal long LastUsedTimestamp { get; private set; } =
             Stopwatch.GetTimestamp();
 
-        internal long ByteSize => features.ByteSize + (_incidentIndex?.ByteSize ?? 0);
+        internal long DecodedByteSize => features.ByteSize + (_incidentIndex?.ByteSize ?? 0);
+
+        internal long DerivedByteSize => RetainedOwnerOverheadBytes + _lineBytes + _polygonBytes +
+            _symbolBytes + _accessibilityBytes + _geometryMembership.ByteSize +
+            (_symbolProjection?.RetainedByteSize ?? 0);
+
+        internal long ByteSize => features.RetainedByteSize +
+            (_incidentIndex?.ByteSize ?? 0) + DerivedByteSize;
 
         internal long SymbolPayloadBytes =>
             (long)_resolved.Symbols.Length * Unsafe.SizeOf<VectorTileSymbol>();
@@ -2192,6 +2220,7 @@ internal sealed partial class MapRenderer
                     features,
                     zoom,
                     textScaleFactor);
+                _symbolBytes = _resolved.Symbols.Length == 0 ? 0 : 24 + SymbolPayloadBytes;
                 _symbolProjection = null;
                 _resolvedZoom = zoom;
                 _resolvedTextScaleFactor = textScaleFactor;
@@ -2209,7 +2238,8 @@ internal sealed partial class MapRenderer
             if (_resolvedLineZoom != zoom &&
                 !styleAssets.CanReuseLines(_resolvedLineZoom, zoom))
             {
-                _resolvedLines = styleAssets.ResolveLines(features, zoom);
+                _resolvedLines = styleAssets.ResolveLines(features, zoom, _geometryMembership);
+                _lineBytes = EstimateLineBytes(_resolvedLines);
                 _resolvedLineZoom = zoom;
             }
             if (!isFallback && _resolvedLines.Lines.Length != 0)
@@ -2231,7 +2261,10 @@ internal sealed partial class MapRenderer
             if (_resolvedPolygonZoom != zoom &&
                 !styleAssets.CanReusePolygons(_resolvedPolygonZoom, zoom))
             {
-                _resolvedPolygons = styleAssets.ResolvePolygons(features, zoom);
+                _resolvedPolygons = styleAssets.ResolvePolygons(features, zoom, _geometryMembership);
+                _hasPatternPolygons = _resolvedPolygons.Polygons.Any(polygon => polygon.Style.HasPattern);
+                _polygonBytes = _resolvedPolygons.Polygons.Length == 0 ? 0 :
+                    24 + (long)_resolvedPolygons.Polygons.Length * Unsafe.SizeOf<VectorTileStyledPolygon>();
                 _resolvedPolygonZoom = zoom;
             }
             if (!isFallback && _resolvedPolygons.Polygons.Length != 0)
@@ -2239,6 +2272,12 @@ internal sealed partial class MapRenderer
                 _lastDrawablePolygonZoom = zoom;
             }
             return _resolvedPolygons;
+        }
+
+        internal bool HasPolygonPatterns(double zoom)
+        {
+            GetPolygons(zoom);
+            return _hasPatternPolygons;
         }
 
         internal VectorTileAccessibilityFeature[] GetAccessibilityFeatures(
@@ -2249,11 +2288,50 @@ internal sealed partial class MapRenderer
                 _resolvedAccessibility =
                     styleAssets.ResolveAccessibilityFeatures(features, zoom);
                 _resolvedAccessibilityZoom = zoom;
+                if (_resolvedAccessibility.Length == 0)
+                {
+                    _accessibilityBytes = 0;
+                    return _resolvedAccessibility;
+                }
+                VectorRetainedSize size = new();
+                foreach (var feature in features.Features)
+                {
+                    size.Exclude(feature.SourceLayer);
+                    foreach (var property in feature.Properties)
+                    {
+                        size.Exclude(property.Name);
+                        size.Exclude(property.Value.StringValue);
+                    }
+                }
+                size.AddArray(_resolvedAccessibility);
+                foreach (var feature in _resolvedAccessibility)
+                {
+                    size.AddObject(feature, 64);
+                    size.AddString(feature.Name);
+                }
+                _accessibilityBytes = size.Bytes;
             }
             return _resolvedAccessibility;
         }
 
         internal void MarkUsed() => LastUsedTimestamp = Stopwatch.GetTimestamp();
+
+        private static long EstimateLineBytes(VectorLineResolution resolution)
+        {
+            long bytes = resolution.Lines.Length == 0 ? 0 :
+                24 + (long)resolution.Lines.Length * Unsafe.SizeOf<VectorTileStyledLine>();
+            VectorRetainedSize? arrays = null;
+            foreach (var line in resolution.Lines)
+            {
+                if (!line.Style.DashArray.IsDefaultOrEmpty)
+                    (arrays ??= new()).AddArray(
+                        System.Runtime.InteropServices.ImmutableCollectionsMarshal.AsArray(line.Style.DashArray)!);
+                if (!line.Style.Gradient.IsDefaultOrEmpty)
+                    (arrays ??= new()).AddArray(
+                        System.Runtime.InteropServices.ImmutableCollectionsMarshal.AsArray(line.Style.Gradient)!);
+            }
+            return bytes + (arrays?.Bytes ?? 0);
+        }
     }
 
     private static int GetFallbackZoomSignature(IReadOnlySet<int> zooms)
@@ -2713,14 +2791,14 @@ internal sealed partial class MapRenderer
         internal VectorSymbolProjectionData(IReadOnlyList<VectorTileSymbol> symbols)
         {
             Symbols = symbols;
-            Dictionary<(long GroupId, int Order, VectorTilePoint[] Path), List<int>> groups = [];
+            Dictionary<(long GroupId, int Order, VectorTilePoint[] Path, bool Closed), List<int>> groups = [];
             for (int index = 0; index < symbols.Count; index++)
             {
                 VectorTileSymbol symbol = symbols[index];
                 if (symbol.LinePoints is not { Length: >= 2 } path)
                     continue;
                 var key = (symbol.SymbolGroupId >= 0 ? symbol.SymbolGroupId : symbol.LabelId,
-                    symbol.StyleLayerOrder, path);
+                    symbol.StyleLayerOrder, path, symbol.IsClosedLine);
                 if (!groups.TryGetValue(key, out List<int>? group))
                     groups.Add(key, group = []);
                 group.Add(index);
@@ -2731,20 +2809,15 @@ internal sealed partial class MapRenderer
             {
                 LineGroups[groupIndex++] = group.ToArray();
             }
+            IndexBytes = LineGroups.Sum(group => (long)group.Length * sizeof(int));
+            RetainedByteSize = 48 + (LineGroups.Length == 0 ? 0 :
+                24 + (long)LineGroups.Length * IntPtr.Size + LineGroups.Length * 24L + IndexBytes);
         }
 
         internal IReadOnlyList<VectorTileSymbol> Symbols { get; }
         internal int[][] LineGroups { get; }
-        internal long IndexBytes
-        {
-            get
-            {
-                long bytes = 0;
-                foreach (int[] group in LineGroups)
-                    bytes += (long)group.Length * sizeof(int);
-                return bytes;
-            }
-        }
+        internal long IndexBytes { get; }
+        internal long RetainedByteSize { get; }
     }
 
     internal sealed class VectorSymbolProjectionWorkspace

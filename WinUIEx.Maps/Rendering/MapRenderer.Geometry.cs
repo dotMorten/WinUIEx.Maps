@@ -484,24 +484,35 @@ internal sealed partial class MapRenderer
         return transform.IsFinite;
     }
 
-    private void OnVectorTilesChanged(bool disposeGeometryCaches = false)
+    private void OnVectorTilesChanged(bool disposeGeometryCaches = false, long? sourceId = null)
     {
         _vectorTileVersion++;
         ClearVectorSymbolFrameCaches();
         if (disposeGeometryCaches)
         {
-            DisposeVectorGeometryCaches();
+            DisposeVectorGeometryCaches(sourceId);
+        }
+        else
+        {
+            PrunePendingGeometry(_vectorLineFrameCache?.Pending);
+            PrunePendingGeometry(_vectorPolygonFrameCache?.Pending);
         }
     }
 
-    private void DisposeVectorGeometryCaches()
+    private void DisposeVectorGeometryCaches(long? sourceId = null)
     {
         CancelVectorGeometryPreparation();
         ClearVectorSymbolFrameCaches();
-        _vectorLineFrameCache?.Dispose();
-        _vectorLineFrameCache = null;
-        _vectorPolygonFrameCache?.Dispose();
-        _vectorPolygonFrameCache = null;
+        if (sourceId is null || _vectorLineFrameCache?.RuntimeId == sourceId)
+        {
+            _vectorLineFrameCache?.Dispose();
+            _vectorLineFrameCache = null;
+        }
+        if (sourceId is null || _vectorPolygonFrameCache?.RuntimeId == sourceId)
+        {
+            _vectorPolygonFrameCache?.Dispose();
+            _vectorPolygonFrameCache = null;
+        }
     }
 
     private static int FindFirstLayerIcon(MapIconSnapshot[] icons, int layerIndex)

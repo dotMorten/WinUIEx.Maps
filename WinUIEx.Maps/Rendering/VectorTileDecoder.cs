@@ -37,6 +37,8 @@ internal static class VectorTileDecoder
         int valueCount = 0;
         int propertyCount = 0;
         int pointCount = 0;
+        // Reuse LibTess scratch within this decode only, never across workers or cached tiles.
+        Tess? tessellator = null;
         while (reader.TryReadField(out int fieldNumber, out int wireType))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -54,6 +56,7 @@ internal static class VectorTileDecoder
                     ref valueCount,
                     ref propertyCount,
                     ref pointCount,
+                    ref tessellator,
                     cancellationToken);
             }
             else
@@ -61,7 +64,7 @@ internal static class VectorTileDecoder
                 reader.SkipField(wireType);
             }
         }
-        return new VectorTileFeatureCollection(features.ToArray());
+        return new VectorTileFeatureCollection(features.ToArray(), uniqueGeometry: true);
     }
 
     private static void DecodeLayer(
@@ -72,6 +75,7 @@ internal static class VectorTileDecoder
         ref int valueCount,
         ref int propertyCount,
         ref int pointCount,
+        ref Tess? tessellator,
         CancellationToken cancellationToken)
     {
         string name = string.Empty;
@@ -147,6 +151,7 @@ internal static class VectorTileDecoder
                     values,
                     ref propertyCount,
                     ref pointCount,
+                    ref tessellator,
                     cancellationToken);
                 if (feature is not null)
                 {
@@ -168,6 +173,7 @@ internal static class VectorTileDecoder
         IReadOnlyList<VectorTileValue> values,
         ref int propertyCount,
         ref int pointCount,
+        ref Tess? tessellator,
         CancellationToken cancellationToken)
     {
         ProtobufReader typeReader = new(feature);
@@ -231,6 +237,7 @@ internal static class VectorTileDecoder
                 feature,
                 extent,
                 ref pointCount,
+                ref tessellator,
                 cancellationToken);
             if (polygons.Length == 0)
             {
@@ -391,6 +398,7 @@ internal static class VectorTileDecoder
         ReadOnlySpan<byte> feature,
         uint extent,
         ref int pointCount,
+        ref Tess? tessellator,
         CancellationToken cancellationToken)
     {
         List<VectorTilePolygon> polygons = [];
@@ -448,6 +456,7 @@ internal static class VectorTileDecoder
                         polygons,
                         currentRings,
                         currentRing,
+                        ref tessellator,
                         ref trianglePointCount);
                     currentRing = null;
                     continue;
@@ -481,6 +490,7 @@ internal static class VectorTileDecoder
         AddCompletedPolygon(
             polygons,
             currentRings,
+            ref tessellator,
             ref trianglePointCount);
         return polygons.ToArray();
     }
@@ -489,6 +499,7 @@ internal static class VectorTileDecoder
         List<VectorTilePolygon> polygons,
         List<VectorTileRing> currentRings,
         List<VectorTilePoint> points,
+        ref Tess? tessellator,
         ref int trianglePointCount)
     {
         if (points.Count < 3)
@@ -507,6 +518,7 @@ internal static class VectorTileDecoder
             AddCompletedPolygon(
                 polygons,
                 currentRings,
+                ref tessellator,
                 ref trianglePointCount);
         }
         else if (currentRings.Count == 0)
@@ -520,13 +532,14 @@ internal static class VectorTileDecoder
     private static void AddCompletedPolygon(
         List<VectorTilePolygon> polygons,
         List<VectorTileRing> rings,
+        ref Tess? tessellator,
         ref int trianglePointCount)
     {
         if (rings.Count == 0)
         {
             return;
         }
-        Tess tessellator = new();
+        tessellator ??= new Tess();
         foreach (VectorTileRing ring in rings)
         {
             ContourVertex[] vertices = new ContourVertex[ring.Points.Length];
@@ -876,7 +889,11 @@ internal sealed class VectorTileFeatureCollection
 {
     private readonly Dictionary<string, VectorTileFeature[]> _featuresBySourceLayer;
 
-    internal VectorTileFeatureCollection(VectorTileFeature[] features)
+    internal VectorTileFeatureCollection(VectorTileFeature[] features) : this(features, uniqueGeometry: false)
+    {
+    }
+
+    internal VectorTileFeatureCollection(VectorTileFeature[] features, bool uniqueGeometry)
     {
         Features = features;
         _featuresBySourceLayer = features
@@ -893,6 +910,7 @@ internal sealed class VectorTileFeatureCollection
         PolygonTriangleCount = features.Sum(feature =>
             feature.Polygons.Sum(polygon => polygon.FillTriangles.Length / 3));
         ByteSize = features.Sum(feature => feature.ByteSize);
+        RetainedByteSize = EstimateRetainedBytes(uniqueGeometry);
     }
 
     internal VectorTileFeature[] Features { get; }
@@ -909,6 +927,52 @@ internal sealed class VectorTileFeatureCollection
 
     internal long ByteSize { get; }
 
+    internal long RetainedByteSize { get; }
+
+    private long EstimateRetainedBytes(bool uniqueGeometry)
+    {
+        // The decoder creates distinct geometry objects/arrays. Only strings come
+        // from shared layer tables; avoid an identity set for every decoded point path.
+        VectorRetainedSize size = new(uniqueGeometry);
+        size.AddObject(this, 64);
+        size.AddObject(_featuresBySourceLayer, 80 + _featuresBySourceLayer.Count * 64L);
+        size.AddArray(Features);
+        foreach (var pair in _featuresBySourceLayer)
+        {
+            size.AddString(pair.Key);
+            size.AddArray(pair.Value);
+        }
+        foreach (VectorTileFeature feature in Features)
+        {
+            if (!size.AddObject(feature, 64))
+                continue;
+            size.AddString(feature.SourceLayer);
+            size.AddArray(feature.Points);
+            size.AddArray(feature.Properties);
+            foreach (var property in feature.Properties)
+            {
+                size.AddString(property.Name);
+                size.AddString(property.Value.StringValue);
+            }
+            size.AddArray(feature.Lines);
+            foreach (var line in feature.Lines)
+                if (size.AddObject(line, 24))
+                    size.AddArray(line.Points);
+            size.AddArray(feature.Polygons);
+            foreach (var polygon in feature.Polygons)
+            {
+                if (!size.AddObject(polygon, 32))
+                    continue;
+                size.AddArray(polygon.FillTriangles);
+                size.AddArray(polygon.Rings);
+                foreach (var ring in polygon.Rings)
+                    if (size.AddObject(ring, 24))
+                        size.AddArray(ring.Points);
+            }
+        }
+        return size.Bytes;
+    }
+
     internal IReadOnlyList<VectorTileFeature> GetSourceLayer(string sourceLayer) =>
         _featuresBySourceLayer.TryGetValue(sourceLayer, out VectorTileFeature[]? features)
             ? features
@@ -923,6 +987,41 @@ internal sealed record VectorTileFeature(
     VectorTileLine[] Lines,
     VectorTilePolygon[] Polygons)
 {
+    internal bool HasLinePaths => Lines.Length != 0 || Polygons.Length != 0;
+
+    internal LinePathEnumerator EnumerateLinePaths() => new(this);
+
+    internal struct LinePathEnumerator(VectorTileFeature feature)
+    {
+        private int _lineIndex;
+        private int _polygonIndex;
+        private int _ringIndex;
+
+        public readonly LinePathEnumerator GetEnumerator() => this;
+        public (VectorTilePoint[] Points, bool IsClosed) Current { get; private set; }
+
+        public bool MoveNext()
+        {
+            if (_lineIndex < feature.Lines.Length)
+            {
+                Current = (feature.Lines[_lineIndex++].Points, false);
+                return true;
+            }
+            while (_polygonIndex < feature.Polygons.Length)
+            {
+                VectorTileRing[] rings = feature.Polygons[_polygonIndex].Rings;
+                if (_ringIndex < rings.Length)
+                {
+                    Current = (rings[_ringIndex++].Points, true);
+                    return true;
+                }
+                _polygonIndex++;
+                _ringIndex = 0;
+            }
+            return false;
+        }
+    }
+
     internal long ByteSize =>
         ((long)Points.Length * 16) +
         Lines.Sum(line => (long)line.Points.Length * 16) +

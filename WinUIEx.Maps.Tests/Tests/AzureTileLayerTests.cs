@@ -67,6 +67,8 @@ public sealed class AzureTileLayerTests
                     ? ["microsoft.imagery", "microsoft.base"]
                     : style == MapStyle.RoadShadedRelief
                     ? ["microsoft.terra.main", "microsoft.base"]
+                    : style == MapStyle.Road
+                    ? ["microsoft.base", AzureRoadDetailAcquisitionSession.Tileset]
                     : ["microsoft.base"],
                 AzureTileAcquisitionSession.GetTilesetIds(style, 6));
             Assert.AreEqual(
@@ -158,6 +160,24 @@ public sealed class AzureTileLayerTests
             19,
             AzureTileAcquisitionSession.GetMaximumTileZoom(
                 MapStyle.SatelliteWithRoads));
+    }
+
+    [TestMethod]
+    [DataRow(0d, 0)]
+    [DataRow(9.99, 8)]
+    [DataRow(10d, 9)]
+    [DataRow(10.99, 9)]
+    [DataRow(11d, 10)]
+    [DataRow(22d, 21)]
+    public void AzureVectorSourceUses512PixelZoomConvention(double displayZoom, int sourceZoom)
+    {
+        AzureTileAcquisitionSession vector = new(MapStyle.Road, "token");
+        MapScene scene = MapCamera.CreateScene(-122.33, 47.61, displayZoom, 640, 480);
+        Assert.AreEqual(512, vector.TileSize);
+        Assert.AreEqual(sourceZoom, vector.GetSourceZoom(scene));
+        AzureTileAcquisitionSession raster = new(MapStyle.RoadRaster, "token");
+        Assert.AreEqual(256, raster.TileSize);
+        Assert.AreEqual(Math.Min(scene.TileZoom, raster.MaxSourceZoom), raster.GetSourceZoom(scene));
     }
 
     [TestMethod]

@@ -94,7 +94,8 @@ internal sealed class AzureVectorStyleProvider
                 MaximumStyleBytes,
                 cancellationToken)
             .ConfigureAwait(false);
-        VectorStyle style = VectorStyle.Parse(styleJson.Memory, _style == MapStyle.RoadShadedRelief);
+        VectorStyle style = VectorStyle.Parse(styleJson.Memory,
+            _style == MapStyle.RoadShadedRelief, _style == MapStyle.Road);
         Dictionary<string, VectorSpriteEntry> spriteEntries;
         using (PooledByteBuffer spriteJson = await AzureTileAcquisitionSession
             .GetStyleAssetAsync(
@@ -132,7 +133,8 @@ internal sealed class AzureVectorStyleProvider
             _style,
             style,
             spriteAtlas,
-            new VectorGlyphAtlas(_styleSlug, _glyphProvider));
+            new VectorGlyphAtlas(_styleSlug, _glyphProvider),
+            displayZoomOffset: -1);
         MapControlEventSource.Log.VectorStyleAssetsLoaded(
             (int)_style,
             style.LayerCount,
@@ -231,18 +233,21 @@ internal sealed class VectorStyleAssets
     private readonly VectorStyle _style;
     private readonly VectorSpriteAtlas _spriteAtlas;
     private readonly VectorGlyphAtlas _glyphAtlas;
+    private readonly double _displayZoomOffset;
 
     internal VectorStyleAssets(
         MapStyle mapStyle,
         VectorStyle style,
         VectorSpriteAtlas spriteAtlas,
-        VectorGlyphAtlas glyphAtlas)
+        VectorGlyphAtlas glyphAtlas,
+        double displayZoomOffset = 0)
     {
         _mapStyle = mapStyle;
         _styleIdentity = AzureTileAcquisitionSession.GetAzureStyleName(mapStyle);
         _style = style;
         _spriteAtlas = spriteAtlas;
         _glyphAtlas = glyphAtlas;
+        _displayZoomOffset = displayZoomOffset;
     }
 
     internal VectorStyleAssets(
@@ -264,10 +269,12 @@ internal sealed class VectorStyleAssets
         ReadOnlyMemory<byte> spriteJson,
         byte[] spritePixels,
         uint spriteWidth,
-        uint spriteHeight) =>
+        uint spriteHeight,
+        double displayZoomOffset = 0) =>
         new(
             mapStyle,
-            VectorStyle.Parse(styleJson, mapStyle == MapStyle.RoadShadedRelief),
+            VectorStyle.Parse(styleJson, mapStyle == MapStyle.RoadShadedRelief,
+                mapStyle == MapStyle.Road),
             new VectorSpriteAtlas(
                 AzureTileAcquisitionSession.GetAzureStyleName(mapStyle),
                 VectorSpriteAtlas.ParseIndex(spriteJson),
@@ -276,15 +283,27 @@ internal sealed class VectorStyleAssets
                 spriteHeight),
             new VectorGlyphAtlas(
                 AzureTileAcquisitionSession.GetAzureStyleName(mapStyle),
-                provider: null));
+                provider: null),
+            displayZoomOffset);
 
     internal VectorGlyphAtlas GlyphAtlas => _glyphAtlas;
 
+    internal double GetStyleZoom(double displayZoom) => displayZoom + _displayZoomOffset;
+
     internal bool CanReuseSymbols(double previousZoom, double zoom)
     {
+        previousZoom = GetStyleZoom(previousZoom);
+        zoom = GetStyleZoom(zoom);
         if (!double.IsFinite(previousZoom) || !double.IsFinite(zoom))
         {
             return false;
+        }
+        foreach (VectorLineStyleLayer layer in _style.LineLayers)
+        {
+            if (!layer.CanReuseSymbolZoom(previousZoom, zoom))
+            {
+                return false;
+            }
         }
         foreach (VectorIconStyleLayer layer in _style.IconLayers)
         {
@@ -300,12 +319,13 @@ internal sealed class VectorStyleAssets
                 return false;
             }
         }
-        // Patterned lines are resolved into symbols rather than styled lines.
-        return CanReuseLines(previousZoom, zoom);
+        return true;
     }
 
     internal bool CanReuseLines(double previousZoom, double zoom)
     {
+        previousZoom = GetStyleZoom(previousZoom);
+        zoom = GetStyleZoom(zoom);
         if (!double.IsFinite(previousZoom) || !double.IsFinite(zoom))
         {
             return false;
@@ -322,6 +342,8 @@ internal sealed class VectorStyleAssets
 
     internal bool CanReusePolygons(double previousZoom, double zoom)
     {
+        previousZoom = GetStyleZoom(previousZoom);
+        zoom = GetStyleZoom(zoom);
         if (!double.IsFinite(previousZoom) || !double.IsFinite(zoom))
         {
             return false;
@@ -400,6 +422,7 @@ internal sealed class VectorStyleAssets
         double zoom,
         double textScaleFactor = 1)
     {
+        zoom = GetStyleZoom(zoom);
         if (_mapStyle == MapStyle.BlankAccessible)
         {
             return new VectorSymbolResolution([], 0, 0);
@@ -442,6 +465,7 @@ internal sealed class VectorStyleAssets
         double zoom,
         CancellationToken cancellationToken = default)
     {
+        zoom = GetStyleZoom(zoom);
         const int maximumFeatureCount = 256;
         List<VectorTileAccessibilityFeature> resolved = [];
         foreach (VectorTextStyleLayer layer in _style.TextLayers)
@@ -672,14 +696,16 @@ internal sealed class VectorStyleAssets
 
     internal VectorLineResolution ResolveLines(
         VectorTileFeatureCollection features,
-        double zoom)
+        double zoom,
+        VectorGeometryMembership? membership = null)
     {
+        zoom = GetStyleZoom(zoom);
         if (_mapStyle == MapStyle.BlankAccessible)
         {
             return new VectorLineResolution([], 0);
         }
 
-        List<VectorTileStyledLine> lines = [];
+        using VectorStyleResultBuilder<VectorTileStyledLine> lines = new();
         int evaluationFailureCount = 0;
         foreach (VectorLineStyleLayer layer in _style.LineLayers)
         {
@@ -692,14 +718,19 @@ internal sealed class VectorStyleAssets
                 }
                 continue;
             }
-            foreach (VectorTileFeature feature in features.GetSourceLayer(layer.SourceLayer))
+            IReadOnlyList<VectorTileFeature> sourceFeatures = features.GetSourceLayer(layer.SourceLayer);
+            VectorStyleFilterResult[]? filters = membership?.GetFilters(
+                layer, layer.FilterDependsOnZoom, sourceFeatures, zoom, false, layer.EvaluateFilter);
+            for (int featureIndex = 0; featureIndex < sourceFeatures.Count; featureIndex++)
             {
-                if (feature.Lines.Length == 0)
+                VectorTileFeature feature = sourceFeatures[featureIndex];
+                if (!feature.HasLinePaths)
                 {
                     continue;
                 }
                 VectorStyleEvaluationContext context = new(feature, zoom);
-                VectorStyleFilterResult filter = layer.EvaluateFilter(context);
+                VectorStyleFilterResult filter = filters is null
+                    ? layer.EvaluateFilter(context) : filters[featureIndex];
                 if (filter != VectorStyleFilterResult.Match)
                 {
                     if (filter == VectorStyleFilterResult.EvaluationFailure)
@@ -730,12 +761,13 @@ internal sealed class VectorStyleAssets
                     }
                     continue;
                 }
-                foreach (VectorTileLine line in feature.Lines)
+                foreach (var path in feature.EnumerateLinePaths())
                 {
                     lines.Add(new VectorTileStyledLine(
                         layer.Order,
-                        line.Points,
-                        style));
+                        path.Points,
+                        style,
+                        path.IsClosed));
                 }
             }
         }
@@ -835,7 +867,7 @@ internal sealed class VectorStyleAssets
             foreach (VectorTileFeature feature in features.GetSourceLayer(layer.SourceLayer))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (feature.Lines.Length == 0)
+                if (!feature.HasLinePaths)
                 {
                     continue;
                 }
@@ -880,7 +912,8 @@ internal sealed class VectorStyleAssets
                 {
                     if (collectCounts)
                     {
-                        counts.UnavailableSpriteCount += feature.Lines.Length;
+                        foreach (var path in feature.EnumerateLinePaths())
+                            counts.UnavailableSpriteCount++;
                     }
                     continue;
                 }
@@ -904,7 +937,7 @@ internal sealed class VectorStyleAssets
                     }
                     continue;
                 }
-                foreach (VectorTileLine line in feature.Lines)
+                foreach (var path in feature.EnumerateLinePaths())
                 {
                     symbols.Add(new VectorTileSymbol(
                         layer.Order,
@@ -915,10 +948,11 @@ internal sealed class VectorStyleAssets
                         height,
                         0,
                         0,
-                        LinePoints: line.Points,
+                        LinePoints: path.Points,
                         LineSpacing: width,
                         Opacity: opacity,
-                        ContinuousLinePlacement: true));
+                        ContinuousLinePlacement: true,
+                        IsClosedLine: path.IsClosed));
                 }
             }
         }
@@ -926,14 +960,16 @@ internal sealed class VectorStyleAssets
 
     internal VectorPolygonResolution ResolvePolygons(
         VectorTileFeatureCollection features,
-        double zoom)
+        double zoom,
+        VectorGeometryMembership? membership = null)
     {
+        zoom = GetStyleZoom(zoom);
         if (_mapStyle == MapStyle.BlankAccessible)
         {
             return new VectorPolygonResolution([], 0);
         }
 
-        List<VectorTileStyledPolygon> polygons = [];
+        using VectorStyleResultBuilder<VectorTileStyledPolygon> polygons = new();
         int evaluationFailureCount = 0;
         foreach (VectorFillStyleLayer layer in _style.FillLayers)
         {
@@ -946,14 +982,19 @@ internal sealed class VectorStyleAssets
                 }
                 continue;
             }
-            foreach (VectorTileFeature feature in features.GetSourceLayer(layer.SourceLayer))
+            IReadOnlyList<VectorTileFeature> sourceFeatures = features.GetSourceLayer(layer.SourceLayer);
+            VectorStyleFilterResult[]? filters = membership?.GetFilters(
+                layer, layer.FilterDependsOnZoom, sourceFeatures, zoom, true, layer.EvaluateFilter);
+            for (int featureIndex = 0; featureIndex < sourceFeatures.Count; featureIndex++)
             {
+                VectorTileFeature feature = sourceFeatures[featureIndex];
                 if (feature.Polygons.Length == 0)
                 {
                     continue;
                 }
                 VectorStyleEvaluationContext context = new(feature, zoom);
-                VectorStyleFilterResult filter = layer.EvaluateFilter(context);
+                VectorStyleFilterResult filter = filters is null
+                    ? layer.EvaluateFilter(context) : filters[featureIndex];
                 if (filter != VectorStyleFilterResult.Match)
                 {
                     if (filter == VectorStyleFilterResult.EvaluationFailure)
@@ -1026,6 +1067,7 @@ internal sealed class VectorStyleAssets
 
     internal VectorBackgroundResolution ResolveBackgrounds(double zoom)
     {
+        zoom = GetStyleZoom(zoom);
         // Hybrid already draws its satellite background through the shared raster
         // pipeline. The style's canvas background would cover that imagery before
         // roads and labels are drawn (including in prepared geometry frames).
@@ -1057,7 +1099,11 @@ internal sealed class VectorStyleAssets
             evaluationFailureCount);
     }
 
-    internal AzureReliefStyle? Relief =>
+    internal AzureRasterStyle? RoadDetails => _style.RoadDetails;
+
+    internal string AzureBaseTileParameters => _style.AzureBaseTileParameters;
+
+    internal AzureRasterStyle? Relief =>
         _mapStyle == MapStyle.RoadShadedRelief ? _style.Relief : null;
 
     private void CollectTextGlyphKeys(
@@ -1688,11 +1734,16 @@ internal sealed class VectorStyle
 
     internal VectorBackgroundStyleLayer[] BackgroundLayers { get; }
 
-    internal AzureReliefStyle? Relief { get; private init; }
+    internal AzureRasterStyle? Relief { get; private init; }
+
+    internal AzureRasterStyle? RoadDetails { get; private init; }
+
+    internal string AzureBaseTileParameters { get; private init; } = string.Empty;
 
     internal int LayerCount =>
         IconLayers.Length + TextLayers.Length + LineLayers.Length +
-        FillLayers.Length + BackgroundLayers.Length + (Relief is null ? 0 : 1);
+        FillLayers.Length + BackgroundLayers.Length + (Relief is null ? 0 : 1) +
+        (RoadDetails is null ? 0 : 1);
 
     internal int UnsupportedLayerCount =>
         _unsupportedLayerCounts.Sum();
@@ -1703,9 +1754,10 @@ internal sealed class VectorStyle
             ? 0
             : _unsupportedLayerCounts[(int)result];
 
-    internal static VectorStyle Parse(ReadOnlyMemory<byte> json, bool supportsAzureRelief = false)
+    internal static VectorStyle Parse(ReadOnlyMemory<byte> json,
+        bool supportsAzureRelief = false, bool supportsAzureRoadDetails = false)
     {
-        return Parse(json, azureBaseSourceOnly: true, supportsAzureRelief);
+        return Parse(json, azureBaseSourceOnly: true, supportsAzureRelief, supportsAzureRoadDetails);
     }
 
     internal static VectorStyle ParseCustom(ReadOnlyMemory<byte> json)
@@ -1716,7 +1768,8 @@ internal sealed class VectorStyle
     private static VectorStyle Parse(
         ReadOnlyMemory<byte> json,
         bool azureBaseSourceOnly,
-        bool supportsAzureRelief = false)
+        bool supportsAzureRelief = false,
+        bool supportsAzureRoadDetails = false)
     {
         using JsonDocument document = JsonDocument.Parse(
             json,
@@ -1746,7 +1799,9 @@ internal sealed class VectorStyle
         int[] unsupportedLayerCounts =
             new int[Enum.GetValues<VectorStyleLayerParseResult>().Length];
         int layerCount = 0;
-        AzureReliefStyle? relief = supportsAzureRelief ? AzureReliefStyle.Parse(root) : null;
+        AzureRasterStyle? relief = supportsAzureRelief ? AzureRasterStyle.Parse(root) : null;
+        AzureRasterStyle? roadDetails = supportsAzureRoadDetails
+            ? AzureRasterStyle.Parse(root, AzureRoadDetailAcquisitionSession.Tileset) : null;
         foreach (JsonElement layer in layers.EnumerateArray())
         {
             if (++layerCount > MaximumStyleLayers)
@@ -1766,7 +1821,7 @@ internal sealed class VectorStyle
                     "The vector style contains a layer without a valid type.");
             }
             string? layerType = type.GetString();
-            if (relief?.Order == layerCount - 1)
+            if (relief?.Order == layerCount - 1 || roadDetails?.Order == layerCount - 1)
                 continue;
             if (string.Equals(layerType, "background", StringComparison.Ordinal))
             {
@@ -1915,7 +1970,45 @@ internal sealed class VectorStyle
             unsupportedLayerCounts)
         {
             Relief = relief,
+            RoadDetails = roadDetails,
+            AzureBaseTileParameters = azureBaseSourceOnly ? GetAzureBaseTileParameters(root) : string.Empty,
         };
+    }
+
+    private static string GetAzureBaseTileParameters(JsonElement root)
+    {
+        if (!root.TryGetProperty("sources", out JsonElement sources))
+            return string.Empty;
+        foreach (JsonProperty source in sources.EnumerateObject())
+        {
+            if (source.Value.ValueKind != JsonValueKind.Object ||
+                !source.Value.TryGetProperty("url", out JsonElement url) ||
+                url.ValueKind != JsonValueKind.String ||
+                url.GetString() is not string value)
+                continue;
+            int queryStart = value.IndexOf('?');
+            if (queryStart < 0)
+                continue;
+            string[] query = value[(queryStart + 1)..].Split('&');
+            if (!query.Contains("tilesetId=microsoft.base", StringComparer.Ordinal))
+                continue;
+            System.Text.StringBuilder parameters = new();
+            foreach (string parameter in query)
+            {
+                int equals = parameter.IndexOf('=');
+                if (equals < 0)
+                    continue;
+                string name = parameter[..equals];
+                if (name is not ("og" or "cstl" or "sv" or "jp" or "st"))
+                    continue;
+                // Only generation options cross this boundary, never the document's
+                // host, credentials, routing, or language placeholders.
+                parameters.Append('&').Append(name).Append('=')
+                    .Append(Uri.EscapeDataString(Uri.UnescapeDataString(parameter[(equals + 1)..])));
+            }
+            return parameters.ToString();
+        }
+        return string.Empty;
     }
 
     internal double[] GetPreparationZooms(int tileZoom)
@@ -2933,22 +3026,15 @@ internal sealed class VectorIconStyleLayer(
     VectorStyleExpression iconOpacity,
     VectorStyleExpression iconColor)
 {
-    private readonly bool _dependsOnZoom =
-        visibility.DependsOnZoom || filter.DependsOnZoom ||
-        symbolSpacing.DependsOnZoom || iconImage.DependsOnZoom ||
-        iconSize.DependsOnZoom || iconOffset.DependsOnZoom ||
-        iconAnchor.DependsOnZoom || iconRotate.DependsOnZoom ||
-        iconRotationAlignment.DependsOnZoom || iconTextFit.DependsOnZoom ||
-        iconTextFitPadding.DependsOnZoom || iconPadding.DependsOnZoom ||
-        symbolAvoidEdges.DependsOnZoom || symbolSortKey.DependsOnZoom ||
-        iconAllowOverlap.DependsOnZoom || iconIgnorePlacement.DependsOnZoom ||
-        iconOptional.DependsOnZoom || iconOpacity.DependsOnZoom ||
-        iconColor.DependsOnZoom;
+    private readonly VectorStyleExpression[] _zoomExpressions = VectorStyleExpression.GetZoomDependencies(
+        visibility, filter, symbolSpacing, iconImage, iconSize, iconOffset,
+        iconAnchor, iconRotate, iconRotationAlignment, iconTextFit,
+        iconTextFitPadding, iconPadding, symbolAvoidEdges, symbolSortKey,
+        iconAllowOverlap, iconIgnorePlacement, iconOptional, iconOpacity, iconColor);
 
     internal bool CanReuseZoom(double previousZoom, double zoom) =>
-        !_dependsOnZoom &&
-        (previousZoom < minimumZoom || previousZoom >= maximumZoom) ==
-        (zoom < minimumZoom || zoom >= maximumZoom);
+        VectorStyleExpression.CanReuseLayerZoom(
+            previousZoom, zoom, minimumZoom, maximumZoom, _zoomExpressions);
 
     internal int Order { get; } = order;
 
@@ -3337,17 +3423,15 @@ internal sealed class VectorFillStyleLayer(
     VectorStyleExpression fillTranslateAnchor,
     VectorStyleExpression fillAntialias)
 {
-    private readonly bool _dependsOnZoom =
-        visibility.DependsOnZoom || filter.DependsOnZoom ||
-        fillColor.DependsOnZoom || fillOpacity.DependsOnZoom ||
-        fillOutlineColor.DependsOnZoom || fillPattern.DependsOnZoom ||
-        fillTranslate.DependsOnZoom || fillTranslateAnchor.DependsOnZoom ||
-        fillAntialias.DependsOnZoom;
+    internal bool FilterDependsOnZoom { get; } = filter.DependsOnZoom;
+
+    private readonly VectorStyleExpression[] _zoomExpressions = VectorStyleExpression.GetZoomDependencies(
+        visibility, filter, fillColor, fillOpacity, fillOutlineColor,
+        fillPattern, fillTranslate, fillTranslateAnchor, fillAntialias);
 
     internal bool CanReuseZoom(double previousZoom, double zoom) =>
-        !_dependsOnZoom &&
-        (previousZoom < minimumZoom || previousZoom >= maximumZoom) ==
-        (zoom < minimumZoom || zoom >= maximumZoom);
+        VectorStyleExpression.CanReuseLayerZoom(
+            previousZoom, zoom, minimumZoom, maximumZoom, _zoomExpressions);
 
     internal int Order { get; } = order;
 
@@ -3541,19 +3625,25 @@ internal sealed class VectorLineStyleLayer(
     VectorStyleExpression lineMiterLimit,
     ImmutableArray<VectorLineGradientStop> lineGradient)
 {
-    private readonly bool _dependsOnZoom =
-        visibility.DependsOnZoom || filter.DependsOnZoom ||
-        lineColor.DependsOnZoom || lineOpacity.DependsOnZoom ||
-        lineWidth.DependsOnZoom || lineCap.DependsOnZoom ||
-        lineJoin.DependsOnZoom || lineDashArray.DependsOnZoom ||
-        linePattern.DependsOnZoom || lineOffset.DependsOnZoom ||
-        lineGapWidth.DependsOnZoom || lineBlur.DependsOnZoom ||
-        lineMiterLimit.DependsOnZoom;
+    internal bool FilterDependsOnZoom { get; } = filter.DependsOnZoom;
+
+    // Visibility/filter failures also contribute to symbol diagnostics without a pattern.
+    private readonly VectorStyleExpression[] _symbolZoomExpressions = linePattern.IsNullLiteral
+        ? VectorStyleExpression.GetZoomDependencies(visibility, filter)
+        : VectorStyleExpression.GetZoomDependencies(visibility, filter, linePattern, lineOpacity);
+
+    private readonly VectorStyleExpression[] _zoomExpressions = VectorStyleExpression.GetZoomDependencies(
+        visibility, filter, lineColor, lineOpacity, lineWidth, lineCap,
+        lineJoin, lineDashArray, linePattern, lineOffset, lineGapWidth,
+        lineBlur, lineMiterLimit);
 
     internal bool CanReuseZoom(double previousZoom, double zoom) =>
-        !_dependsOnZoom &&
-        (previousZoom < minimumZoom || previousZoom >= maximumZoom) ==
-        (zoom < minimumZoom || zoom >= maximumZoom);
+        VectorStyleExpression.CanReuseLayerZoom(
+            previousZoom, zoom, minimumZoom, maximumZoom, _zoomExpressions);
+
+    internal bool CanReuseSymbolZoom(double previousZoom, double zoom) =>
+        VectorStyleExpression.CanReuseLayerZoom(
+            previousZoom, zoom, minimumZoom, maximumZoom, _symbolZoomExpressions);
 
     internal int Order { get; } = order;
 
@@ -3652,12 +3742,7 @@ internal sealed class VectorLineStyleLayer(
         }
         color *= (float)Math.Clamp(opacity, 0, 1);
         ImmutableArray<VectorLineGradientStop> gradient =
-            lineGradient.IsDefaultOrEmpty
-                ? []
-                : [.. lineGradient.Select(stop => stop with
-                {
-                    Color = stop.Color * (float)Math.Clamp(opacity, 0, 1),
-                })];
+            VectorLineGradientStop.ApplyOpacity(lineGradient, (float)Math.Clamp(opacity, 0, 1));
         result = new VectorLineStyle(
             color,
             width,
@@ -3824,27 +3909,17 @@ internal sealed class VectorTextStyleLayer(
     VectorStyleExpression textIgnorePlacement,
     VectorStyleExpression textOptional)
 {
-    private readonly bool _dependsOnZoom =
-        visibility.DependsOnZoom || filter.DependsOnZoom ||
-        symbolSpacing.DependsOnZoom || textField.DependsOnZoom ||
-        textFont.DependsOnZoom || textSize.DependsOnZoom ||
-        textMaxWidth.DependsOnZoom || textLineHeight.DependsOnZoom ||
-        textJustify.DependsOnZoom || textPadding.DependsOnZoom ||
-        textKeepUpright.DependsOnZoom || textMaxAngle.DependsOnZoom ||
-        symbolAvoidEdges.DependsOnZoom || textOffset.DependsOnZoom ||
-        textAnchor.DependsOnZoom || textVariableAnchor.DependsOnZoom ||
-        textRadialOffset.DependsOnZoom || textLetterSpacing.DependsOnZoom ||
-        textTransform.DependsOnZoom || textRotationAlignment.DependsOnZoom ||
-        textColor.DependsOnZoom || textHaloColor.DependsOnZoom ||
-        textHaloWidth.DependsOnZoom || textHaloBlur.DependsOnZoom ||
-        textOpacity.DependsOnZoom || symbolSortKey.DependsOnZoom ||
-        textAllowOverlap.DependsOnZoom || textIgnorePlacement.DependsOnZoom ||
-        textOptional.DependsOnZoom;
+    private readonly VectorStyleExpression[] _zoomExpressions = VectorStyleExpression.GetZoomDependencies(
+        visibility, filter, symbolSpacing, textField, textFont, textSize,
+        textMaxWidth, textLineHeight, textJustify, textPadding, textKeepUpright,
+        textMaxAngle, symbolAvoidEdges, textOffset, textAnchor, textVariableAnchor,
+        textRadialOffset, textLetterSpacing, textTransform, textRotationAlignment,
+        textColor, textHaloColor, textHaloWidth, textHaloBlur, textOpacity,
+        symbolSortKey, textAllowOverlap, textIgnorePlacement, textOptional);
 
     internal bool CanReuseZoom(double previousZoom, double zoom) =>
-        !_dependsOnZoom &&
-        (previousZoom < minimumZoom || previousZoom >= maximumZoom) ==
-        (zoom < minimumZoom || zoom >= maximumZoom);
+        VectorStyleExpression.CanReuseLayerZoom(
+            previousZoom, zoom, minimumZoom, maximumZoom, _zoomExpressions);
 
     internal int Order { get; } = order;
 
@@ -4584,6 +4659,98 @@ internal sealed class VectorStyleExpression
         new(VectorStyleExpressionOperator.Literal, value, null, []);
 
     internal bool DependsOnZoom => _containsZoom;
+
+    internal bool IsNullLiteral =>
+        _operator == VectorStyleExpressionOperator.Literal &&
+        _literal.Kind == VectorStyleValueKind.Null;
+
+    internal static VectorStyleExpression[] GetZoomDependencies(
+        params VectorStyleExpression[] expressions) =>
+        Array.FindAll(expressions, static expression => expression.DependsOnZoom);
+
+    internal static bool CanReuseLayerZoom(
+        double previousZoom,
+        double zoom,
+        double minimumZoom,
+        double maximumZoom,
+        ReadOnlySpan<VectorStyleExpression> expressions)
+    {
+        bool wasHidden = previousZoom < minimumZoom || previousZoom >= maximumZoom;
+        bool isHidden = zoom < minimumZoom || zoom >= maximumZoom;
+        if (wasHidden || isHidden)
+        {
+            return wasHidden == isHidden;
+        }
+        foreach (VectorStyleExpression expression in expressions)
+        {
+            if (!expression.CanReuseZoom(previousZoom, zoom))
+                return false;
+        }
+        return true;
+    }
+
+    internal bool CanReuseZoom(double previousZoom, double zoom)
+    {
+        if (!_containsZoom || previousZoom == zoom)
+            return true;
+        if (_operator == VectorStyleExpressionOperator.Zoom)
+            return false;
+        if (_operator == VectorStyleExpressionOperator.Step &&
+            _arguments[0]._operator == VectorStyleExpressionOperator.Zoom)
+        {
+            for (int index = 2; index < _arguments.Length; index += 2)
+            {
+                if (!_arguments[index].TryGetLiteralNumber(out double stop) ||
+                    (previousZoom < stop) != (zoom < stop))
+                    return false;
+            }
+            // Evaluation visits earlier outputs too; their failures must remain observable.
+            for (int index = 1; index < _arguments.Length; index += 2)
+            {
+                if (!_arguments[index].CanReuseZoom(previousZoom, zoom))
+                    return false;
+            }
+            return true;
+        }
+        if (_operator is VectorStyleExpressionOperator.InterpolateLinear or
+                VectorStyleExpressionOperator.InterpolateExponential &&
+            _arguments[0]._operator == VectorStyleExpressionOperator.Zoom)
+        {
+            if (!_arguments[1].TryGetLiteralNumber(out double firstStop))
+                return false;
+            if (previousZoom <= firstStop && zoom <= firstStop)
+                return _arguments[2].CanReuseZoom(previousZoom, zoom);
+            double lastStop = firstStop;
+            for (int index = 3; index < _arguments.Length; index += 2)
+            {
+                if (!_arguments[index].TryGetLiteralNumber(out double stop) || stop <= lastStop)
+                    return false;
+                lastStop = stop;
+            }
+            // At the last stop the evaluator still interpolates and checks both output types.
+            if (previousZoom <= lastStop || zoom <= lastStop)
+                return false;
+            for (int index = 2; index < _arguments.Length; index += 2)
+            {
+                if (!_arguments[index].CanReuseZoom(previousZoom, zoom))
+                    return false;
+            }
+            return true;
+        }
+        foreach (VectorStyleExpression argument in _arguments)
+        {
+            if (!argument.CanReuseZoom(previousZoom, zoom))
+                return false;
+        }
+        return true;
+    }
+
+    private bool TryGetLiteralNumber(out double number)
+    {
+        number = 0;
+        return _operator == VectorStyleExpressionOperator.Literal &&
+            _literal.TryGetNumber(out number) && double.IsFinite(number);
+    }
 
     internal static bool TryParse(
         JsonElement element,

@@ -15,6 +15,7 @@ internal sealed partial class MapRenderer
     private static readonly MapScreenPoint[] s_vectorLineCircleOffsets =
         CreateVectorLineCircleOffsets();
     private VectorLineFrameCache? _vectorLineFrameCache;
+    internal static long VectorDashSkippedSpans;
 
     private unsafe bool DrawVectorLineLayer(
         IntPtr context,
@@ -25,6 +26,8 @@ internal sealed partial class MapRenderer
             !_rasterLayers.TryGetValue(layer.RuntimeId, out RasterLayerState? state) ||
             state.Scene is null)
         {
+            if (_vectorLineFrameCache?.RuntimeId == layer.RuntimeId)
+                _vectorLineFrameCache.Pending.Dispose();
             return false;
         }
 
@@ -62,9 +65,10 @@ internal sealed partial class MapRenderer
                 DeferVectorGeometryRebuild(layer, state, fallbackMask);
             if (versionsMatch || deferredRebuild)
             {
-                Dictionary<VectorLineBatchKey, NativeGeometryBuffer>
+                Dictionary<VectorLineBatchKey, List<PendingGeometryDraw>>
                     pendingBatches = [];
                 List<VectorLineBatchKey> pendingOrder = [];
+                List<IDisposable> pendingOwners = [];
                 try
                 {
                     VectorLineRenderResult result = cached.Result;
@@ -76,8 +80,11 @@ internal sealed partial class MapRenderer
                             layer,
                             state,
                             cached.IncludedTiles,
+                            cached.Pending,
+                            cached.ByteSize,
                             pendingBatches,
                             pendingOrder,
+                            pendingOwners,
                             ref pendingResult,
                             out int pendingTileCount);
                         MapControlEventSource.Log
@@ -87,9 +94,7 @@ internal sealed partial class MapRenderer
                                 pendingTileCount,
                                 offsetX,
                                 offsetY);
-                        pendingOrder.Sort(static (left, right) =>
-                            left.StyleLayerOrder.CompareTo(
-                                right.StyleLayerOrder));
+                        pendingOrder.Sort(CompareVectorLineBatches);
                         DrawReusedVectorLines(
                             context,
                             cached,
@@ -122,10 +127,8 @@ internal sealed partial class MapRenderer
                 }
                 finally
                 {
-                    foreach (NativeGeometryBuffer buffer in pendingBatches.Values)
-                    {
-                        buffer.Dispose();
-                    }
+                    foreach (var owner in pendingOwners)
+                        owner.Dispose();
                 }
             }
         }
@@ -234,8 +237,11 @@ internal sealed partial class MapRenderer
         LayerRenderSnapshot layer,
         RasterLayerState state,
         IReadOnlySet<VectorTileInstanceKey> includedTiles,
-        Dictionary<VectorLineBatchKey, NativeGeometryBuffer> batches,
+        PendingGeometryCache<VectorLineBatchKey, VectorLineRenderResult> cache,
+        long maximumBytes,
+        Dictionary<VectorLineBatchKey, List<PendingGeometryDraw>> batches,
         List<VectorLineBatchKey> batchOrder,
+        List<IDisposable> pendingOwners,
         ref VectorLineRenderResult result,
         out int pendingTileCount)
     {
@@ -247,7 +253,15 @@ internal sealed partial class MapRenderer
 
         bool activeFade = false;
         HashSet<RasterTileKey> pendingTiles = [];
+        HashSet<VectorTileInstanceKey> visible = [];
         MapScene scene = CreateCurrentRasterScene(state.Scene.TileZoom);
+        foreach (var tile in scene.VisibleTiles)
+        {
+            VectorTileInstanceKey instance = new(new(layer.RuntimeId, tile.Id), tile.WorldX);
+            if (!includedTiles.Contains(instance))
+                visible.Add(instance);
+        }
+        cache.Trim(visible);
         foreach (VisibleTile visibleTile in scene.VisibleTiles)
         {
             RasterTileKey key = new(layer.RuntimeId, visibleTile.Id);
@@ -257,14 +271,51 @@ internal sealed partial class MapRenderer
                 continue;
             }
             pendingTiles.Add(key);
-            activeFade |= CollectVectorLineTile(
-                layer,
-                visibleTile,
-                tile,
-                batches,
-                batchOrder,
-                ref result,
-                opacityMultiplier: 1);
+            tile.MarkUsed();
+            double opacity = ComputeLayerTileOpacity(Stopwatch.GetElapsedTime(tile.ReadyTimestamp),
+                layer.FadeDuration, layer.Opacity);
+            activeFade |= opacity < layer.Opacity;
+            VectorTileInstanceKey instance = new(key, visibleTile.WorldX);
+            bool reused = TryGetPendingGeometry(cache, instance, tile, out var pending, out var transform);
+            if (!reused)
+            {
+                Dictionary<VectorLineBatchKey, NativeGeometryBuffer> native = [];
+                List<VectorLineBatchKey> order = [];
+                VectorLineRenderResult tileResult = new();
+                try
+                {
+                    CollectVectorLineTile(layer with { Opacity = 1, FadeDuration = TimeSpan.Zero },
+                        visibleTile, tile, native, order, ref tileResult, 1);
+                    pending = new(tile, _displayLongitude, _displayLatitude, native, order, tileResult);
+                    cache.Admit(instance, pending, maximumBytes, DevicePointer);
+                    if (!pending.Retained)
+                        pendingOwners.Add(pending);
+                    TryGetVectorPanTransform(_displayLongitude, _displayLatitude, _displayLongitude,
+                        _displayLatitude, _displayZoom, _displayHeading, _displayPitch,
+                        _viewportWidth, _viewportHeight, out transform, out _, out _);
+                }
+                catch
+                {
+                    pending?.Dispose();
+                    foreach (var buffer in native.Values)
+                        buffer.Dispose();
+                    throw;
+                }
+            }
+            result.Add(pending!.Result);
+            foreach (var batchKey in pending.Order)
+            {
+                VectorLineBatchKey fadedKey = batchKey with { Color = batchKey.Color * (float)opacity };
+                if (!batches.TryGetValue(fadedKey, out var draws))
+                {
+                    draws = [];
+                    batches.Add(fadedKey, draws);
+                    batchOrder.Add(fadedKey);
+                }
+                draws.Add(new(pending.Buffers[batchKey], transform));
+            }
+            MapControlEventSource.Log.VectorPendingGeometry((int)VectorGeometryKind.Line,
+                reused ? 1 : 0, pending.Retained ? 1 : 0, cache.ByteSize);
         }
         pendingTileCount = pendingTiles.Count;
         return activeFade;
@@ -273,7 +324,7 @@ internal sealed partial class MapRenderer
     private void DrawReusedVectorLines(
         IntPtr context,
         VectorLineFrameCache cached,
-        IReadOnlyDictionary<VectorLineBatchKey, NativeGeometryBuffer> pending,
+        IReadOnlyDictionary<VectorLineBatchKey, List<PendingGeometryDraw>> pending,
         IReadOnlyList<VectorLineBatchKey> pendingOrder,
         MapViewportProjectiveTransform panTransform,
         ref VectorLineRenderResult pendingResult)
@@ -300,13 +351,8 @@ internal sealed partial class MapRenderer
             else
             {
                 VectorLineBatchKey key = pendingOrder[pendingIndex++];
-                NativeGeometryBuffer buffer = pending[key];
-                DrawGeometryBuffer(
-                    context,
-                    buffer,
-                    key.Color,
-                    premultiplied: true);
-                pendingResult.DrawCallCount += buffer.Chunks.Count;
+                foreach (var draw in pending[key])
+                    pendingResult.DrawCallCount += DrawPendingGeometry(context, draw, key.Color);
             }
         }
     }
@@ -606,34 +652,9 @@ internal sealed partial class MapRenderer
         {
             VectorLineStyle rasterStyle =
                 PrepareVectorLineForRasterization(line.Style);
-            MapScreenPoint[] projected =
-                MapScreenPointPool.Rent(line.Points.Length);
-            int triangleCount;
-            try
-            {
-                ProjectVectorLine(
-                    line.Points,
-                    visibleTile,
-                    _viewportWidth,
-                    _viewportHeight,
-                    _displayHeading,
-                    _displayPitch,
-                    projected.AsSpan(0, line.Points.Length));
-                triangleCount = AppendStyledVectorLineTriangles(
-                    projected.AsSpan(0, line.Points.Length),
-                    rasterStyle,
-                    line.StyleLayerOrder,
-                    opacity,
-                    _viewportWidth,
-                    _viewportHeight,
-                    VectorGeometryCachePadding,
-                    batches,
-                    batchOrder);
-            }
-            finally
-            {
-                MapScreenPointPool.Return(projected);
-            }
+            int triangleCount = AppendVectorTileLineTriangles(
+                line, rasterStyle, visibleTile, _viewportWidth, _viewportHeight,
+                _displayHeading, _displayPitch, opacity, batches, batchOrder);
             if (triangleCount == 0)
             {
                 continue;
@@ -648,6 +669,78 @@ internal sealed partial class MapRenderer
             result.AddAdvancedStyle(line.Style);
         }
         return tileOpacity < layer.Opacity;
+    }
+
+    private static int AppendVectorTileLineTriangles(
+        VectorTileStyledLine line, VectorLineStyle style, VisibleTile tile,
+        double width, double height, double heading, double pitch, double opacity,
+        Dictionary<VectorLineBatchKey, NativeGeometryBuffer> batches,
+        List<VectorLineBatchKey> batchOrder)
+    {
+        MapScreenPoint[] projected = MapScreenPointPool.Rent(
+            line.ProjectedPointCount + (line.IsClosed ? 1 : 0));
+        try
+        {
+            if (!line.IsClosed)
+            {
+                ProjectVectorLine(line.Points, tile, width, height, heading, pitch,
+                    projected.AsSpan(0, line.Points.Length));
+                return AppendStyledVectorLineTriangles(projected.AsSpan(0, line.Points.Length),
+                    style, line.StyleLayerOrder, opacity, width, height,
+                    VectorGeometryCachePadding, batches, batchOrder);
+            }
+
+            int triangles = 0, count = 0;
+            int segments = line.Points.Length;
+            if (segments < 3)
+                return 0;
+            if (line.Points[0] == line.Points[^1])
+                segments--;
+            int first = 0;
+            for (int i = 0; i < segments; i++)
+            {
+                VectorTilePoint point = line.Points[i];
+                if (point.X < 0 || point.X > 1 || point.Y < 0 || point.Y > 1)
+                {
+                    first = i;
+                    break;
+                }
+            }
+            VectorTilePoint previousEnd = default;
+            for (int i = 1; i <= segments; i++)
+            {
+                VectorTilePoint start = line.Points[(first + i - 1) % segments];
+                VectorTilePoint end = line.Points[(first + i) % segments];
+                if (!TryClipVectorPolygonOutlineSegment(start, end, out var clippedStart, out var clippedEnd))
+                {
+                    Flush();
+                    continue;
+                }
+                if (count != 0 && previousEnd != clippedStart)
+                    Flush();
+                if (count == 0)
+                    projected[count++] = ProjectVectorPoint(clippedStart, tile, width, height, heading, pitch);
+                projected[count++] = ProjectVectorPoint(clippedEnd, tile, width, height, heading, pitch);
+                previousEnd = clippedEnd;
+                if (clippedEnd != end)
+                    Flush();
+            }
+            Flush();
+            return triangles;
+
+            void Flush()
+            {
+                if (count >= 2)
+                    triangles += AppendStyledVectorLineTriangles(projected.AsSpan(0, count),
+                        style, line.StyleLayerOrder, opacity, width, height,
+                        VectorGeometryCachePadding, batches, batchOrder);
+                count = 0;
+            }
+        }
+        finally
+        {
+            MapScreenPointPool.Return(projected);
+        }
     }
 
     internal static VectorLineStyle PrepareVectorLineForRasterization(
@@ -665,12 +758,7 @@ internal sealed partial class MapRenderer
         {
             Color = style.Color * (float)coverage,
             Width = MinimumVectorLineRasterWidth,
-            Gradient = style.Gradient.IsDefaultOrEmpty
-                ? []
-                : [.. style.Gradient.Select(stop => stop with
-                {
-                    Color = stop.Color * (float)coverage,
-                })],
+            Gradient = VectorLineGradientStop.ApplyOpacity(style.Gradient, (float)coverage),
         };
     }
 
@@ -972,7 +1060,7 @@ internal sealed partial class MapRenderer
         double pitch,
         Span<MapScreenPoint> projected)
     {
-        for (int index = 0; index < projected.Length; index++)
+        for (int index = 0; index < points.Count; index++)
         {
             projected[index] = ProjectVectorPoint(
                 points[index],
@@ -982,6 +1070,8 @@ internal sealed partial class MapRenderer
                 heading,
                 pitch);
         }
+        if (projected.Length > points.Count)
+            projected[points.Count] = projected[0];
     }
 
     private static MapScreenPoint ProjectVectorPoint(
@@ -1124,6 +1214,7 @@ internal sealed partial class MapRenderer
 
         int initialCount = triangles.Count;
         double halfWidth = style.Width / 2;
+        bool closed = points.Length > 2 && points[0] == points[^1];
         for (int index = 0; index + 1 < points.Length; index++)
         {
             MapScreenPoint start = points[index];
@@ -1137,7 +1228,7 @@ internal sealed partial class MapRenderer
             }
             double unitX = deltaX / length;
             double unitY = deltaY / length;
-            if (style.Cap == VectorLineCap.Square)
+            if (!closed && style.Cap == VectorLineCap.Square)
             {
                 if (index == 0)
                 {
@@ -1180,9 +1271,9 @@ internal sealed partial class MapRenderer
             AddQuad(triangles, first, second, third, fourth);
         }
 
-        for (int index = 1; index + 1 < points.Length; index++)
+        for (int index = closed ? 0 : 1; index + 1 < points.Length; index++)
         {
-            MapScreenPoint previous = points[index - 1];
+            MapScreenPoint previous = points[index == 0 ? points.Length - 2 : index - 1];
             MapScreenPoint join = points[index];
             MapScreenPoint next = points[index + 1];
             if (!PointNearViewport(
@@ -1213,7 +1304,7 @@ internal sealed partial class MapRenderer
                 AddBevelJoin(triangles, previous, join, next, halfWidth);
             }
         }
-        if (style.Cap == VectorLineCap.Round)
+        if (!closed && style.Cap == VectorLineCap.Round)
         {
             if (PointNearViewport(
                     points[0],
@@ -1246,11 +1337,14 @@ internal sealed partial class MapRenderer
             return points.ToArray();
         }
         MapScreenPoint[] result = new MapScreenPoint[points.Length];
+        bool closed = points.Length > 2 && points[0] == points[^1];
         for (int index = 0; index < points.Length; index++)
         {
-            MapScreenPoint previous = points[Math.Max(0, index - 1)];
+            MapScreenPoint previous = points[closed && (index == 0 || index == points.Length - 1)
+                ? points.Length - 2 : Math.Max(0, index - 1)];
             MapScreenPoint current = points[index];
-            MapScreenPoint next = points[Math.Min(points.Length - 1, index + 1)];
+            MapScreenPoint next = points[closed && index == points.Length - 1
+                ? 1 : Math.Min(points.Length - 1, index + 1)];
             bool hasPrevious = TryGetRightNormal(
                 previous,
                 current,
@@ -1330,6 +1424,14 @@ internal sealed partial class MapRenderer
         double dashRemaining = dashArray[0];
         bool draw = true;
         List<MapScreenPoint> span = [];
+        double period = 0;
+        foreach (double length in dashArray)
+            if (length > epsilon)
+                period += length;
+        if ((dashArray.Length & 1) != 0)
+            period *= 2;
+        bool canSkip = double.IsFinite(period) && period > epsilon;
+        double clipPadding = viewportPadding + style.Width * Math.Max(1, style.MiterLimit) + 2;
 
         for (int segmentIndex = 0;
             segmentIndex + 1 < points.Length;
@@ -1347,6 +1449,28 @@ internal sealed partial class MapRenderer
             }
 
             double consumed = 0;
+            double visibleEnd = segmentLength;
+            if (canSkip)
+            {
+                double visibleStart;
+                if (TryGetVectorDashVisibleInterval(segmentStart, segmentEnd, viewportWidth,
+                        viewportHeight, clipPadding, out double enter, out double leave))
+                {
+                    visibleStart = enter * segmentLength;
+                    visibleEnd = leave * segmentLength;
+                }
+                else
+                {
+                    visibleStart = visibleEnd = segmentLength;
+                }
+                double skipped = WholeDashPeriods(visibleStart, period);
+                if (skipped > 0)
+                {
+                    FlushClippedDashSpan(span, style, viewportWidth, viewportHeight, viewportPadding, triangles);
+                    consumed = skipped;
+                    RecordVectorDashSkip();
+                }
+            }
             while (consumed < segmentLength - epsilon)
             {
                 int skippedEntries = 0;
@@ -1391,6 +1515,16 @@ internal sealed partial class MapRenderer
                 }
                 consumed += length;
                 dashRemaining -= length;
+                if (canSkip && consumed >= visibleEnd)
+                {
+                    double skipped = WholeDashPeriods(segmentLength - consumed, period);
+                    if (skipped > 0)
+                    {
+                        FlushClippedDashSpan(span, style, viewportWidth, viewportHeight, viewportPadding, triangles);
+                        consumed += skipped;
+                        RecordVectorDashSkip();
+                    }
+                }
             }
         }
 
@@ -1405,6 +1539,61 @@ internal sealed partial class MapRenderer
                 triangles);
         }
         return (triangles.Count - initialCount) / 3;
+    }
+
+    // Whole periods preserve the current dash index, remaining length, and on/off
+    // phase. Padding keeps the artificial split caps/joins outside visible coverage.
+    private static double WholeDashPeriods(double distance, double period)
+    {
+        double skipped = Math.Floor(distance / period) * period;
+        return skipped > distance ? Math.Max(0, skipped - period) : skipped;
+    }
+
+    private static void FlushClippedDashSpan(List<MapScreenPoint> span, VectorLineStyle style,
+        double width, double height, double padding, NativeGeometryBuffer triangles)
+    {
+        if (span.Count >= 2)
+            AppendVectorLineTriangles(CollectionsMarshal.AsSpan(span), style, width, height, padding, triangles);
+        span.Clear();
+    }
+
+    private static void RecordVectorDashSkip()
+    {
+        if (MapControlEventSource.Log.IsEnabled(System.Diagnostics.Tracing.EventLevel.Verbose,
+                MapControlEventSource.Keywords.Frames))
+            Interlocked.Increment(ref VectorDashSkippedSpans);
+    }
+
+    private static bool TryGetVectorDashVisibleInterval(MapScreenPoint start, MapScreenPoint end,
+        double width, double height, double padding, out double enter, out double leave)
+    {
+        double lower = 0, upper = 1;
+        double dx = end.X - start.X, dy = end.Y - start.Y;
+        bool visible = Clip(-dx, start.X + padding) && Clip(dx, width + padding - start.X) &&
+            Clip(-dy, start.Y + padding) && Clip(dy, height + padding - start.Y);
+        enter = lower;
+        leave = upper;
+        return visible;
+
+        bool Clip(double direction, double distance)
+        {
+            if (direction == 0)
+                return distance >= 0;
+            double amount = distance / direction;
+            if (direction < 0)
+            {
+                if (amount > upper)
+                    return false;
+                lower = Math.Max(lower, amount);
+            }
+            else
+            {
+                if (amount < lower)
+                    return false;
+                upper = Math.Min(upper, amount);
+            }
+            return true;
+        }
     }
 
     private static void AddDistinctPoint(
@@ -1708,6 +1897,7 @@ internal sealed partial class MapRenderer
         private long VectorTileVersion { get; } = vectorTileVersion;
 
         internal double Longitude { get; } = longitude;
+        internal long RuntimeId { get; } = layer.RuntimeId;
 
         internal double Latitude { get; } = latitude;
 
@@ -1721,6 +1911,8 @@ internal sealed partial class MapRenderer
         internal int VertexCount { get; } = vertexCount;
 
         internal long ByteSize { get; } = byteSize;
+
+        internal PendingGeometryCache<VectorLineBatchKey, VectorLineRenderResult> Pending { get; } = new();
 
         internal bool MatchesConfiguration(
             LayerRenderSnapshot currentLayer,
@@ -1750,6 +1942,7 @@ internal sealed partial class MapRenderer
 
         public void Dispose()
         {
+            Pending.Dispose();
             foreach (VectorLineCachedBatch batch in Batches)
             {
                 batch.Buffer.Dispose();

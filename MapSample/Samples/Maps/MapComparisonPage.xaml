@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="MapSample.Samples.Maps.MapComparisonPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:MapSample.Samples.Maps"
+    xmlns:map="using:WinUIEx.Maps">
+    <Grid Margin="32,24,32,32" RowDefinitions="Auto,Auto,*" RowSpacing="16">
+        <StackPanel Spacing="4">
+            <TextBlock
+                AutomationProperties.AutomationId="MapComparisonPage"
+                Style="{StaticResource TitleTextBlockStyle}"
+                Text="Map comparison" />
+            <TextBlock
+                Text="Road maps at the same starting location. Enable Sync cameras to link pan, zoom, heading, and pitch."
+                TextWrapping="Wrap" />
+        </StackPanel>
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="16">
+            <TextBlock x:Name="WebCameraStatus" Text="Loading comparison map" VerticalAlignment="Center" />
+            <CheckBox
+                x:Name="SyncCameras"
+                AutomationProperties.AutomationId="SyncComparisonCameras"
+                Content="Sync cameras"
+                IsEnabled="False"
+                Checked="SyncCameras_Changed"
+                Unchecked="SyncCameras_Changed" />
+            <Button
+                x:Name="GoToHomeButton"
+                Click="GoToHome_Click"
+                Content="Add a token on Home"
+                Visibility="Collapsed" />
+        </StackPanel>
+        <Grid Grid.Row="2" ColumnDefinitions="*,*" ColumnSpacing="16">
+            <Grid RowDefinitions="Auto,*" RowSpacing="8">
+                <TextBlock Text="WinUIEx.Maps (DirectX)" Style="{StaticResource SubtitleTextBlockStyle}" />
+                <map:MapControl
+                    x:Name="NativeMap"
+                    Grid.Row="1"
+                    MapStyle="Road"
+                    AutomationProperties.AutomationId="ComparisonNativeMap" />
+            </Grid>
+            <Grid Grid.Column="1" RowDefinitions="Auto,*" RowSpacing="8">
+                <TextBlock Text="WinUI MapControl (WebView2)" Style="{StaticResource SubtitleTextBlockStyle}" />
+                <local:ComparisonWebMapControl
+                    x:Name="WebMap"
+                    Grid.Row="1"
+                    AutomationProperties.AutomationId="ComparisonWebMap" />
+                <InfoBar
+                    x:Name="WebMapError"
+                    Grid.Row="1"
+                    VerticalAlignment="Top"
+                    IsOpen="False"
+                    Severity="Error"
+                    Title="Unable to load the WinUI map"
+                    Message="Check the Azure Maps token on Home and your network connection." />
+            </Grid>
+        </Grid>
+    </Grid>
+</Page>

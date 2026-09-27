@@ -15,6 +15,7 @@ internal sealed partial class MapRenderer
     private VectorGeometryPreparationJob? _vectorGeometryPreparationJob;
     private VectorGeometryPreparationJob? _runningVectorGeometryPreparationJob;
     internal Action? VectorGeometryPreparationStartingForTest { get; set; }
+    internal int CompletedVectorGeometryPreparations => _completedVectorGeometryPreparations.Count;
 
     internal int ActiveVectorGeometryPreparations
     {
@@ -532,34 +533,10 @@ internal sealed partial class MapRenderer
                     cancellationToken.ThrowIfCancellationRequested();
                     VectorLineStyle style =
                         PrepareVectorLineForRasterization(line.Style);
-                    MapScreenPoint[] projected =
-                        MapScreenPointPool.Rent(line.Points.Length);
-                    int triangleCount;
-                    try
-                    {
-                        ProjectVectorLine(
-                            line.Points,
-                            tile.Tile,
-                            input.ViewportWidth,
-                            input.ViewportHeight,
-                            input.Heading,
-                            input.Pitch,
-                            projected.AsSpan(0, line.Points.Length));
-                        triangleCount = AppendStyledVectorLineTriangles(
-                            projected.AsSpan(0, line.Points.Length),
-                            style,
-                            line.StyleLayerOrder,
-                            input.Layer.Opacity,
-                            input.ViewportWidth,
-                            input.ViewportHeight,
-                            VectorGeometryCachePadding,
-                            prepared.LineBatches,
-                            prepared.LineBatchOrder);
-                    }
-                    finally
-                    {
-                        MapScreenPointPool.Return(projected);
-                    }
+                    int triangleCount = AppendVectorTileLineTriangles(
+                        line, style, tile.Tile, input.ViewportWidth, input.ViewportHeight,
+                        input.Heading, input.Pitch, input.Layer.Opacity,
+                        prepared.LineBatches, prepared.LineBatchOrder);
                     if (triangleCount != 0)
                     {
                         prepared.LineResult.DrawableLineCount++;

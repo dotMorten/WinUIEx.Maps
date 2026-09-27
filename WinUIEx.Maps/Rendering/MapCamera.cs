@@ -23,6 +23,11 @@ internal static class MapCamera
     internal const double MaximumPitch = 60;
     internal const int MaximumTileZoom = 22;
     internal const double TileSize = 256;
+    // Keep below 180 - 2 * MaximumPitch so the horizon stays above the viewport.
+    private const double VerticalFieldOfViewDegrees = 40;
+    private static readonly double s_perspectiveDistanceScale =
+        0.5 / Math.Tan(VerticalFieldOfViewDegrees * Math.PI / 360);
+
     // One nominal tile in logical pixels. This is a finite collision-placement
     // horizon, not temporal label locking or a change to the camera projection.
     internal const double LabelCollisionMargin = 256;
@@ -634,7 +639,7 @@ internal static class MapCamera
     }
 
     internal static double GetPerspectiveDistance(double viewportHeight) =>
-        Math.Max(1, viewportHeight * 2);
+        Math.Max(1, viewportHeight * s_perspectiveDistanceScale);
 
     internal static double GetEffectiveCameraY(
         double cameraY,

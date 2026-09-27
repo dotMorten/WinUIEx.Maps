@@ -1017,7 +1017,8 @@ public sealed partial class MapControl : Control
         return LayerSnapshotPublication.PrependHiddenAzure(
             azureSnapshot,
             renderPlan.Build(),
-            tileLayers.ToArray());
+            tileLayers.ToArray(),
+            azureLayer?.CreateRoadDetailSnapshot());
     }
 
     /// <summary>

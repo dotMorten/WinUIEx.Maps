@@ -133,6 +133,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
         lock (RenderLock)
         {
             CancelVectorGeometryPreparation();
+            _vectorLineFrameCache?.Pending.Dispose();
+            _vectorPolygonFrameCache?.Pending.Dispose();
             ClearVectorSymbolFrameCaches();
             if (!plan.Select(layer => (layer.RuntimeId, layer.MinZoom, layer.MaxZoom))
                 .SequenceEqual(_layerRenderPlan.Select(layer => (layer.RuntimeId, layer.MinZoom, layer.MaxZoom))))
@@ -551,7 +553,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         for (int planIndex = 0; planIndex < plan.Length; planIndex++)
         {
             LayerRenderSnapshot layer = plan[planIndex];
-            if (!layer.IsVisible || layer.Opacity <= 0)
+            if (!layer.IsVisible || layer.Opacity <= 0 || layer.RasterOverlayParentId != 0)
             {
                 continue;
             }
@@ -652,12 +654,17 @@ internal sealed partial class MapRenderer : DirectXRenderer
                 DiagnosticFrameId,
                 Interlocked.Read(ref NativeGeometryBuffer.AllocatedBytes),
                 Interlocked.Read(ref NativeGeometryBuffer.ReleasedBytes));
+            MapControlEventSource.Log.VectorDashWork(DiagnosticRendererId, DiagnosticFrameId,
+                Interlocked.Read(ref VectorDashSkippedSpans));
             long decodedBytes = 0, symbolBytes = 0, projectionBytes = 0;
+            long ownedFeatureBytes = 0, derivedBytes = 0;
             foreach (VectorTileCacheEntry tile in _vectorTiles.Values)
             {
-                decodedBytes += tile.ByteSize;
+                decodedBytes += tile.DecodedByteSize;
                 symbolBytes += tile.SymbolPayloadBytes;
                 projectionBytes += tile.ProjectionIndexBytes;
+                derivedBytes += tile.DerivedByteSize;
+                ownedFeatureBytes += tile.ByteSize - tile.DerivedByteSize;
             }
             MapControlEventSource.Log.VectorRetainedMemory(
                 DiagnosticRendererId,
@@ -669,6 +676,10 @@ internal sealed partial class MapRenderer : DirectXRenderer
                     (_vectorPolygonFrameCache?.ByteSize ?? 0),
                 ActiveVectorGeometryPreparations,
                 _completedVectorGeometryPreparations.Count);
+            MapControlEventSource.Log.VectorCacheOwnership(
+                DiagnosticRendererId, DiagnosticFrameId, ownedFeatureBytes, derivedBytes,
+                (_vectorLineFrameCache?.Pending.ByteSize ?? 0) +
+                    (_vectorPolygonFrameCache?.Pending.ByteSize ?? 0), _vectorTiles.Count);
             long otherTicks = Stopwatch.GetTimestamp() - commitEnd -
                 rasterTicks - polygonTicks - lineTicks - symbolTicks;
             double millisecondsPerTick = 1000d / Stopwatch.Frequency;
@@ -842,7 +853,11 @@ internal sealed partial class MapRenderer : DirectXRenderer
         bool crossedLayerZoomLimit = previousZoom != scene.Zoom &&
             _layerRenderPlan.Any(layer =>
                 (previousZoom >= layer.MinZoom && previousZoom < layer.MaxZoom) !=
-                (scene.Zoom >= layer.MinZoom && scene.Zoom < layer.MaxZoom));
+                (scene.Zoom >= layer.MinZoom && scene.Zoom < layer.MaxZoom) ||
+                (layer.RoundRasterSourceZoom && layer.IsVisible && layer.Opacity > 0 &&
+                 scene.Zoom >= layer.MinZoom && scene.Zoom < layer.MaxZoom &&
+                 CustomRasterTileAcquisitionSession.GetSourceZoom(previousZoom + .5, layer.TileSize) !=
+                 CustomRasterTileAcquisitionSession.GetSourceZoom(scene.Zoom + .5, layer.TileSize)));
         if (crossedLayerZoomLimit || !_lastRequiredTiles.SetEquals(requiredTiles))
         {
             _lastRequiredTiles.Clear();

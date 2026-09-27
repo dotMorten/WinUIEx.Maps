@@ -49,13 +49,29 @@
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem
+                    AutomationProperties.AutomationId="MapComparisonNavigationItem"
+                    Content="Map comparison"
+                    Tag="map-comparison">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="TwoPage" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
                     Content="Azure traffic"
                     AutomationProperties.AutomationId="AzureTrafficNavigationItem"
-                    Tag="azure-traffic" />
+                    Tag="azure-traffic">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE804;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem
                     Content="Azure weather"
                     AutomationProperties.AutomationId="AzureWeatherNavigationItem"
-                    Tag="azure-weather" />
+                    Tag="azure-weather">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE706;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem
                     AutomationProperties.AutomationId="CustomImageTilesNavigationItem"
                     Content="Custom Image tiles"

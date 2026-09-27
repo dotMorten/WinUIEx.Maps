@@ -362,7 +362,7 @@ internal sealed partial class MapRenderer
                         vectorTile.Features.PointCount,
                         vectorTile.SpriteTextures.Length,
                         _vectorTiles.Count,
-                        _vectorTiles.Values.Sum(tile => tile.ByteSize));
+                        _vectorTiles.Values.Sum(tile => tile.DecodedByteSize));
                 }
                 acceptedCount++;
                 if (completed.SourceKind == RasterSourceKind.Custom)
@@ -654,7 +654,13 @@ internal sealed partial class MapRenderer
         if (layer.Style == (int)MapStyle.RoadShadedRelief &&
             layer.Kind == LayerRenderKind.HybridTiles)
         {
-            return DrawExclusiveReliefCoverage(context, layer, state);
+            return DrawExclusiveRasterOverlayCoverage(
+                context, layer, state, state.VectorStyleAssets!.Relief!.MaxZoom);
+        }
+        if (layer.RasterOverlayParentId != 0)
+        {
+            return DrawExclusiveRasterOverlayCoverage(
+                context, layer, state, double.PositiveInfinity);
         }
 
         bool canEnumerateActiveScene = CanEnumerateRasterScene(
@@ -1237,6 +1243,9 @@ internal sealed partial class MapRenderer
         {
             foreach ((long sourceId, RasterLayerState state) in _rasterLayers)
             {
+                // Vector-only fallback belongs to the CPU cache, not the raster texture cache.
+                if (state.RenderKind is not (LayerRenderKind.RasterTiles or LayerRenderKind.HybridTiles))
+                    continue;
                 HashSet<int> retainedLevels = _rasterTiles.Keys
                     .Where(key => key.SourceId == sourceId)
                     .Select(key => key.Id.Zoom)

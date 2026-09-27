@@ -171,6 +171,50 @@ public sealed class VectorTileDecoderTests
     }
 
     [TestMethod]
+    public async Task TileLocalTessellationPreservesIndependentOutputsAcrossFeaturesAndWorkers()
+    {
+        uint[][] geometries =
+        [
+            PolygonGeometry(
+                [(0, 0), (100, 0), (100, 100), (0, 100)],
+                [(25, 25), (25, 75), (75, 75), (75, 25)]),
+            PolygonGeometry([(0, 0), (100, 0), (50, 50), (100, 100), (0, 100)]),
+            PolygonGeometry([(100, 0), (0, 80), (80, 80), (0, 0)]),
+            PolygonGeometry(
+                [(0, 0), (20, 0), (20, 20), (0, 20)],
+                [(50, 50), (80, 50), (80, 80), (50, 80)]),
+        ];
+        byte[][] encoded = geometries.Select(geometry => Feature([], 3, geometry)).ToArray();
+        VectorTileFeature[] reference = encoded.Select(feature =>
+            VectorTileDecoder.Decode(Tile(Layer("land", 100, [], [], feature))).Features[0]).ToArray();
+        byte[] tile = Tile(
+            Layer("first", 100, [], [], encoded),
+            Layer("second", 100, [], [], encoded));
+
+        VectorTileFeatureCollection[] results = await Task.WhenAll(
+            Enumerable.Range(0, 8).Select(_ => Task.Run(() => VectorTileDecoder.Decode(tile))));
+        foreach (VectorTileFeatureCollection result in results)
+        {
+            Assert.HasCount(reference.Length * 2, result.Features);
+            for (int index = 0; index < result.Features.Length; index++)
+            {
+                VectorTileFeature expected = reference[index % reference.Length];
+                VectorTileFeature actual = result.Features[index];
+                Assert.HasCount(expected.Polygons.Length, actual.Polygons);
+                for (int polygon = 0; polygon < expected.Polygons.Length; polygon++)
+                {
+                    Assert.AreSequenceEqual(expected.Polygons[polygon].FillTriangles,
+                        actual.Polygons[polygon].FillTriangles);
+                    Assert.HasCount(expected.Polygons[polygon].Rings.Length, actual.Polygons[polygon].Rings);
+                    for (int ring = 0; ring < expected.Polygons[polygon].Rings.Length; ring++)
+                        Assert.AreSequenceEqual(expected.Polygons[polygon].Rings[ring].Points,
+                            actual.Polygons[polygon].Rings[ring].Points);
+                }
+            }
+        }
+    }
+
+    [TestMethod]
     public void DecoderRejectsInteriorRingBeforeExterior()
     {
         byte[] tile = Tile(Layer(

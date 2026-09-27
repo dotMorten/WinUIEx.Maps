@@ -8,8 +8,8 @@ namespace WinUIEx.Maps.Rendering;
 /// icons.
 /// </summary>
 /// <remarks>
-/// Raster shaders consume per-tile transform and opacity constants with straight-alpha
-/// textures. Icon shaders consume per-instance transforms and layer opacity with
+/// Raster shaders consume per-tile transform, opacity, and alpha-mode constants.
+/// Icon shaders consume per-instance transforms and layer opacity with
 /// premultiplied-alpha textures. Device-resource creation compiles these sources and owns the
 /// resulting shader objects; <see cref="Validate"/> provides compilation-only verification.
 /// </remarks>
@@ -73,7 +73,7 @@ struct PixelInput
 float4 main(PixelInput input) : SV_TARGET
 {
     float4 color = TileTexture.Sample(TileSampler, input.TexCoord);
-    return float4(color.rgb, color.a * Opacity.x);
+    return float4(color.rgb * lerp(1.0f, Opacity.x, Opacity.y), color.a * Opacity.x);
 }
 """;
 

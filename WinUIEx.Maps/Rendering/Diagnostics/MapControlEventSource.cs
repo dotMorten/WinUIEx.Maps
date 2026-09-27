@@ -122,6 +122,55 @@ internal sealed class MapControlEventSource : EventSource
     }
 
     /// <summary>
+    /// Reports bounded pending geometry reuse without tile or source identity.
+    /// </summary>
+    [Event(91, Level = EventLevel.Verbose, Keywords = Keywords.VectorTiles)]
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The fixed event payload contains only Int32 and Int64 primitives.")]
+    public unsafe void VectorPendingGeometry(int geometryKind, int reused, int retained, long retainedBytes)
+    {
+        if (!IsEnabled(EventLevel.Verbose, Keywords.VectorTiles))
+            return;
+        EventData* data = stackalloc EventData[4];
+        data[0] = new() { DataPointer = (IntPtr)(&geometryKind), Size = sizeof(int) };
+        data[1] = new() { DataPointer = (IntPtr)(&reused), Size = sizeof(int) };
+        data[2] = new() { DataPointer = (IntPtr)(&retained), Size = sizeof(int) };
+        data[3] = new() { DataPointer = (IntPtr)(&retainedBytes), Size = sizeof(long) };
+        WriteEventCore(91, 4, data);
+    }
+
+    /// <summary>
+    /// Reports the CPU budget estimate separately from pending immutable GPU buffers.
+    /// </summary>
+    [Event(92, Level = EventLevel.Verbose, Keywords = Keywords.Frames)]
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The fixed event payload contains only Int32 and Int64 primitives.")]
+    public unsafe void VectorCacheOwnership(long rendererId, long frameId,
+        long featureBytes, long derivedBytes, long pendingGeometryBytes, int tileCount)
+    {
+        if (!IsEnabled(EventLevel.Verbose, Keywords.Frames))
+            return;
+        EventData* data = stackalloc EventData[6];
+        data[0] = new() { DataPointer = (IntPtr)(&rendererId), Size = sizeof(long) };
+        data[1] = new() { DataPointer = (IntPtr)(&frameId), Size = sizeof(long) };
+        data[2] = new() { DataPointer = (IntPtr)(&featureBytes), Size = sizeof(long) };
+        data[3] = new() { DataPointer = (IntPtr)(&derivedBytes), Size = sizeof(long) };
+        data[4] = new() { DataPointer = (IntPtr)(&pendingGeometryBytes), Size = sizeof(long) };
+        data[5] = new() { DataPointer = (IntPtr)(&tileCount), Size = sizeof(int) };
+        WriteEventCore(92, 6, data);
+    }
+
+    /// <summary>
+    /// Reports cumulative offscreen dash spans skipped without changing visible phase.
+    /// </summary>
+    [Event(93, Level = EventLevel.Verbose, Keywords = Keywords.Frames)]
+    public void VectorDashWork(long rendererId, long frameId, long skippedSpans)
+    {
+        if (IsEnabled(EventLevel.Verbose, Keywords.Frames))
+            WriteEvent(93, rendererId, frameId, skippedSpans);
+    }
+
+    /// <summary>
     /// Records creation of a map control instance.
     /// </summary>
     [Event(1, Level = EventLevel.Informational, Keywords = Keywords.Lifecycle, Task = Tasks.Control)]

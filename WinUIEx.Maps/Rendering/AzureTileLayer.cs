@@ -19,12 +19,13 @@ namespace WinUIEx.Maps.Rendering;
 /// </summary>
 /// <remarks>
 /// The UI thread replaces this dependency object when map style or credential changes and
-/// publishes it ahead of public layers. <see cref="CreateSnapshot"/> is the only boundary to
-/// rendering workers: it captures style, credential, and language into immutable acquisition
-/// state so no background path reads UI-thread properties.
+/// publishes it ahead of public layers. Its base and optional road-detail snapshots capture
+/// style, credential, and language into immutable acquisition state so no background path
+/// reads UI-thread properties.
 /// </remarks>
 internal sealed class AzureBaseTileLayer : AzureTileLayer
 {
+    private readonly long _roadDetailRuntimeId = AllocateRuntimeId();
     private readonly MapStyle _style;
     private readonly string _token;
     private readonly string? _language;
@@ -89,6 +90,13 @@ internal sealed class AzureBaseTileLayer : AzureTileLayer
 
     internal override IEnumerable<TileLayerSnapshot> CreateSnapshots(
         string token, string? language, DateTimeOffset now) => [CreateSnapshot()];
+
+    internal TileLayerSnapshot? CreateRoadDetailSnapshot() =>
+        _style == MapStyle.Road
+            ? Snapshot(new AzureRoadDetailAcquisitionSession(_token, _language),
+                _roadDetailRuntimeId, minZoom: 5) with
+                { MaxZoom = 14, FadeDuration = TimeSpan.Zero }
+            : null;
 }
 
 /// <summary>
@@ -188,7 +196,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                 ? LayerRenderKind.VectorPoints
                 : LayerRenderKind.RasterTiles;
 
-    internal override int TileSize => 256;
+    internal override int TileSize => IsVectorStyle(_style) ? 512 : 256;
 
     internal override int MinSourceZoom => 0;
 
@@ -204,7 +212,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     /// Selects the requested scene zoom, capped at the highest level supported by the style.
     /// </summary>
     internal override int GetSourceZoom(MapScene scene) =>
-        Math.Min(scene.TileZoom, MaxSourceZoom);
+        Math.Clamp(CustomRasterTileAcquisitionSession.GetSourceZoom(scene.Zoom, TileSize), 0, MaxSourceZoom);
 
     /// <summary>
     /// Indicates that Azure base-map coverage is considered available for every valid tile.
@@ -321,11 +329,13 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
             : IsHybridStyle(_style)
             ? await GetHybridImageryTileAsync(id, cancellationToken)
             : null;
+        VectorStyleAssets styleAssets = reliefAssets ?? await styleAssetsTask.ConfigureAwait(false);
         PooledByteBuffer encoded;
         try
         {
             encoded = await GetVectorTileBytesAsync(
                     id,
+                    styleAssets.AzureBaseTileParameters,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -342,7 +352,6 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                 encoded.Memory.Span,
                 cancellationToken);
         }
-        VectorStyleAssets styleAssets = reliefAssets ?? await styleAssetsTask.ConfigureAwait(false);
         double downloadMilliseconds =
             Stopwatch.GetElapsedTime(downloadStarted).TotalMilliseconds -
             (imagery?.DecodeMilliseconds ?? 0);
@@ -380,16 +389,18 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     {
         try
         {
-            return await GetTilePixelsAsync(
+            // Vector tiles cover a 512-pixel world. Preserve the satellite detail
+            // by stitching the corresponding 256-pixel imagery descendants.
+            return await GetZoomedOutTilePixelsAsync(
                     id,
                     ImageryTileset,
-                    1,
-                    19,
-                    256,
+                    Math.Min(id.Zoom + 1, 19),
+                    512,
                     BitmapAlphaMode.Ignore,
                     _token,
                     _language,
-                    cancellationToken)
+                    cancellationToken,
+                    sourceTileSize: 256)
                 .ConfigureAwait(false);
         }
         catch (AzureMapsRequestException exception)
@@ -401,7 +412,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
     }
 
     private async Task<DecodedTile> GetReliefTileAsync(
-        TileId id, AzureReliefStyle? relief, CancellationToken cancellationToken)
+        TileId id, AzureRasterStyle? relief, CancellationToken cancellationToken)
     {
         // Keep the existing atomic hybrid admission/commit even where the style
         // hides terrain. No terrain request is needed above its display maxzoom.
@@ -459,9 +470,10 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
 
     private Task<PooledByteBuffer> GetVectorTileBytesAsync(
         TileId id,
+        string generationParameters,
         CancellationToken cancellationToken) =>
         GetTileBytesAsync(
-            BuildTileRequestPath(id, VectorTileset, _language),
+            BuildTileRequestPath(id, VectorTileset, _language, apiVersion: "2.1") + generationParameters,
             _token, VectorTileMediaType, MaximumEncodedVectorTileBytes,
             cancellationToken);
 
@@ -495,10 +507,11 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         string tileset,
         string? language,
         int? tileSize = null,
-        DateTimeOffset? timestamp = null)
+        DateTimeOffset? timestamp = null,
+        string apiVersion = ApiVersion)
     {
         string path = FormattableString.Invariant(
-            $"map/tile?api-version={ApiVersion}&tilesetId={Uri.EscapeDataString(tileset)}&zoom={id.Zoom}&x={id.X}&y={id.Y}");
+            $"map/tile?api-version={Uri.EscapeDataString(apiVersion)}&tilesetId={Uri.EscapeDataString(tileset)}&zoom={id.Zoom}&x={id.X}&y={id.Y}");
         if (tileSize is int size)
             path += "&tileSize=" + size.ToString(System.Globalization.CultureInfo.InvariantCulture);
         if (timestamp is DateTimeOffset time)
@@ -572,6 +585,8 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         }
         if (IsVectorStyle(style))
         {
+            if (style == MapStyle.Road && zoom is >= 4 and < 13)
+                return [VectorTileset, AzureRoadDetailAcquisitionSession.Tileset];
             return [VectorTileset];
         }
         if (style == MapStyle.RoadShadedReliefRaster && zoom <= 6)
@@ -773,7 +788,8 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
         BitmapAlphaMode alphaMode,
         string token,
         string? language,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? sourceTileSize = null)
     {
         int zoomDifference = minimumZoom - requestedId.Zoom;
         int tilesPerSide = 1 << zoomDifference;
@@ -796,7 +812,7 @@ internal sealed partial class AzureTileAcquisitionSession : RasterTileAcquisitio
                 tasks[(y * tilesPerSide) + x] = DownloadAndDecodeTileAsync(
                     sourceId,
                     tileset,
-                    tileSize,
+                    sourceTileSize ?? tileSize,
                     alphaMode,
                     transform,
                     token,

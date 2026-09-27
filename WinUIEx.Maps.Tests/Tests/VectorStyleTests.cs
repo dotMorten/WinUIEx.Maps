@@ -10,6 +10,8 @@ namespace WinUIEx.Maps.Tests;
 [TestClass]
 public sealed class VectorStyleTests
 {
+    public TestContext TestContext { get; set; } = null!;
+
     [TestMethod]
     public async Task RealisticExpressionsResolveExactCroppedSpriteAndPlacement()
     {
@@ -733,6 +735,119 @@ public sealed class VectorStyleTests
         Assert.AreEqual(0.100392, line.Style.Color.Y, 0.00001);
         Assert.AreEqual(0.150588, line.Style.Color.Z, 0.00001);
         Assert.AreEqual(0.25098, line.Style.Color.W, 0.00001);
+    }
+
+    [TestMethod]
+    public async Task AzureDisplayZoomConversionMatchesStyleZoomAcrossResolversAndReuse()
+    {
+        const string json = """
+            {"version":8,"layers":[
+              {"type":"background","minzoom":9,"maxzoom":10,"paint":{"background-color":"#123456"}},
+              {"type":"fill","source-layer":"land","minzoom":9,"maxzoom":10,"paint":{"fill-color":"#123456"}},
+              {"type":"line","source-layer":"land","minzoom":9,"maxzoom":10,
+                "paint":{"line-width":["interpolate",["linear"],["zoom"],9,2,10,4]}},
+              {"type":"symbol","source-layer":"land","minzoom":9,"maxzoom":10,
+                "layout":{"icon-image":"icon","icon-size":["interpolate",["linear"],["zoom"],9,1,10,2]}}
+            ]}
+            """;
+        byte[] sprites = Encoding.UTF8.GetBytes(
+            """{"icon":{"x":0,"y":0,"width":1,"height":1,"pixelRatio":1}}""");
+        var reference = VectorStyleAssets.CreateForTest(MapStyle.Road,
+            Encoding.UTF8.GetBytes(json), sprites, [0, 128, 0, 255], 1, 1);
+        var azure = VectorStyleAssets.CreateForTest(MapStyle.Road,
+            Encoding.UTF8.GetBytes(json), sprites, [0, 128, 0, 255], 1, 1, displayZoomOffset: -1);
+        var features = CreatePolygonFeatures("park");
+        await reference.PrepareTexturesAsync(features, 9, CancellationToken.None);
+        await azure.PrepareTexturesAsync(features, 9, CancellationToken.None);
+        foreach (double zoom in new[] { 8.99, 9, 9.5, 9.99, 10 })
+        {
+            Assert.AreSequenceEqual(reference.ResolveLines(features, zoom).Lines,
+                azure.ResolveLines(features, zoom + 1).Lines);
+            Assert.AreSequenceEqual(reference.ResolvePolygons(features, zoom).Polygons,
+                azure.ResolvePolygons(features, zoom + 1).Polygons);
+            Assert.AreSequenceEqual(reference.ResolveSymbols(features, zoom).Symbols,
+                azure.ResolveSymbols(features, zoom + 1).Symbols);
+            Assert.AreSequenceEqual(reference.ResolveBackgrounds(zoom).Backgrounds,
+                azure.ResolveBackgrounds(zoom + 1).Backgrounds);
+        }
+        Assert.IsFalse(azure.CanReuseLines(9.99, 10));
+        Assert.IsFalse(azure.CanReuseSymbols(10.99, 11));
+        Assert.IsFalse(azure.CanReusePolygons(10.99, 11));
+        Assert.IsTrue(azure.CanReusePolygons(10.1, 10.2));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void LineLayersStrokePolygonExteriorsAndHolesWithoutCopyingGeometry(bool dashed)
+    {
+        VectorStyleAssets assets = CreateAssets(
+            $$"""
+            {"version":8,"layers":[{
+              "type":"line","source-layer":"land","minzoom":7,"maxzoom":12,
+              "filter":["==",["geometry-type"],"Polygon"],
+              "paint":{"line-color":"#246824","line-width":2
+                {{(dashed ? ",\"line-dasharray\":[3,5]" : "")}}
+              }
+            }]}
+            """, "{}", [0, 0, 0, 0], 1, 1);
+        VectorTileFeature polygon = CreatePolygonFeatures("park").Features[0];
+        VectorTilePoint[] hole = [new(0.2, 0.2), new(0.2, 0.4), new(0.4, 0.2)];
+        polygon = polygon with
+        {
+            Polygons = [polygon.Polygons[0] with
+            {
+                Rings = [polygon.Polygons[0].Rings[0], new VectorTileRing(hole)],
+            }],
+        };
+        VectorTileFeatureCollection features = new([polygon]);
+        VectorGeometryMembership membership = new();
+        Assert.IsEmpty(assets.ResolveLines(features, 6.99, membership).Lines);
+        VectorLineResolution resolution = assets.ResolveLines(features, 7, membership);
+        Assert.AreEqual(0, resolution.EvaluationFailureCount);
+        Assert.HasCount(2, resolution.Lines);
+        Assert.AreSame(polygon.Polygons[0].Rings[0].Points, resolution.Lines[0].Points);
+        Assert.AreSame(hole, resolution.Lines[1].Points);
+        foreach (var line in resolution.Lines)
+        {
+            Assert.IsTrue(line.IsClosed);
+            Assert.AreEqual(line.Points.Length + 1, line.ProjectedPointCount);
+            Assert.AreEqual(2d, line.Style.Width);
+            Assert.AreEqual(dashed, !line.Style.DashArray.IsDefaultOrEmpty);
+        }
+        Assert.HasCount(2, assets.ResolveLines(features, 11.99, membership).Lines);
+        Assert.IsEmpty(assets.ResolveLines(features, 12, membership).Lines);
+        Assert.IsEmpty(assets.ResolveLines(new([polygon with
+        {
+            GeometryType = VectorTileGeometryType.MultiPolygon,
+        }]), 10).Lines);
+    }
+
+    [TestMethod]
+    public async Task PatternedPolygonLineIncludesClosingEdge()
+    {
+        VectorStyleAssets assets = CreateAssets(
+            """
+            {"version":8,"layers":[{"type":"line","source-layer":"land",
+              "paint":{"line-pattern":"pattern"}}]}
+            """,
+            """{"pattern":{"x":0,"y":0,"width":1,"height":1,"pixelRatio":1}}""",
+            [0, 128, 0, 255], 1, 1);
+        VectorTileFeature polygon = CreatePolygonFeatures("park").Features[0] with
+        {
+            Polygons = [new VectorTilePolygon([new VectorTileRing(
+                [new(0.2, 0.2), new(0.8, 0.2), new(0.8, 0.8), new(0.2, 0.8)])], [])],
+        };
+        VectorTileFeatureCollection features = new([polygon]);
+        Assert.AreEqual(1, assets.ResolveSymbols(features, 10).UnavailableSpriteCount);
+        Assert.ContainsSingle(await assets.PrepareTexturesAsync(features, 10, CancellationToken.None));
+        VectorTileSymbol symbol = Assert.ContainsSingle(assets.ResolveSymbols(features, 10).Symbols);
+        Assert.IsTrue(symbol.IsClosedLine);
+        Assert.AreSame(polygon.Polygons[0].Rings[0].Points, symbol.LinePoints);
+        var placements = MapRenderer.ProjectVectorSymbols(
+            [symbol], new VisibleTile(new TileId(0, 0, 0), 0, 0, 0, 100), 100, 100, 0, 0);
+        Assert.IsTrue(placements.Any(p => Math.Abs(p.Left + p.Width / 2 - 20) < 0.01 &&
+            p.Top > 30 && p.Top < 60), "The closing (left) edge must contain pattern instances.");
     }
 
     [TestMethod]
@@ -2654,6 +2769,158 @@ public sealed class VectorStyleTests
             document.RootElement,
             out VectorStyleExpression expression));
         Assert.AreEqual(expected, expression.DependsOnZoom);
+    }
+
+    [TestMethod]
+    [DataRow("line", "\"paint\":{\"line-width\":[\"zoom\"]},")]
+    [DataRow("fill", "\"paint\":{\"fill-opacity\":[\"interpolate\",[\"linear\"],[\"zoom\"],14,0.25,15,0.75]},")]
+    [DataRow("symbol", "\"layout\":{\"icon-image\":\"marker\",\"icon-size\":[\"zoom\"]},")]
+    [DataRow("symbol", "\"layout\":{\"text-field\":\"R\",\"text-size\":[\"zoom\"]},")]
+    public void HiddenZoomDependentLayersReuseEmptyResults(string family, string properties)
+    {
+        var (assets, features) = CreateCacheTestStyle(family,
+            "\"minzoom\":14,\"maxzoom\":15," + properties);
+        object cache = CreateResolutionCache(features, assets);
+        object below = GetCachedResolution(cache, family, 13);
+        Assert.AreEqual(0, GetResolvedItemCount(below));
+        Assert.AreSame(below, GetCachedResolution(cache, family, 13.5));
+        Assert.AreNotSame(below, GetCachedResolution(cache, family, 14));
+        object above = GetCachedResolution(cache, family, 15);
+        Assert.AreEqual(0, GetResolvedItemCount(above));
+        Assert.AreSame(above, GetCachedResolution(cache, family, 16));
+        Assert.AreNotSame(above, GetCachedResolution(cache, family, 14.5));
+    }
+
+    [TestMethod]
+    public async Task SolidLineZoomChangesDoNotRebuildSymbols()
+    {
+        var (assets, features) = CreateCacheTestStyle("symbol", string.Empty);
+        assets = CreateAssets("""
+            {"version":8,"layers":[
+              {"type":"symbol","source-layer":"poi","layout":{"icon-image":"marker"}},
+              {"type":"line","source-layer":"road","paint":{"line-width":["zoom"]}}
+            ]}
+            """,
+            """{"marker":{"x":0,"y":0,"width":1,"height":1,"pixelRatio":1}}""",
+            PixelBytes(9), 1, 1);
+        features = new VectorTileFeatureCollection(
+            Enumerable.Repeat(features.Features[0], 256).Concat(CreateLineFeatures().Features).ToArray());
+        await assets.PrepareTexturesAsync(features, 14, CancellationToken.None);
+        object cache = CreateResolutionCache(features, assets);
+        object first = GetCachedResolution(cache, "symbol", 14);
+        GetCachedResolution(cache, "symbol", 14.001);
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        object last = first;
+        for (int i = 1; i <= 40; i++)
+            last = GetCachedResolution(cache, "symbol", 14 + i / 100d);
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        TestContext.WriteLine($"StableSymbols40: bytes={allocated}");
+        Assert.AreEqual(256, GetResolvedItemCount(last));
+        Assert.IsLessThan(64_000L, allocated);
+        Assert.AreSame(first, last);
+        Assert.IsFalse(assets.CanReuseLines(14, 14.4));
+        Assert.AreSequenceEqual(assets.ResolveSymbols(features, 14.4).Symbols,
+            ((VectorSymbolResolution)last).Symbols);
+    }
+
+    [TestMethod]
+    [DataRow("line", "\"paint\":{\"line-width\":[\"step\",[\"zoom\"],1,14.5,2]},")]
+    [DataRow("fill", "\"paint\":{\"fill-opacity\":[\"step\",[\"zoom\"],0.25,14.5,0.75]},")]
+    [DataRow("symbol", "\"layout\":{\"icon-image\":\"marker\",\"icon-size\":[\"step\",[\"zoom\"],1,14.5,2]},")]
+    public async Task StepZoomResultsReuseWithinButNotAcrossStops(string family, string properties)
+    {
+        var (assets, features) = CreateCacheTestStyle(family, properties);
+        await assets.PrepareTexturesAsync(features, 14, CancellationToken.None);
+        object cache = CreateResolutionCache(features, assets);
+        object first = GetCachedResolution(cache, family, 14);
+        Assert.AreSame(first, GetCachedResolution(cache, family, 14.49));
+        object next = GetCachedResolution(cache, family, 14.5);
+        Assert.AreNotSame(first, next);
+        Assert.AreSame(next, GetCachedResolution(cache, family, 14.9));
+        Assert.AreNotSame(next, GetCachedResolution(cache, family, 14.49));
+    }
+
+    [TestMethod]
+    [DataRow("line", "\"paint\":{\"line-width\":[\"interpolate\",[\"linear\"],[\"zoom\"],14,1,15,2]},")]
+    [DataRow("fill", "\"paint\":{\"fill-opacity\":[\"interpolate\",[\"exponential\",2],[\"zoom\"],14,0.25,15,0.75]},")]
+    [DataRow("symbol", "\"layout\":{\"icon-image\":\"marker\",\"icon-size\":[\"interpolate\",[\"linear\"],[\"zoom\"],14,1,15,2]},")]
+    public async Task InterpolatedZoomResultsReuseOnlyBeyondStops(string family, string properties)
+    {
+        var (assets, features) = CreateCacheTestStyle(family, properties);
+        await assets.PrepareTexturesAsync(features, 14, CancellationToken.None);
+        object cache = CreateResolutionCache(features, assets);
+        object first = GetCachedResolution(cache, family, 13);
+        Assert.AreSame(first, GetCachedResolution(cache, family, 14));
+        object middle = GetCachedResolution(cache, family, 14.25);
+        Assert.AreNotSame(first, middle);
+        Assert.AreNotSame(middle, GetCachedResolution(cache, family, 14.5));
+        object last = GetCachedResolution(cache, family, 15.01);
+        Assert.AreSame(last, GetCachedResolution(cache, family, 16));
+        Assert.AreNotSame(last, GetCachedResolution(cache, family, 14.99));
+    }
+
+    [TestMethod]
+    [DataRow("[\"step\",[\"zoom\"],1,14,2]", 14.1, 14.9, true)]
+    [DataRow("[\"step\",[\"zoom\"],1,14,2]", 13.9, 14d, false)]
+    [DataRow("[\"step\",[\"zoom\"],1,14,2]", 14d, 13.9, false)]
+    [DataRow("[\"step\",[\"zoom\"],[\"zoom\"],14,2]", 14.1, 14.9, false)]
+    [DataRow("[\"+\",[\"get\",\"width\"],[\"step\",[\"zoom\"],1,14,2]]", 14.1, 14.9, true)]
+    [DataRow("[\"interpolate\",[\"linear\"],[\"zoom\"],14,1,15,2]", 13d, 14d, true)]
+    [DataRow("[\"interpolate\",[\"linear\"],[\"zoom\"],14,1,15,2]", 14d, 14.1, false)]
+    [DataRow("[\"interpolate\",[\"linear\"],[\"zoom\"],14,1,15,2]", 15.1, 16d, true)]
+    [DataRow("[\"interpolate\",[\"linear\"],[\"zoom\"],14,1,15,2]", 15d, 15.1, false)]
+    [DataRow("[\"interpolate\",[\"linear\"],[\"zoom\"],14,[\"zoom\"],15,2]", 15.1, 16d, false)]
+    [DataRow("[\"let\",\"z\",[\"zoom\"],[\"var\",\"z\"]]", 14.1, 14.9, false)]
+    public void ZoomReuseConservativelyPreservesExpressionValuesAndFailures(
+        string json, double previousZoom, double zoom, bool canReuse)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.IsTrue(VectorStyleExpression.TryParseStyleValue(document.RootElement, out var expression));
+        Assert.AreEqual(canReuse, expression.CanReuseZoom(previousZoom, zoom));
+        if (canReuse)
+        {
+            foreach (VectorTileFeature feature in new[]
+            {
+                CreateFeatures().Features[0],
+                CreateFeatures(new VectorTileProperty("width", VectorTileValue.FromUInt(3))).Features[0],
+            })
+            {
+                bool previousSuccess = expression.TryEvaluate(new(feature, previousZoom), out var previous);
+                bool success = expression.TryEvaluate(new(feature, zoom), out var current);
+                Assert.AreEqual(previousSuccess, success);
+                Assert.AreEqual(previous, current);
+            }
+        }
+    }
+
+    [TestMethod]
+    public void SolidLineDiagnosticDependenciesAreNotSkippedBySymbolReuse()
+    {
+        var (assets, features) = CreateCacheTestStyle("line", """
+            "filter":["step",["zoom"],true,14.5,"invalid"],
+            "paint":{"line-width":["zoom"]},
+            """);
+        object cache = CreateResolutionCache(features, assets);
+        var valid = (VectorSymbolResolution)GetCachedResolution(cache, "symbol", 14);
+        var invalid = (VectorSymbolResolution)GetCachedResolution(cache, "symbol", 14.5);
+        Assert.AreNotSame(valid, invalid);
+        Assert.AreEqual(0, valid.EvaluationFailureCount);
+        Assert.AreEqual(1, invalid.EvaluationFailureCount);
+    }
+
+    [TestMethod]
+    public void ThinLineCoveragePreservesGradientOwnershipAndOffsets()
+    {
+        VectorLineStyle original = new(Vector4.One, 0.25, VectorLineCap.Butt, VectorLineJoin.Miter,
+            Gradient: [new(0, Vector4.One), new(0.7, new Vector4(1, 0.5f, 0, 1))]);
+        VectorLineStyle prepared = MapRenderer.PrepareVectorLineForRasterization(original);
+        Assert.AreEqual(Vector4.One, original.Gradient[0].Color);
+        Assert.HasCount(2, prepared.Gradient);
+        for (int i = 0; i < original.Gradient.Length; i++)
+        {
+            Assert.AreEqual(original.Gradient[i].Offset, prepared.Gradient[i].Offset);
+            Assert.AreEqual(original.Gradient[i].Color * 0.25f, prepared.Gradient[i].Color);
+        }
     }
 
     private static (VectorStyleAssets Assets, VectorTileFeatureCollection Features)

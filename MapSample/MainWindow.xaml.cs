@@ -60,6 +60,7 @@ public sealed partial class MainWindow : Window
         Type pageType = tag switch
         {
             "basemaps" => typeof(BasemapPage),
+            "map-comparison" => typeof(MapComparisonPage),
             "azure-traffic" or "azure-weather" => typeof(AzureOverlaysPage),
             "openstreetmap" => typeof(OpenStreetMapPage),
             "arcgis-vector" => typeof(CustomVectorTilesPage),

@@ -20,6 +20,8 @@ internal sealed partial class MapRenderer
                 out RasterLayerState? state) ||
             state.Scene is null)
         {
+            if (_vectorPolygonFrameCache?.RuntimeId == layer.RuntimeId)
+                _vectorPolygonFrameCache.Pending.Dispose();
             return false;
         }
 
@@ -27,6 +29,8 @@ internal sealed partial class MapRenderer
         if (_displayZoom < layer.MinZoom ||
             _displayZoom >= layer.MaxZoom)
         {
+            if (_vectorPolygonFrameCache?.RuntimeId == layer.RuntimeId)
+                _vectorPolygonFrameCache.Pending.Dispose();
             return false;
         }
 
@@ -62,12 +66,14 @@ internal sealed partial class MapRenderer
                 state,
                 _vectorTileVersion);
             bool deferredRebuild = !versionsMatch &&
+                !HasPendingPolygonPatterns(layer, state) &&
                 DeferVectorGeometryRebuild(layer, state, fallbackMask);
             if (versionsMatch || deferredRebuild)
             {
-                Dictionary<VectorPolygonBatchKey, NativeGeometryBuffer>
+                Dictionary<VectorPolygonBatchKey, List<PendingGeometryDraw>>
                     pendingBatches = [];
                 List<VectorPolygonBatchKey> pendingOrder = [];
+                List<IDisposable> pendingOwners = [];
                 try
                 {
                     VectorPolygonRenderResult result = cached.Result;
@@ -79,8 +85,11 @@ internal sealed partial class MapRenderer
                             layer,
                             state,
                             cached.IncludedTiles,
+                            cached.Pending,
+                            cached.ByteSize,
                             pendingBatches,
                             pendingOrder,
+                            pendingOwners,
                             ref pendingResult,
                             out int pendingTileCount);
                         MapControlEventSource.Log
@@ -107,7 +116,7 @@ internal sealed partial class MapRenderer
                     {
                         foreach (VectorPolygonCachedBatch batch in cached.Batches)
                         {
-                            activeFade |= DrawReliefBefore(context, layer, batch.Key.StyleLayerOrder, ref hasDrawnRelief);
+                            activeFade |= DrawStyleRasterBefore(context, layer, batch.Key.StyleLayerOrder, ref hasDrawnRelief);
                             DrawGpuGeometryBuffer(
                                 context,
                                 batch.Buffer,
@@ -116,7 +125,7 @@ internal sealed partial class MapRenderer
                                 panTransform);
                         }
                     }
-                    activeFade |= DrawReliefBefore(context, layer, int.MaxValue, ref hasDrawnRelief);
+                    activeFade |= DrawStyleRasterBefore(context, layer, int.MaxValue, ref hasDrawnRelief);
                     TraceVectorPolygonResult(layer, result);
                     MapControlEventSource.Log.VectorGeometryFrameCacheSummary(
                         layer.Style,
@@ -128,10 +137,8 @@ internal sealed partial class MapRenderer
                 }
                 finally
                 {
-                    foreach (NativeGeometryBuffer buffer in pendingBatches.Values)
-                    {
-                        buffer.Dispose();
-                    }
+                    foreach (var owner in pendingOwners)
+                        owner.Dispose();
                 }
             }
         }
@@ -190,7 +197,7 @@ internal sealed partial class MapRenderer
             batchOrder.Sort(CompareVectorPolygonBatches);
             foreach (VectorPolygonBatchKey key in batchOrder)
             {
-                activeFade |= DrawReliefBefore(context, layer, key.StyleLayerOrder, ref hasDrawnRelief);
+                activeFade |= DrawStyleRasterBefore(context, layer, key.StyleLayerOrder, ref hasDrawnRelief);
                 if (key.Kind == VectorPolygonBatchKind.Pattern)
                 {
                     result.DrawCallCount += DrawVectorPolygonPattern(
@@ -210,7 +217,7 @@ internal sealed partial class MapRenderer
                     result.DrawCallCount += buffer.Chunks.Count;
                 }
             }
-            activeFade |= DrawReliefBefore(context, layer, int.MaxValue, ref hasDrawnRelief);
+            activeFade |= DrawStyleRasterBefore(context, layer, int.MaxValue, ref hasDrawnRelief);
             TraceVectorPolygonResult(layer, result);
             int vertexCount = batches.Values.Sum(buffer => buffer.Count);
             long retainedByteSize = 0;
@@ -263,12 +270,26 @@ internal sealed partial class MapRenderer
         }
     }
 
+    private bool HasPendingPolygonPatterns(LayerRenderSnapshot layer, RasterLayerState state)
+    {
+        if (!CanEnumerateRasterScene(_displayZoom, state.Scene!.TileZoom))
+            return true;
+        foreach (var visible in CreateCurrentRasterScene(state.Scene.TileZoom).VisibleTiles)
+            if (_vectorTiles.TryGetValue(new(layer.RuntimeId, visible.Id), out var tile) &&
+                tile.HasPolygonPatterns(_displayZoom))
+                return true;
+        return false;
+    }
+
     private bool CollectPendingVectorPolygons(
         LayerRenderSnapshot layer,
         RasterLayerState state,
         IReadOnlySet<VectorTileInstanceKey> includedTiles,
-        Dictionary<VectorPolygonBatchKey, NativeGeometryBuffer> batches,
+        PendingGeometryCache<VectorPolygonBatchKey, VectorPolygonRenderResult> cache,
+        long maximumBytes,
+        Dictionary<VectorPolygonBatchKey, List<PendingGeometryDraw>> batches,
         List<VectorPolygonBatchKey> batchOrder,
+        List<IDisposable> pendingOwners,
         ref VectorPolygonRenderResult result,
         out int pendingTileCount)
     {
@@ -280,9 +301,15 @@ internal sealed partial class MapRenderer
 
         bool activeFade = false;
         HashSet<RasterTileKey> pendingTiles = [];
-        Dictionary<VectorPolygonBatchKey, List<TileVertex>>
-            ignoredPatternBatches = [];
+        HashSet<VectorTileInstanceKey> visible = [];
         MapScene scene = CreateCurrentRasterScene(state.Scene.TileZoom);
+        foreach (var tile in scene.VisibleTiles)
+        {
+            VectorTileInstanceKey instance = new(new(layer.RuntimeId, tile.Id), tile.WorldX);
+            if (!includedTiles.Contains(instance))
+                visible.Add(instance);
+        }
+        cache.Trim(visible);
         foreach (VisibleTile visibleTile in scene.VisibleTiles)
         {
             RasterTileKey key = new(layer.RuntimeId, visibleTile.Id);
@@ -292,22 +319,54 @@ internal sealed partial class MapRenderer
                 continue;
             }
             pendingTiles.Add(key);
-            activeFade |= CollectVectorPolygonTile(
-                layer,
-                visibleTile,
-                tile,
-                batches,
-                ignoredPatternBatches,
-                batchOrder,
-                ref result,
-                opacityMultiplier: 1);
+            tile.MarkUsed();
+            double opacity = ComputeLayerTileOpacity(Stopwatch.GetElapsedTime(tile.ReadyTimestamp),
+                layer.FadeDuration, layer.Opacity);
+            activeFade |= opacity < layer.Opacity;
+            VectorTileInstanceKey instance = new(key, visibleTile.WorldX);
+            bool reused = TryGetPendingGeometry(cache, instance, tile, out var pending, out var transform);
+            if (!reused)
+            {
+                Dictionary<VectorPolygonBatchKey, NativeGeometryBuffer> native = [];
+                List<VectorPolygonBatchKey> order = [];
+                Dictionary<VectorPolygonBatchKey, List<TileVertex>> patterns = [];
+                VectorPolygonRenderResult tileResult = new();
+                try
+                {
+                    CollectVectorPolygonTile(layer with { Opacity = 1, FadeDuration = TimeSpan.Zero },
+                        visibleTile, tile, native, patterns, order, ref tileResult, 1);
+                    pending = new(tile, _displayLongitude, _displayLatitude, native, order, tileResult);
+                    cache.Admit(instance, pending, maximumBytes, DevicePointer);
+                    if (!pending.Retained)
+                        pendingOwners.Add(pending);
+                    TryGetVectorPanTransform(_displayLongitude, _displayLatitude, _displayLongitude,
+                        _displayLatitude, _displayZoom, _displayHeading, _displayPitch,
+                        _viewportWidth, _viewportHeight, out transform, out _, out _);
+                }
+                catch
+                {
+                    pending?.Dispose();
+                    foreach (var buffer in native.Values)
+                        buffer.Dispose();
+                    throw;
+                }
+            }
+            result.Add(pending!.Result);
+            foreach (var batchKey in pending.Order)
+            {
+                VectorPolygonBatchKey fadedKey = batchKey with { Color = batchKey.Color * (float)opacity };
+                if (!batches.TryGetValue(fadedKey, out var draws))
+                {
+                    draws = [];
+                    batches.Add(fadedKey, draws);
+                    batchOrder.Add(fadedKey);
+                }
+                draws.Add(new(pending.Buffers[batchKey], transform));
+            }
+            MapControlEventSource.Log.VectorPendingGeometry((int)VectorGeometryKind.Polygon,
+                reused ? 1 : 0, pending.Retained ? 1 : 0, cache.ByteSize);
         }
         pendingTileCount = pendingTiles.Count;
-        if (ignoredPatternBatches.Count > 0)
-        {
-            batchOrder.RemoveAll(
-                key => key.Kind == VectorPolygonBatchKind.Pattern);
-        }
         return activeFade;
     }
 
@@ -368,7 +427,7 @@ internal sealed partial class MapRenderer
         IntPtr context,
         LayerRenderSnapshot layer,
         VectorPolygonFrameCache cached,
-        IReadOnlyDictionary<VectorPolygonBatchKey, NativeGeometryBuffer> pending,
+        IReadOnlyDictionary<VectorPolygonBatchKey, List<PendingGeometryDraw>> pending,
         IReadOnlyList<VectorPolygonBatchKey> pendingOrder,
         MapViewportProjectiveTransform panTransform,
         ref VectorPolygonRenderResult pendingResult,
@@ -388,7 +447,7 @@ internal sealed partial class MapRenderer
             {
                 VectorPolygonCachedBatch batch =
                     cached.Batches[cachedIndex++];
-                activeFade |= DrawReliefBefore(context, layer, batch.Key.StyleLayerOrder, ref hasDrawnRelief);
+                activeFade |= DrawStyleRasterBefore(context, layer, batch.Key.StyleLayerOrder, ref hasDrawnRelief);
                 DrawGpuGeometryBuffer(
                     context,
                     batch.Buffer,
@@ -399,14 +458,9 @@ internal sealed partial class MapRenderer
             else
             {
                 VectorPolygonBatchKey key = pendingOrder[pendingIndex++];
-                activeFade |= DrawReliefBefore(context, layer, key.StyleLayerOrder, ref hasDrawnRelief);
-                NativeGeometryBuffer buffer = pending[key];
-                DrawGeometryBuffer(
-                    context,
-                    buffer,
-                    key.Color,
-                    premultiplied: true);
-                pendingResult.DrawCallCount += buffer.Chunks.Count;
+                activeFade |= DrawStyleRasterBefore(context, layer, key.StyleLayerOrder, ref hasDrawnRelief);
+                foreach (var draw in pending[key])
+                    pendingResult.DrawCallCount += DrawPendingGeometry(context, draw, key.Color);
             }
         }
     }
@@ -1475,6 +1529,7 @@ internal sealed partial class MapRenderer
         private long VectorTileVersion { get; } = vectorTileVersion;
 
         internal double Longitude { get; } = longitude;
+        internal long RuntimeId { get; } = layer.RuntimeId;
 
         internal double Latitude { get; } = latitude;
 
@@ -1488,6 +1543,8 @@ internal sealed partial class MapRenderer
         internal int VertexCount { get; } = vertexCount;
 
         internal long ByteSize { get; } = byteSize;
+
+        internal PendingGeometryCache<VectorPolygonBatchKey, VectorPolygonRenderResult> Pending { get; } = new();
 
         internal bool MatchesConfiguration(
             LayerRenderSnapshot currentLayer,
@@ -1517,6 +1574,7 @@ internal sealed partial class MapRenderer
 
         public void Dispose()
         {
+            Pending.Dispose();
             foreach (VectorPolygonCachedBatch batch in Batches)
             {
                 batch.Buffer.Dispose();

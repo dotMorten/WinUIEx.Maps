@@ -17,8 +17,6 @@ public sealed partial class AzureOverlaysPage : Page
     {
         InitializeComponent();
         Map.MapServiceToken = MapServiceTokenStore.Current;
-        Map.Center = new Geopoint(new BasicGeoposition { Longitude = -122.33, Latitude = 47.61 });
-        Map.ZoomLevel = 10;
         Map.Layers.Add(_weather);
         Map.Layers.Add(_traffic);
         _traffic.IncidentTapped += (_, args) =>
@@ -61,7 +59,12 @@ public sealed partial class AzureOverlaysPage : Page
     {
         base.OnNavigatedTo(e);
         bool weather = e.Parameter is "azure-weather";
-        Map.ZoomLevel = weather ? 10 : 12;
+        Map.Center = new Geopoint(new BasicGeoposition
+        {
+            Longitude = weather ? -98.5 : -122.33,
+            Latitude = weather ? 39.5 : 47.61,
+        });
+        Map.ZoomLevel = weather ? 4 : 12;
         _weather.IsVisible = weather;
         _traffic.IsVisible = !weather;
         TrafficOptions.Visibility = weather ? Visibility.Collapsed : Visibility.Visible;

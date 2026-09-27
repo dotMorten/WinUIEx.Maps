@@ -12,6 +12,58 @@ namespace WinUIEx.Maps.Tests;
 public sealed class MapControlEventSourceTests
 {
     [TestMethod]
+    public void DashWorkDiagnosticsAreOptInAndContainOnlyWideCounters()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.Frames);
+        MapControlEventSource.Log.VectorDashWork(1, 2, 0x123456789L);
+        Assert.DoesNotContain(value => value.Id == 93, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.VectorTiles);
+        MapControlEventSource.Log.VectorDashWork(1, 2, 0x123456789L);
+        Assert.DoesNotContain(value => value.Id == 93, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.Frames);
+        MapControlEventSource.Log.VectorDashWork(1, 2, 0x123456789L);
+        Assert.AreSequenceEqual(["rendererId", "frameId", "skippedSpans"], listener.Single(93).PayloadNames);
+        Assert.AreSequenceEqual<object?>([1L, 2L, 0x123456789L], listener.Single(93).Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
+    public void PendingGeometryDiagnosticsAreOptInAndContainOnlyNumericOwnership()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.VectorTiles);
+        MapControlEventSource.Log.VectorPendingGeometry(1, 1, 1, 0x123456789L);
+        Assert.DoesNotContain(value => value.Id == 91, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.Frames);
+        MapControlEventSource.Log.VectorPendingGeometry(1, 1, 1, 0x123456789L);
+        Assert.DoesNotContain(value => value.Id == 91, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.VectorTiles);
+        MapControlEventSource.Log.VectorPendingGeometry(1, 1, 1, 0x123456789L);
+        Assert.AreSequenceEqual(["geometryKind", "reused", "retained", "retainedBytes"], listener.Single(91).PayloadNames);
+        Assert.AreSequenceEqual<object?>([1, 1, 1, 0x123456789L], listener.Single(91).Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
+    public void CacheOwnershipDiagnosticsPreserveWideByteCountsAndKeywordGating()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.Frames);
+        MapControlEventSource.Log.VectorCacheOwnership(1, 2, 0x123456789L, 64, 128, 3);
+        Assert.DoesNotContain(value => value.Id == 92, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.VectorTiles);
+        MapControlEventSource.Log.VectorCacheOwnership(1, 2, 0x123456789L, 64, 128, 3);
+        Assert.DoesNotContain(value => value.Id == 92, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.Frames);
+        MapControlEventSource.Log.VectorCacheOwnership(1, 2, 0x123456789L, 64, 128, 3);
+        Assert.AreSequenceEqual(["rendererId", "frameId", "featureBytes", "derivedBytes", "pendingGeometryBytes", "tileCount"],
+            listener.Single(92).PayloadNames);
+        Assert.AreSequenceEqual<object?>([1L, 2L, 0x123456789L, 64L, 128L, 3], listener.Single(92).Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
     public void GeometryScratchMemoryReportsWideCountersOnlyWithVerboseFrames()
     {
         using TestEventListener listener = new();
@@ -655,7 +707,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 90),
+            Enumerable.Range(1, 93),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }

@@ -137,7 +137,8 @@ internal static class VectorStyleCompatibility
     ];
 
     internal static IReadOnlyList<VectorStyleCompatibilityIssue> Analyze(
-        ReadOnlyMemory<byte> json, bool supportsAzureRelief = false)
+        ReadOnlyMemory<byte> json, bool supportsAzureRelief = false,
+        bool supportsAzureRoadDetails = false)
     {
         using JsonDocument document = JsonDocument.Parse(
             json,
@@ -155,11 +156,14 @@ internal static class VectorStyleCompatibility
 
         Dictionary<(VectorStyleCompatibilityIssueKind Kind, string Construct), int>
             counts = [];
-        AzureReliefStyle? relief = supportsAzureRelief ? AzureReliefStyle.Parse(document.RootElement) : null;
+        AzureRasterStyle? relief = supportsAzureRelief ? AzureRasterStyle.Parse(document.RootElement) : null;
+        AzureRasterStyle? roadDetails = supportsAzureRoadDetails
+            ? AzureRasterStyle.Parse(document.RootElement, AzureRoadDetailAcquisitionSession.Tileset) : null;
         int order = 0;
         foreach (JsonElement layer in layers.EnumerateArray())
         {
-            if (order++ == relief?.Order)
+            int currentOrder = order++;
+            if (currentOrder == relief?.Order || currentOrder == roadDetails?.Order)
                 continue;
             if (layer.ValueKind != JsonValueKind.Object ||
                 !layer.TryGetProperty("type", out JsonElement typeElement) ||
@@ -213,7 +217,8 @@ internal static class VectorStyleCompatibility
         {
             return;
         }
-        foreach (VectorStyleCompatibilityIssue issue in Analyze(json, style == (int)MapStyle.RoadShadedRelief))
+        foreach (VectorStyleCompatibilityIssue issue in Analyze(json,
+            style == (int)MapStyle.RoadShadedRelief, style == (int)MapStyle.Road))
         {
             MapControlEventSource.Log.VectorStyleCompatibilityIssue(
                 style,

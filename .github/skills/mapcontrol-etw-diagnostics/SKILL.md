@@ -25,6 +25,13 @@ in the deployed runtime configuration. Verify provider liveness with a camera/re
 action before recording settled idle. Runtime GC events alone do not prove that
 application EventSource support is enabled.
 
+`dotnet build -c Release` is still a CoreCLR run; use `dotnet publish` to validate
+Native AOT. When launching published output with folder-mode `winapp run`, pass the
+build-generated `AppxManifest.xml`, including its Windows App Runtime package dependency,
+not the repository's source manifest. The latter omits build-injected dependencies and
+can cause a startup fail-fast even in an unchanged baseline. Verify the published native
+executable and absence of `coreclr.dll` before labeling measurements AOT.
+
 Keywords:
 
 | Mask | Area |
@@ -163,6 +170,9 @@ payload inspection is best in PerfView's Events view.
 | 88 | `VectorLineComposite` | Verbose/Tiles+VectorTiles | traffic road composite source count, physical width/height, sample count, final opacity, and retained native target bytes; no source identifiers or feature data |
 | 89 | `VectorGlyphRangeCacheTrimmed` | Info/Tiles+VectorTiles | aggregate decoded glyph-range LRU eviction count and byte totals; no font, range, or service data |
 | 90 | `GeometryScratchMemory` | Verbose/Frames | renderer/frame-correlated process-wide cumulative native geometry scratch allocation and release bytes |
+| 91 | `VectorPendingGeometry` | Verbose/VectorTiles | line/polygon pending tile-instance reuse and admission flags, and total pending bytes for that frame-cache owner; no source or tile-content identifiers |
+| 92 | `VectorCacheOwnership` | Verbose/Frames | renderer/frame-correlated ownership estimates for decoded features and tile-derived CPU storage, separate pending GPU geometry bytes, and resident tile count |
+| 93 | `VectorDashWork` | Verbose/Frames | renderer/frame-correlated process-wide cumulative offscreen dash spans skipped while Frames tracing is enabled |
 
 ### Frame-time investigations
 
@@ -228,16 +238,146 @@ in vector and map-element strokes subdivide according to stroke radius, bounding
 the arc's chord error to half a logical pixel. Triangle/upload counts can therefore
 increase for wide strokes without indicating duplicate features or tile requests.
 
+Line layers also stroke polygon exterior/interior rings. These paths are included in
+IDs 56/66 (solid/dashed lines) or 51/60 (patterned lines), not only polygon event 58.
+Ring coordinates remain shared with decoded geometry; closure is added to pooled
+projection scratch, including background preparation and retained/pending rendering.
+Buffered polygon closure edges are excluded by clipping original ring segments to
+their source tile; they must not become straight outline seams across the map.
+
+Azure base vector styles use a 512-pixel tile world while the public camera uses 256.
+At camera zoom 10, source acquisition and style evaluation use zoom 9. Events 9/10
+retain camera-zoom semantics; tile coordinates/tiers in 30/49 use source zoom.
+Style visibility, paint, label selection, accessibility, and cache-reuse checks all
+convert display zoom at the style-assets boundary; texture preparation already receives
+source zoom and must not subtract again. Custom sources and public camera zoom are unchanged.
+Hybrid satellite imagery retains its resolution by stitching 256-pixel descendants
+through the existing acquisition helper. Terrain opacity uses the converted style zoom.
+Azure base requests preserve the style's approved generation parameters (`og`, `cstl`,
+`sv`, `jp`, `st`), not just its revision. Missing parameters can change available road
+geometry at the same source zoom. These values and the source URL are not logged.
+`MapStyle.Road` has a second hidden raster acquisition snapshot for road details, sharing
+the existing scheduler, upload limits, cache, generations, and disposal. IDs 30/31/43/45
+cover that source; it is not a public layer or a second pipeline. It is visible at native
+camera zooms [5,14) and rounds source zoom using 256-pixel tiles: camera zoom 10
+requests raster zoom 10, independently of vector/style zoom 9. Do not infer its
+loaded tile size from the web SDK's initial 512-pixel default before source metadata
+has loaded; verify actual requests. Half-zoom crossings publish scene updates (ID 10)
+even if the ordinary base tile coverage is unchanged, so rounded raster requests do not
+wait for the next integer zoom or pan. Raster coverage is partitioned so retained parent and child
+tiles do not double-blend. Its style-position draw is included in polygon-stage time
+(78), like terrain, and stays below vector roads and labels. ID 75 no longer counts
+this supported Road raster as unsupported; other embedded raster sources remain reported.
+Road-detail PNGs are decoded and filtered as premultiplied alpha, with matching blend
+state and opacity scaling. Straight-alpha filtering against transparent black creates
+dark fringes even when tile zoom and downloaded pixels are otherwise correct. Existing
+terrain and ordinary raster alpha contracts are unchanged. Road detail requests explicitly
+include the metadata template's `tileSize=256`; the live regression compares decoded
+pixels with a request expanded from that template without logging either request.
+
 ID 83 distinguishes cache-owned vector payloads from retained native frame geometry.
 Its payload calculations only run with active Verbose/Frames listeners; disposal-only
 counts and byte totals likewise require active Informational/Device or Cache listeners.
 It does not report a whole-process heap or GPU residency: array/object headers, referenced
 style/glyph/sprite assets, pooled scratch, and obsolete worker-owned inputs are excluded.
-Symbol and group-index payloads are separate from the decoded-feature estimate rather than
-silently charged to its existing cache budget. Pair with IDs 41/42 for texture disposal and
+Event 83 retains its historical decoded/symbol/index payload meanings. Event 92 reports
+the more complete budget estimate: decoded array/object/index storage and reference-deduplicated
+strings/geometry, plus resolved immutable line/polygon/symbol arrays, paint arrays, filter
+decisions, projection indices and accessibility data. The unchanged 32 MiB CPU soft budget
+now charges those ownership estimates; visible/fallback protection and hybrid eviction
+coupling remain unchanged. Offscreen tiles can therefore be evicted earlier. Headers and
+dictionary entries use conservative 64-bit estimates, not exact heap sizes. Totals are
+cached when decoded data or derived results are created/replaced, not by walking feature
+graphs each frame. Shared style/sprite/glyph assets and worker-retained obsolete snapshots
+are not charged as tile-owned storage. Pair with IDs 41/42 for texture disposal and
 upload backlog and ID 76 for dormant scratch release. Geometry preparation has one running
 owner; newer requests cancel obsolete same-layer work and capture the latest scene only
 after that owner releases its input/device. Other layers wait without canceling useful work.
+
+Pending unpatterned geometry is retained by the existing frame-cache owner, not a new
+scheduler. Each owner admits at most its main frame's geometry byte capacity, retaining only
+useful visible pending instances. Above that bound it uses the existing streamed path.
+Event 91's `retainedBytes` is the owner's total, not additional bytes per event; never sum
+it across tile instances. Fade/layer opacity is applied at draw time, and wrapped instances
+retain independent transforms. Content changes, pan validity, configuration/device changes,
+incorporation, removal and disposal release pending buffers. Patterned fills remain on the
+complete rendering path, preserving pattern and relief order. Event 92 separates pending
+GPU bytes from both CPU budget estimates and event 83's main-frame GPU bytes.
+Stable eligible pending frames should show reuse in 91 and no new dynamic uploads in 80
+or native scratch growth in 90. Style builders pool only temporary storage (at most two
+arrays per bucket through 1024 elements per styled-record type); published result arrays
+remain immutable, including snapshots held by a cancelled worker.
+
+The deterministic `VectorAllocationTests` workload (x64 Debug, .NET 10) measured
+3,289,400 versus 2,462,520 managed bytes for forty resolutions of 512 zoom-dependent
+lines after adopting compact immutable results and bounded builders (25.1% less).
+Twelve identical eligible pending frames previously requested 294,624 native scratch
+bytes; the retained path requests zero and performs zero dynamic geometry uploads.
+These are synthetic allocation/regression measurements, not Native AOT process-memory
+or displayed-FPS claims. `VectorPendingGeometryTests` compares complete and incremental
+pixels for flat/projective panning, wrapping, fading and newly arrived patterns.
+
+Navigation allocation traces can also expose unnecessary symbol invalidation and LibTess
+scratch churn. Symbol reuse depends on line patterns/opacity and visibility/filter diagnostics,
+not unrelated solid-line paint. All style families reuse results while hidden at both zooms,
+within unchanged literal zoom-step intervals, or beyond interpolation endpoints. Continuous
+interpolation, visibility crossings, evaluation failures, missing assets and text scaling still
+invalidate as needed; no zoom quantization or label reduction is applied.
+
+Polygon decoding reuses one LibTess tessellator per decode call. Its scratch pool is never
+shared between workers or retained by cached tiles, and published ring/triangle arrays remain
+independently owned. An ARM64 Debug/.NET 10 workload decoding 256 rectangles eight times
+allocated about 3.34 MB instead of 15.40 MB (78% less). Removing gradient-scaling closures
+reduced 10,000 ordinary line preparations from 240,000 bytes to zero and the 40-resolution
+line workload from about 2.46 MB to 1.97 MB. A 256-symbol fractional-zoom workload with
+changing solid-road widths dropped from 7.35 MB to 3,520 bytes; its regression limit is 64 KB.
+These are deterministic managed-allocation measurements, not reductions in whole-process
+working set.
+
+For retained process memory, distinguish `System.Runtime`'s
+`dotnet.gc.last_collection.memory.committed_size` from live heap payload and fragmentation.
+Windows `GPU Process Memory` counters separately expose shared/dedicated residency and total
+graphics commitment. These are not interchangeable with logical resource payloads in events
+81/83/92, and must not simply be added to process-private memory because accounting can overlap.
+Balanced event 90 counters and an empty event 41 disposal backlog do not prove that the GPU
+driver or native allocator has returned its high-water commitment.
+
+A subsequent ARM64 Release/CoreCLR navigation capture retained the same 1899-by-1128,
+4x-MSAA viewport and recorded no lost events. Raster residency stayed around 32-35 MiB,
+with no disposal backlog, but geometry streaming still submitted 13.35 GiB cumulatively
+and performed 16,136 discards over 2,242 frames. Settled graphics commitment was about
+412 MiB; GC commitment was about 130 MiB, including about 52 MiB of heap fragmentation.
+These overlapping counters are not an additive ownership breakdown. This manual replay
+was shorter than the preceding run and did not establish a whole-process memory reduction.
+Investigate remaining geometry uploads and driver commitment rather than interpreting
+cumulative upload bytes as leaked raster textures or assuming reduced allocations alone
+will lower working set.
+
+For polygon flashes during replacement, correlate raster eviction (20) with polygon counts
+(58), fallback suppression (59), and source activation (30). A road-raster eviction was
+incorrectly intersecting every source's fallback tiers with raster texture keys, clearing
+vector-only coverage. One recorded sequence drew 367 polygons, evicted three raster tiles,
+drew only the background, then restored 843 polygons after scene activation. Raster eviction
+now reconciles only raster-backed sources; hybrid raster/vector eviction remains coupled.
+An offscreen regression forces actual raster eviction and verifies unchanged polygon/line
+pixels across subsequent frames, including pitched views, without waiting for the scheduler
+to restore fallback. Use event 20's eviction count for this correlation, not its older
+malformed native byte payloads.
+
+Aggressive cross-tier reversals can project coarse dashed fallback paths millions of
+pixels beyond the viewport. Dash generation skips whole pattern periods outside padded
+stroke coverage, preserving phase through source segments and keeping split caps/joins
+offscreen. Event 93 counts skipped spans, not skipped pixels or individual dashes; it is
+cumulative across renderers/workers and only advances while Verbose/Frames is enabled.
+Do not sum its values across frames. Correlate with line-stage timing (78), dashed
+geometry (66), fallback coverage (57/59), and cancellation (15/63).
+An aggressive native-AOT replay spanning zoom 4.88–18.88 exposed a 39.7-second
+line-stage stall in the old offscreen dash loop. Whole-period skipping reduced the
+same synthetic long-path expansion from 584.760 ms to about 0.225 ms, with matching
+visible vertices across cap and odd/zero-entry pattern cases. The repeated four-cycle
+native replay recorded a 95.7 ms worst line stage, 95 cancellation events, and no lost
+events; asynchronous arrivals differed, so these are regression evidence, not a
+normalized throughput comparison.
 
 ID 41 writes explicit Int32/Int64/Int32 payload widths. Older builds used an overload
 that could produce inflated byte totals in native traces despite correct EventListener

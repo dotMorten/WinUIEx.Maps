@@ -1,4 +1,5 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System.Reflection;
 
 using WinUIEx.Maps.Rendering;
 
@@ -7,6 +8,43 @@ namespace WinUIEx.Maps.Tests;
 [TestClass]
 public sealed class MapCameraTests
 {
+    [TestMethod]
+    [DataRow(256d)]
+    [DataRow(600d)]
+    [DataRow(1080d)]
+    public void PerspectiveDistanceUsesConfiguredVerticalFieldOfView(double height)
+    {
+        double fieldOfView = (double)typeof(MapCamera).GetField(
+            "VerticalFieldOfViewDegrees", BindingFlags.NonPublic | BindingFlags.Static)!
+            .GetRawConstantValue()!;
+        Assert.IsGreaterThan(0d, fieldOfView);
+        Assert.IsLessThan(180d - 2 * MapCamera.MaximumPitch, fieldOfView);
+        double expected = height / (2 * Math.Tan(fieldOfView * Math.PI / 360));
+        Assert.AreEqual(expected, MapCamera.GetPerspectiveDistance(height), 1e-9);
+        Assert.AreEqual(expected * 2, MapCamera.GetPerspectiveDistance(height * 2), 1e-9);
+    }
+
+    [TestMethod]
+    [DataRow(0d)]
+    [DataRow(37d)]
+    public void MaximumPitchViewportCornersRemainInFrontOfHorizon(double heading)
+    {
+        const double height = 600;
+        foreach (double x in new[] { -500d, 0, 500 })
+        {
+            foreach (double y in new[] { -height / 2, 0, height / 2 })
+            {
+                MapCamera.UntransformViewportOffset(x, y, heading, MapCamera.MaximumPitch,
+                    height, out double mapX, out double mapY);
+                Assert.IsTrue(double.IsFinite(mapX) && double.IsFinite(mapY));
+                MapCamera.TransformViewportOffset(mapX, mapY, heading, MapCamera.MaximumPitch,
+                    height, out double projectedX, out double projectedY);
+                Assert.AreEqual(x, projectedX, 1e-9);
+                Assert.AreEqual(y, projectedY, 1e-9);
+            }
+        }
+    }
+
     [TestMethod]
     public void RequiredTilesAreCachedPerImmutableScene()
     {
@@ -415,10 +453,11 @@ public sealed class MapCameraTests
     [TestMethod]
     public void PitchedSceneCoversTheInverseProjectedViewport()
     {
+        // Keep the widened far-field footprint inside the finite Mercator latitude range.
         MapScene scene = MapCamera.CreateScene(
             0,
             0,
-            4,
+            8,
             1000,
             600,
             heading: 25,

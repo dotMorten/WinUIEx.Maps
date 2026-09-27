@@ -130,7 +130,8 @@ internal readonly record struct VectorTileSymbol(
     bool AvoidEdges = false,
     bool KeepUpright = true,
     double MaximumAngle = Math.PI / 4,
-    VectorSpriteContent? IconContent = null);
+    VectorSpriteContent? IconContent = null,
+    bool IsClosedLine = false);
 
 /// <summary>
 /// Describes one projected vector symbol rectangle ready for texture batching.
@@ -211,10 +212,15 @@ internal enum VectorIconTextFit
     Both,
 }
 
-internal sealed record VectorTileStyledLine(
+internal readonly record struct VectorTileStyledLine(
     int StyleLayerOrder,
     VectorTilePoint[] Points,
-    VectorLineStyle Style);
+    VectorLineStyle Style,
+    bool IsClosed = false)
+{
+    internal int ProjectedPointCount => Points.Length +
+        (IsClosed && Points.Length != 0 && Points[0] != Points[^1] ? 1 : 0);
+}
 
 internal sealed record VectorLineResolution(
     VectorTileStyledLine[] Lines,
@@ -234,7 +240,22 @@ internal readonly record struct VectorLineStyle(
 
 internal readonly record struct VectorLineGradientStop(
     double Offset,
-    Vector4 Color);
+    Vector4 Color)
+{
+    internal static ImmutableArray<VectorLineGradientStop> ApplyOpacity(
+        ImmutableArray<VectorLineGradientStop> gradient,
+        float opacity)
+    {
+        if (gradient.IsDefaultOrEmpty)
+            return [];
+        var builder = ImmutableArray.CreateBuilder<VectorLineGradientStop>(gradient.Length);
+        foreach (VectorLineGradientStop stop in gradient)
+        {
+            builder.Add(stop with { Color = stop.Color * opacity });
+        }
+        return builder.MoveToImmutable();
+    }
+}
 
 internal enum VectorLineCap
 {
@@ -250,7 +271,7 @@ internal enum VectorLineJoin
     Miter,
 }
 
-internal sealed record VectorTileStyledPolygon(
+internal readonly record struct VectorTileStyledPolygon(
     int StyleLayerOrder,
     VectorTileRing[] Rings,
     VectorTilePoint[] FillTriangles,
