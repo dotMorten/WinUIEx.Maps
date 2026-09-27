@@ -1525,9 +1525,8 @@ internal sealed partial class MapRenderer
             AddJoinTriangle(triangles, join, first, second);
             return;
         }
-        triangles.Add(first);
-        triangles.Add(miter);
-        triangles.Add(second);
+        // The tip triangle alone leaves the center-to-bevel wedge uncovered.
+        AddQuad(triangles, join, first, miter, second);
     }
 
     private static void AddJoinTriangle(
@@ -1608,9 +1607,20 @@ internal sealed partial class MapRenderer
         MapScreenPoint center,
         double radius)
     {
+        int segmentCount = MapGeometryOperations.GetRoundArcSegmentCount(Math.Tau, radius);
         MapScreenPoint previous = new(center.X + radius, center.Y);
-        foreach (MapScreenPoint offset in s_vectorLineCircleOffsets)
+        for (int index = 0; index < segmentCount; index++)
         {
+            MapScreenPoint offset;
+            if (segmentCount == s_vectorLineCircleOffsets.Length)
+            {
+                offset = s_vectorLineCircleOffsets[index];
+            }
+            else
+            {
+                (double sine, double cosine) = Math.SinCos((index + 1) * Math.Tau / segmentCount);
+                offset = new MapScreenPoint(cosine, sine);
+            }
             MapScreenPoint current = new(
                 center.X + (offset.X * radius),
                 center.Y + (offset.Y * radius));

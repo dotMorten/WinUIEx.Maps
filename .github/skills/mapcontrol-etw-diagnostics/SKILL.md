@@ -198,6 +198,23 @@ stream. Its cursor persists across frames and discards only when the next batch 
 fit, or after resource recreation or an upload failure. Draws use the reserved instance
 offset without changing layer order or batch boundaries.
 
+For route numbers overflowing shields, correlate icon and glyph draws (IDs 51/53)
+with fitted-icon counts (ID 69) and text scaling (ID 71). Fitted sprites use their
+declared `content` rectangle, not the full image, and honor `textFitWidth` /
+`textFitHeight` aspect-ratio rules. Content offsets and borders scale with the
+sprite, including fractional pixel ratios and overzoomed source tiles. A synthetic
+overzoom reproduction drew one icon and three glyphs with zero evaluation failures,
+but 472 text pixels outside the content rectangle before content-aware fitting.
+IDs 51/53 distinguish missing assets from this sizing defect; no sprite names,
+route numbers, content rectangles, or pixel data belong in ETW.
+
+For gaps at thick line bends, correlate ID 56 with ID 61 to distinguish streamed
+and retained vector geometry. Miter joins include both the center wedge and the
+outer tip; the configured miter limit still falls back to a bevel. Round joins
+in vector and map-element strokes subdivide according to stroke radius, bounding
+the arc's chord error to half a logical pixel. Triangle/upload counts can therefore
+increase for wide strokes without indicating duplicate features or tile requests.
+
 ID 83 distinguishes cache-owned vector payloads from retained native frame geometry.
 Its payload calculations only run with active Verbose/Frames listeners; disposal-only
 counts and byte totals likewise require active Informational/Device or Cache listeners.

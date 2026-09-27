@@ -514,7 +514,10 @@ internal static class MapCamera
         double cosine = Math.Cos(radians);
         double sine = Math.Sin(radians);
         double distance = GetPerspectiveDistance(viewportHeight);
-        double scale = distance / (distance - (rotatedY * sine));
+        // Do not project geometry through the perspective horizon. A negative denominator
+        // mirrors distant vertices back across the viewport and joins them with valid paths.
+        double denominator = Math.Max(1, distance - (rotatedY * sine));
+        double scale = distance / denominator;
         transformedX = rotatedX * scale;
         transformedY = rotatedY * cosine * scale;
     }

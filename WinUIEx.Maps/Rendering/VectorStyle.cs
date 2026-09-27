@@ -428,7 +428,7 @@ internal sealed class VectorStyleAssets
             symbols,
             ref counts,
             CancellationToken.None);
-        ApplyTextFit(symbols);
+        ApplyTextFit(symbols, ref counts);
         return new VectorSymbolResolution(
             symbols.ToArray(),
             counts.EvaluationFailureCount,
@@ -552,7 +552,9 @@ internal sealed class VectorStyleAssets
         return MapAccessibilityFeatureKind.Other;
     }
 
-    private static void ApplyTextFit(List<VectorTileSymbol> symbols)
+    private static void ApplyTextFit(
+        List<VectorTileSymbol> symbols,
+        ref VectorStyleResolutionCounts counts)
     {
         Dictionary<long, (double Left, double Top, double Right, double Bottom)>
             textBounds = [];
@@ -605,6 +607,51 @@ internal sealed class VectorStyleAssets
                 VectorIconTextFit.Height or VectorIconTextFit.Both;
             double fittedWidth = fittedRight - fittedLeft;
             double fittedHeight = fittedBottom - fittedTop;
+            if (icon.IconContent is VectorSpriteContent content)
+            {
+                double contentWidth = content.Right - content.Left;
+                double contentHeight = content.Bottom - content.Top;
+                if (fitWidth && fitHeight)
+                {
+                    double aspectRatio = icon.Width * contentWidth /
+                        (icon.Height * contentHeight);
+                    if (content.HeightFit == VectorSpriteTextFit.Proportional)
+                    {
+                        if (content.WidthFit == VectorSpriteTextFit.Proportional)
+                            fittedWidth = fittedHeight * aspectRatio;
+                        else if (content.WidthFit == VectorSpriteTextFit.StretchOnly)
+                            fittedWidth = Math.Max(fittedWidth, fittedHeight * aspectRatio);
+                    }
+                    else if (content.WidthFit == VectorSpriteTextFit.Proportional &&
+                        content.HeightFit == VectorSpriteTextFit.StretchOnly)
+                    {
+                        fittedHeight = Math.Max(fittedHeight, fittedWidth / aspectRatio);
+                    }
+                }
+                double width = fitWidth ? fittedWidth / contentWidth : icon.Width;
+                double height = fitHeight ? fittedHeight / contentHeight : icon.Height;
+                if (!double.IsFinite(width) || !double.IsFinite(height) ||
+                    width <= 0 || height <= 0 || width > 4096 || height > 4096)
+                {
+                    counts.EvaluationFailureCount++;
+                    symbols.RemoveAt(index);
+                    continue;
+                }
+                symbols[index] = icon with
+                {
+                    Width = width,
+                    Height = height,
+                    OffsetX = fitWidth
+                        ? (fittedLeft + fittedRight) / 2 +
+                            width * (0.5 - (content.Left + content.Right) / 2)
+                        : icon.OffsetX,
+                    OffsetY = fitHeight
+                        ? (fittedTop + fittedBottom) / 2 +
+                            height * (0.5 - (content.Top + content.Bottom) / 2)
+                        : icon.OffsetY,
+                };
+                continue;
+            }
             symbols[index] = icon with
             {
                 Width = fitWidth
@@ -1515,7 +1562,8 @@ internal sealed class VectorStyleAssets
                             TextFit: textFit,
                             TextFitPadding: textFitPadding,
                             CollisionPadding: collisionPadding,
-                            AvoidEdges: avoidEdges));
+                            AvoidEdges: avoidEdges,
+                            IconContent: entry.Content));
                     }
                 }
                 else
@@ -1548,7 +1596,8 @@ internal sealed class VectorStyleAssets
                             TextFit: textFit,
                             TextFitPadding: textFitPadding,
                             CollisionPadding: collisionPadding,
-                            AvoidEdges: avoidEdges));
+                            AvoidEdges: avoidEdges,
+                            IconContent: entry.Content));
                     }
                 }
             }
@@ -6455,6 +6504,40 @@ internal sealed class VectorSpriteAtlas
                 }
                 visible = visibleElement.GetBoolean();
             }
+            VectorSpriteTextFit widthFit = ParseTextFit(property.Value, "textFitWidth");
+            VectorSpriteTextFit heightFit = ParseTextFit(property.Value, "textFitHeight");
+            VectorSpriteContent? content = null;
+            if (property.Value.TryGetProperty("content", out JsonElement contentElement))
+            {
+                if (contentElement.ValueKind != JsonValueKind.Array ||
+                    contentElement.GetArrayLength() != 4)
+                {
+                    throw new InvalidDataException(
+                        "The sprite index contains an invalid content rectangle.");
+                }
+                double[] bounds = new double[4];
+                for (int index = 0; index < bounds.Length; index++)
+                {
+                    if (contentElement[index].ValueKind != JsonValueKind.Number ||
+                        !contentElement[index].TryGetDouble(out bounds[index]) ||
+                        !double.IsFinite(bounds[index]))
+                    {
+                        throw new InvalidDataException(
+                            "The sprite index contains an invalid content rectangle.");
+                    }
+                }
+                if (bounds[0] < 0 || bounds[1] < 0 ||
+                    bounds[2] <= bounds[0] || bounds[3] <= bounds[1] ||
+                    bounds[2] > width || bounds[3] > height)
+                {
+                    throw new InvalidDataException(
+                        "The sprite index contains an out-of-range content rectangle.");
+                }
+                content = new VectorSpriteContent(
+                    bounds[0] / width, bounds[1] / height,
+                    bounds[2] / width, bounds[3] / height,
+                    widthFit, heightFit);
+            }
             if (!entries.TryAdd(
                     property.Name,
                     new VectorSpriteEntry(
@@ -6463,13 +6546,33 @@ internal sealed class VectorSpriteAtlas
                         width,
                         height,
                         pixelRatio,
-                        visible)))
+                        visible,
+                        content)))
             {
                 throw new InvalidDataException(
                     "The sprite index contains a duplicate entry.");
             }
         }
         return entries;
+    }
+
+    private static VectorSpriteTextFit ParseTextFit(JsonElement entry, string name)
+    {
+        if (!entry.TryGetProperty(name, out JsonElement value))
+            return VectorSpriteTextFit.StretchOrShrink;
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            return value.GetString() switch
+            {
+                "stretchOrShrink" => VectorSpriteTextFit.StretchOrShrink,
+                "stretchOnly" => VectorSpriteTextFit.StretchOnly,
+                "proportional" => VectorSpriteTextFit.Proportional,
+                _ => throw new InvalidDataException(
+                    "The sprite index contains an invalid text fitting mode."),
+            };
+        }
+        throw new InvalidDataException(
+            "The sprite index contains an invalid text fitting mode.");
     }
 
     internal static long CreateTextureId(string styleSlug, string spriteName)
@@ -6598,7 +6701,26 @@ internal readonly record struct VectorSpriteEntry(
     uint Width,
     uint Height,
     double PixelRatio,
-    bool Visible);
+    bool Visible,
+    VectorSpriteContent? Content = null);
+
+/// <summary>
+/// The text-safe rectangle in normalized sprite coordinates, independent of pixel ratio.
+/// </summary>
+internal sealed record VectorSpriteContent(
+    double Left,
+    double Top,
+    double Right,
+    double Bottom,
+    VectorSpriteTextFit WidthFit,
+    VectorSpriteTextFit HeightFit);
+
+internal enum VectorSpriteTextFit
+{
+    StretchOrShrink,
+    StretchOnly,
+    Proportional,
+}
 
 internal enum VectorSpriteLookupResult
 {

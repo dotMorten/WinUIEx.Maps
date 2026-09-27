@@ -533,6 +533,112 @@ public sealed class VectorStyleTests
     }
 
     [TestMethod]
+    [DataRow("none", 1d)]
+    [DataRow("width", 1d)]
+    [DataRow("height", 1d)]
+    [DataRow("both", 1d)]
+    [DataRow("both", 2d)]
+    public async Task SpriteContentFitsPaddedTextOnOnlyTheRequestedAxes(
+        string fit, double pixelRatio)
+    {
+        VectorStyleAssets assets = CreateAssets(
+            $$$"""
+            {"version":8,"layers":[{"type":"symbol","source-layer":"poi","layout":{
+              "icon-image":"marker","icon-size":1.5,"icon-text-fit":"{{{fit}}}",
+              "icon-text-fit-padding":[1,2,3,4],
+              "text-field":"1","text-font":["Roboto-Regular"],"text-size":24
+            }}]}
+            """,
+            $$$"""
+            {"marker":{"x":0,"y":0,"width":64,"height":48,
+              "pixelRatio":{{{pixelRatio}}},"content":[8,12,48,36]}}
+            """,
+            PixelBytes(Enumerable.Repeat((byte)9, 64 * 48).ToArray()), 64, 48);
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
+            "Roboto-Regular", 0, new Dictionary<int, VectorGlyph>
+            {
+                ['1'] = new('1', GlyphBitmap(8, 128), 2, 2, 0, 2, 3),
+            }));
+        var features = CreateFeatures();
+        await assets.PrepareTexturesAsync(features, 22, CancellationToken.None);
+        foreach (double textScale in new[] { 1d, 2d })
+        {
+            var resolution = assets.ResolveSymbols(features, 22, textScale);
+            Assert.AreEqual(0, resolution.EvaluationFailureCount);
+            VectorTileSymbol icon = Assert.ContainsSingle(
+                resolution.Symbols.Where(s => s.Kind == VectorSymbolKind.Icon));
+            VectorTileSymbol glyph = Assert.ContainsSingle(
+                resolution.Symbols.Where(s => s.Kind == VectorSymbolKind.Text));
+            bool fitWidth = fit is "width" or "both";
+            bool fitHeight = fit is "height" or "both";
+            if (fitWidth)
+            {
+                Assert.AreEqual(glyph.Width + 6, icon.Width * 40 / 64, 0.000001);
+                Assert.AreEqual(glyph.OffsetX - glyph.Width / 2 - 4,
+                    icon.OffsetX - icon.Width / 2 + icon.Width * 8 / 64, 0.000001);
+            }
+            else
+            {
+                Assert.AreEqual(64 / pixelRatio * 1.5, icon.Width, 0.000001);
+                Assert.AreEqual(0, icon.OffsetX);
+            }
+            if (fitHeight)
+            {
+                Assert.AreEqual(glyph.Height + 4, icon.Height * 24 / 48, 0.000001);
+                Assert.AreEqual(glyph.OffsetY - glyph.Height / 2 - 1,
+                    icon.OffsetY - icon.Height / 2 + icon.Height * 12 / 48, 0.000001);
+            }
+            else
+            {
+                Assert.AreEqual(48 / pixelRatio * 1.5, icon.Height, 0.000001);
+                Assert.AreEqual(0, icon.OffsetY);
+            }
+        }
+    }
+
+    [TestMethod]
+    [DataRow("stretchOnly", "proportional", 2, 18)]
+    [DataRow("proportional", "stretchOnly", 18, 2)]
+    [DataRow("proportional", "proportional", 2, 18)]
+    public async Task SpriteContentPreservesItsRequestedAspectRatio(
+        string widthFit, string heightFit, int glyphWidth, int glyphHeight)
+    {
+        VectorStyleAssets assets = CreateAssets(
+            """
+            {"version":8,"layers":[{"type":"symbol","source-layer":"poi","layout":{
+              "icon-image":"marker","icon-text-fit":"both",
+              "text-field":"1","text-font":["Roboto-Regular"],"text-size":24
+            }}]}
+            """,
+            $$$"""
+            {"marker":{"x":0,"y":0,"width":64,"height":48,"pixelRatio":2,
+              "content":[8,12,48,36],
+              "textFitWidth":"{{{widthFit}}}","textFitHeight":"{{{heightFit}}}"}}
+            """,
+            PixelBytes(Enumerable.Repeat((byte)9, 64 * 48).ToArray()), 64, 48);
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
+            "Roboto-Regular", 0, new Dictionary<int, VectorGlyph>
+            {
+                ['1'] = new('1', Enumerable.Repeat((byte)128,
+                    (glyphWidth + 6) * (glyphHeight + 6)).ToArray(),
+                    (uint)glyphWidth, (uint)glyphHeight, 0, glyphHeight, (uint)glyphWidth),
+            }));
+        var features = CreateFeatures();
+        await assets.PrepareTexturesAsync(features, 22, CancellationToken.None);
+        VectorTileSymbol[] symbols = assets.ResolveSymbols(features, 22).Symbols;
+        VectorTileSymbol icon = Assert.ContainsSingle(symbols.Where(s => s.Kind == VectorSymbolKind.Icon));
+        VectorTileSymbol glyph = Assert.ContainsSingle(symbols.Where(s => s.Kind == VectorSymbolKind.Text));
+        double width = icon.Width * 40 / 64;
+        double height = icon.Height * 24 / 48;
+        Assert.AreEqual(40d / 24, width / height, 0.000001);
+        Assert.IsGreaterThanOrEqualTo(glyph.Width - 0.000001, width);
+        Assert.IsGreaterThanOrEqualTo(glyph.Height - 0.000001, height);
+        Assert.AreEqual(glyph.OffsetX,
+            icon.OffsetX + icon.Width * ((8d + 48) / 128 - 0.5), 0.000001);
+        Assert.AreEqual(glyph.OffsetY, icon.OffsetY, 0.000001);
+    }
+
+    [TestMethod]
     public async Task TextFitIconIsSuppressedWhenItsTextDoesNotResolve()
     {
         VectorStyleAssets assets = CreateAssets(
@@ -1122,6 +1228,26 @@ public sealed class VectorStyleTests
         Assert.IsFalse(tracker.Add(20, -1));
         Assert.IsEmpty(tracker.RemoveSource(10));
         Assert.AreSequenceEqual([-1L], tracker.RemoveSource(20));
+    }
+
+    [TestMethod]
+    [DataRow("\"content\":null")]
+    [DataRow("\"content\":[0,0,10]")]
+    [DataRow("\"content\":[0,0,\"10\",10]")]
+    [DataRow("\"content\":[0,0,1e400,10]")]
+    [DataRow("\"content\":[-1,0,10,10]")]
+    [DataRow("\"content\":[0,0,11,10]")]
+    [DataRow("\"content\":[0,5,10,5]")]
+    [DataRow("\"content\":[5,0,4,10]")]
+    [DataRow("\"textFitWidth\":\"unknown\"")]
+    [DataRow("\"textFitHeight\":false")]
+    public void SpriteIndexRejectsInvalidContentFittingMetadata(string metadata)
+    {
+        Assert.ThrowsExactly<InvalidDataException>(() =>
+            VectorSpriteAtlas.ParseIndex(Encoding.UTF8.GetBytes(
+                $$$"""
+                {"marker":{"x":0,"y":0,"width":10,"height":10,"pixelRatio":1,{{{metadata}}}}}
+                """)));
     }
 
     [TestMethod]

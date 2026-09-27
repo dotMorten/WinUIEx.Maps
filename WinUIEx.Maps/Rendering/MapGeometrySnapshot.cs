@@ -173,14 +173,21 @@ internal static class MapGeometryOperations
                 : Math.Max(0, points.Length - 1);
             for (int index = 0; index < segmentCount; index++)
             {
-                MapScreenPoint start = Project(
+                MapScreenPoint start = GetViewportOffset(
                     points[index],
                     geometry.AnchorWorldX,
                     camera);
-                MapScreenPoint end = Project(
+                MapScreenPoint end = GetViewportOffset(
                     points[(index + 1) % points.Length],
                     geometry.AnchorWorldX,
                     camera);
+                if (!TryClipToPerspectivePlane(ref start, ref end, camera))
+                {
+                    continue;
+                }
+
+                start = ProjectViewportOffset(start, camera);
+                end = ProjectViewportOffset(end, camera);
                 double deltaX = end.X - start.X;
                 double deltaY = end.Y - start.Y;
                 double length = Math.Sqrt((deltaX * deltaX) + (deltaY * deltaY));
@@ -280,7 +287,8 @@ internal static class MapGeometryOperations
             segments,
             segmentCount,
             closed,
-            joinPolicy);
+            joinPolicy,
+            thickness / 2);
         MapScreenPoint[] triangles = new MapScreenPoint[
             checked((segmentCount * 6) + joinVertexCount)];
         double halfThickness = thickness / 2;
@@ -323,7 +331,7 @@ internal static class MapGeometryOperations
         {
             MapScreenSegment previous = segments[index - 1];
             MapScreenSegment next = segments[index];
-            if (GetStrokeJoinVertexCount(previous, next) > 0)
+            if (GetStrokeJoinVertexCount(previous, next, halfThickness) > 0)
             {
                 AddStrokeJoin(
                     triangles,
@@ -348,7 +356,8 @@ internal static class MapGeometryOperations
                 if (last > first &&
                     GetStrokeJoinVertexCount(
                         segments[last],
-                        segments[first]) > 0)
+                        segments[first],
+                        halfThickness) > 0)
                 {
                     AddStrokeJoin(
                         triangles,
@@ -367,7 +376,8 @@ internal static class MapGeometryOperations
         IReadOnlyList<MapScreenSegment> segments,
         int segmentCount,
         bool closed,
-        MapStrokeJoinPolicy joinPolicy)
+        MapStrokeJoinPolicy joinPolicy,
+        double radius)
     {
         if (joinPolicy == MapStrokeJoinPolicy.SegmentsOnly)
         {
@@ -379,7 +389,8 @@ internal static class MapGeometryOperations
         {
             count += GetStrokeJoinVertexCount(
                 segments[index - 1],
-                segments[index]);
+                segments[index],
+                radius);
         }
         if (!closed)
         {
@@ -399,7 +410,8 @@ internal static class MapGeometryOperations
             {
                 count += GetStrokeJoinVertexCount(
                     segments[last],
-                    segments[first]);
+                    segments[first],
+                    radius);
             }
             first = last + 1;
         }
@@ -408,7 +420,8 @@ internal static class MapGeometryOperations
 
     private static int GetStrokeJoinVertexCount(
         MapScreenSegment previous,
-        MapScreenSegment next)
+        MapScreenSegment next,
+        double radius)
     {
         if (previous.PathIndex != next.PathIndex ||
             Math.Abs(previous.End.X - next.Start.X) > 1e-7 ||
@@ -429,10 +442,10 @@ internal static class MapGeometryOperations
         }
         if (Math.Abs(cross) <= 1e-7)
         {
-            return 24;
+            return GetRoundArcSegmentCount(Math.Tau, radius) * 3;
         }
 
-        return GetRoundJoinSegmentCount(dot) * 3;
+        return GetRoundArcSegmentCount(Math.Atan2(Math.Abs(cross), Math.Clamp(dot, -1, 1)), radius) * 3;
     }
 
     private static void AddStrokeJoin(
@@ -488,10 +501,10 @@ internal static class MapGeometryOperations
             startOffset = incomingNormal;
         }
 
-        int segmentCount = GetRoundJoinSegmentCount(dot);
         double sweep = Math.CopySign(
             Math.Atan2(Math.Abs(cross), Math.Clamp(dot, -1, 1)),
             cross);
+        int segmentCount = GetRoundArcSegmentCount(Math.Abs(sweep), radius);
         (double stepSin, double stepCos) =
             Math.SinCos(sweep / segmentCount);
         MapScreenPoint offset = startOffset;
@@ -503,26 +516,22 @@ internal static class MapGeometryOperations
             offset = new MapScreenPoint(
                 (offset.X * stepCos) - (offset.Y * stepSin),
                 (offset.X * stepSin) + (offset.Y * stepCos));
-            MapScreenPoint current = new(
-                join.X + (offset.X * radius),
-                join.Y + (offset.Y * radius));
+            MapScreenPoint current = index == segmentCount
+                ? new(join.X + Math.Sign(cross) * outgoing.Y * radius,
+                    join.Y - Math.Sign(cross) * outgoing.X * radius)
+                : new(join.X + (offset.X * radius), join.Y + (offset.Y * radius));
             AddTriangle(triangles, ref vertex, join, previousArc, current);
             previousArc = current;
         }
     }
 
-    private static int GetRoundJoinSegmentCount(double dot)
+    internal static int GetRoundArcSegmentCount(double sweep, double radius)
     {
-        const double cosine45Degrees = 0.7071067811865476;
-        if (dot >= cosine45Degrees)
-        {
-            return 1;
-        }
-        if (dot >= 0)
-        {
-            return 2;
-        }
-        return dot >= -cosine45Degrees ? 3 : 4;
+        // Bound the chord's inward error to half a logical pixel for wide strokes.
+        double maximumAngle = radius > 0
+            ? Math.Min(Math.PI / 4, 2 * Math.Acos(1 - Math.Min(0.5 / radius, 1)))
+            : Math.PI / 4;
+        return Math.Max(1, (int)Math.Ceiling(sweep / maximumAngle));
     }
 
     private static void AddCircle(
@@ -531,7 +540,7 @@ internal static class MapGeometryOperations
         MapScreenPoint center,
         double radius)
     {
-        const int segmentCount = 8;
+        int segmentCount = GetRoundArcSegmentCount(Math.Tau, radius);
         MapScreenPoint previous = new(center.X + radius, center.Y);
         for (int index = 1; index <= segmentCount; index++)
         {
@@ -708,6 +717,15 @@ internal static class MapGeometryOperations
         double anchorWorldX,
         MapGeometryCamera camera)
     {
+        MapScreenPoint offset = GetViewportOffset(point, anchorWorldX, camera);
+        return ProjectViewportOffset(offset, camera);
+    }
+
+    private static MapScreenPoint GetViewportOffset(
+        MapWorldPoint point,
+        double anchorWorldX,
+        MapGeometryCamera camera)
+    {
         double worldSize = 256 * Math.Pow(
             2,
             Math.Clamp(camera.Zoom, 0, MapCamera.MaximumTileZoom));
@@ -717,9 +735,16 @@ internal static class MapGeometryOperations
         double cameraY = MapCamera.LatitudeToWorldY(camera.Latitude) * worldSize;
         double y = (point.Y * worldSize) -
             MapCamera.GetEffectiveCameraY(cameraY, worldSize);
+        return new MapScreenPoint(x, y);
+    }
+
+    private static MapScreenPoint ProjectViewportOffset(
+        MapScreenPoint offset,
+        MapGeometryCamera camera)
+    {
         MapCamera.TransformViewportOffset(
-            x,
-            y,
+            offset.X,
+            offset.Y,
             camera.Heading,
             camera.Pitch,
             camera.ViewportHeight,
@@ -728,6 +753,51 @@ internal static class MapGeometryOperations
         return new MapScreenPoint(
             rotatedX + (camera.ViewportWidth / 2),
             rotatedY + (camera.ViewportHeight / 2));
+    }
+
+    private static bool TryClipToPerspectivePlane(
+        ref MapScreenPoint start,
+        ref MapScreenPoint end,
+        MapGeometryCamera camera)
+    {
+        double pitchRadians = MapCamera.NormalizePitch(camera.Pitch) * Math.PI / 180;
+        if (pitchRadians == 0)
+        {
+            return true;
+        }
+
+        double headingRadians = MapCamera.NormalizeHeading(camera.Heading) * Math.PI / 180;
+        double headingCosine = Math.Cos(headingRadians);
+        double headingSine = Math.Sin(headingRadians);
+        double startRotatedY = (-start.X * headingSine) + (start.Y * headingCosine);
+        double endRotatedY = (-end.X * headingSine) + (end.Y * headingCosine);
+        // Preserve a finite distance from the perspective horizon. Rendering points on
+        // opposite sides of it as one segment creates an apparent line across the viewport.
+        double maximumRotatedY =
+            (MapCamera.GetPerspectiveDistance(camera.ViewportHeight) / Math.Sin(pitchRadians)) - 1;
+        bool startVisible = startRotatedY < maximumRotatedY;
+        bool endVisible = endRotatedY < maximumRotatedY;
+        if (!startVisible && !endVisible)
+        {
+            return false;
+        }
+        if (startVisible && endVisible)
+        {
+            return true;
+        }
+
+        double amount = (maximumRotatedY - startRotatedY) /
+            (endRotatedY - startRotatedY);
+        MapScreenPoint intersection = Interpolate(start, end, amount);
+        if (startVisible)
+        {
+            end = intersection;
+        }
+        else
+        {
+            start = intersection;
+        }
+        return true;
     }
 
     private static bool TriangleIntersectsViewport(
@@ -882,7 +952,8 @@ internal static class MapGeometryOperations
             MapScreenSegment next = segments[index];
             if (GetStrokeJoinVertexCount(
                     previous,
-                    next) > 0 &&
+                    next,
+                    radius) > 0 &&
                 PointInCircle(point, previous.End, radius))
             {
                 return true;
@@ -905,7 +976,8 @@ internal static class MapGeometryOperations
             if (last > first &&
                 GetStrokeJoinVertexCount(
                     segments[last],
-                    segments[first]) > 0 &&
+                    segments[first],
+                    radius) > 0 &&
                 PointInCircle(point, segments[last].End, radius))
             {
                 return true;

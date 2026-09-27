@@ -1044,9 +1044,21 @@ public sealed class VectorTileDecoderTests
             100,
             100);
 
-        Assert.IsTrue(triangles.Max(point => Math.Sqrt(
-            Math.Pow(point.X - join.X, 2) +
-            Math.Pow(point.Y - join.Y, 2))) > 2.5);
+        Assert.Contains(new MapScreenPoint(12, 8), triangles);
+    }
+
+    [TestMethod]
+    public void VectorLineMiterLimitStillFallsBackToBevel()
+    {
+        MapScreenPoint[] triangles = MapRenderer.ExpandVectorLineTriangles(
+            [new(0, 10), new(10, 10), new(10, 20)],
+            new(Vector4.One, 4, VectorLineCap.Butt, VectorLineJoin.Miter, MiterLimit: 1),
+            100, 100);
+
+        Assert.DoesNotContain(new MapScreenPoint(12, 8), triangles);
+        Assert.Contains(new MapScreenPoint(10, 8), triangles);
+        Assert.Contains(new MapScreenPoint(12, 10), triangles);
+        Assert.HasCount(18, triangles);
     }
 
     [TestMethod]

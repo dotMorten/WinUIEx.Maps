@@ -421,7 +421,7 @@ internal sealed partial class MapRenderer
                 input.Layer.Opacity,
                 input.ViewportWidth,
                 input.ViewportHeight,
-                VectorGeometryCachePadding,
+                VectorBackgroundCachePadding,
                 prepared);
             foreach (VectorPolygonPreparationTile tile in polygonTiles)
             {

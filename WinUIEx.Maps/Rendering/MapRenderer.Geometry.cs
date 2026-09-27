@@ -17,6 +17,7 @@ internal sealed partial class MapRenderer
     private const int GeometryVertexCapacity = 65_535;
     private const double VectorGeometryCachePadding = 384;
     private const double VectorGeometryCachePanLimit = 320;
+    private const double VectorBackgroundCachePadding = 640;
     private DynamicGeometryStreamCursor _geometryStreamCursor = new(GeometryVertexCapacity);
     private DynamicGeometryStreamCursor _patternStreamCursor = new(GeometryVertexCapacity);
 

@@ -517,6 +517,27 @@ public sealed class MapCameraTests
     }
 
     [TestMethod]
+    public void PitchedProjectionDoesNotMirrorPointsBeyondThePerspectiveHorizon()
+    {
+        double viewportHeight = 512;
+        double horizon = MapCamera.GetPerspectiveDistance(viewportHeight) /
+            Math.Sin(60 * Math.PI / 180);
+
+        MapCamera.TransformViewportOffset(
+            0,
+            horizon + 100,
+            heading: 0,
+            pitch: 60,
+            viewportHeight,
+            out double x,
+            out double y);
+
+        Assert.AreEqual(0, x, 0.001);
+        Assert.IsGreaterThan(0, y);
+        Assert.IsTrue(double.IsFinite(y));
+    }
+
+    [TestMethod]
     public void ZoomCenterKeepsLocationAtCursorFixed()
     {
         MapCenter anchor = MapCamera.LocationAtOffset(

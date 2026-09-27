@@ -150,7 +150,7 @@ internal sealed partial class MapRenderer
                 _displayZoom,
                 _viewportWidth,
                 _viewportHeight,
-                VectorGeometryCachePadding,
+                VectorBackgroundCachePadding,
                 batches,
                 batchOrder,
                 ref result);

@@ -145,6 +145,29 @@ public sealed class MapGeometryTests
     }
 
     [TestMethod]
+    public void PitchedPolylineIsClippedBeforeThePerspectiveHorizon()
+    {
+        MapPolyline polyline = new()
+        {
+            Path = CreatePath((0, 0), (0, -85)),
+            StrokeThickness = 2,
+        };
+        MapGeometryCamera camera = new(0, 0, 4, 0, 512, 512, Pitch: 60);
+
+        MapScreenSegment segment = Assert.ContainsSingle(
+            MapGeometryOperations.BuildStrokeSegments(
+                polyline.GetState().Geometry,
+                closed: false,
+                polyline.StrokeThickness,
+                dashed: false,
+                camera));
+
+        Assert.AreEqual(256, segment.Start.X, 1);
+        Assert.AreEqual(256, segment.End.X, 1);
+        Assert.AreEqual(512, segment.End.Y, 1);
+    }
+
+    [TestMethod]
     public void DashedStrokeGenerationIsDeterministicAndScreenSpace()
     {
         MapPolyline polyline = new()
@@ -183,6 +206,54 @@ public sealed class MapGeometryTests
             2,
             Math.Abs(triangles[0].Y - triangles[5].Y),
             .001);
+    }
+
+    [TestMethod]
+    [DataRow(15d, 8d)]
+    [DataRow(-15d, 8d)]
+    [DataRow(45d, 32d)]
+    [DataRow(-45d, 32d)]
+    [DataRow(90d, 64d)]
+    [DataRow(-90d, 64d)]
+    [DataRow(150d, 128d)]
+    [DataRow(-150d, 128d)]
+    public void VectorMiterJoinsFillTheWedgeBetweenSegmentEnds(double angle, double width)
+    {
+        double radians = angle * Math.PI / 180;
+        double side = Math.Sign(angle);
+        double radius = width / 2;
+        MapScreenPoint join = new(200, 200);
+        MapScreenPoint[] triangles = MapRenderer.ExpandVectorLineTriangles(
+            [new(40, 200), join,
+             new(200 + 160 * Math.Cos(radians), 200 + 160 * Math.Sin(radians))],
+            new(System.Numerics.Vector4.One, width, VectorLineCap.Butt,
+                VectorLineJoin.Miter, MiterLimit: 4),
+            400, 400);
+
+        // Sample inside the center-to-bevel wedge, not just the separate miter tip.
+        foreach (double fraction in new[] { 0.2, 0.5, 0.8 })
+        {
+            MapScreenPoint point = new(
+                join.X + side * radius * Math.Sin(radians) * fraction / 2,
+                join.Y - side * radius * (1 + Math.Cos(radians)) * fraction / 2);
+            Assert.IsTrue(TrianglesContain(triangles, point),
+                $"The outer join must cover {point} at angle {angle} and width {width}.");
+        }
+    }
+
+    [TestMethod]
+    [DataRow(2d)]
+    [DataRow(32d)]
+    [DataRow(2048d)]
+    public void RoundJoinSubdivisionBoundsChordError(double radius)
+    {
+        foreach (double sweep in new[] { Math.PI / 12, Math.PI / 2, Math.Tau })
+        {
+            int segments = MapGeometryOperations.GetRoundArcSegmentCount(sweep, radius);
+            double error = radius * (1 - Math.Cos(sweep / (2 * segments)));
+            Assert.IsLessThanOrEqualTo(0.5, error);
+            Assert.IsInRange(1, 285, segments);
+        }
     }
 
     [TestMethod]

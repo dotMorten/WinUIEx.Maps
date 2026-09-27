@@ -129,7 +129,8 @@ internal readonly record struct VectorTileSymbol(
     double CollisionPadding = 2,
     bool AvoidEdges = false,
     bool KeepUpright = true,
-    double MaximumAngle = Math.PI / 4);
+    double MaximumAngle = Math.PI / 4,
+    VectorSpriteContent? IconContent = null);
 
 /// <summary>
 /// Describes one projected vector symbol rectangle ready for texture batching.
