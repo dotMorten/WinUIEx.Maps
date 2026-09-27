@@ -64,7 +64,7 @@ internal sealed partial class MapRenderer
     private static bool TryAppendConvexCoverage(
         ReadOnlySpan<MapScreenPoint> boundary,
         ReadOnlySpan<bool> hardEdges,
-        PooledGeometryBuffer output)
+        NativeGeometryBuffer output)
     {
         int count = boundary.Length;
         if (count is < 3 or > 128)
@@ -134,7 +134,7 @@ internal sealed partial class MapRenderer
     private static bool TryAppendStraightLineCoverage(
         ReadOnlySpan<MapScreenPoint> points,
         VectorLineStyle style,
-        PooledGeometryBuffer output)
+        NativeGeometryBuffer output)
     {
         if (points.Length != 2 || style.Width <= 2)
             return false;

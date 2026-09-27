@@ -443,7 +443,7 @@ internal sealed partial class MapRenderer
                         polygon.StyleLayerOrder,
                         VectorPolygonBatchKind.Fill,
                         polygon.Style.Color * (float)input.Layer.Opacity);
-                    PooledGeometryBuffer buffer =
+                    NativeGeometryBuffer buffer =
                         prepared.GetPolygonBuffer(key);
                     int triangleCount =
                         AppendProjectedVectorPolygonTriangles(
@@ -471,7 +471,7 @@ internal sealed partial class MapRenderer
                             polygon.StyleLayerOrder,
                             VectorPolygonBatchKind.Outline,
                             outlineColor * (float)input.Layer.Opacity);
-                        PooledGeometryBuffer outlineBuffer =
+                        NativeGeometryBuffer outlineBuffer =
                             prepared.GetPolygonBuffer(outlineKey);
                         VectorLineStyle outlineStyle = new(
                             outlineKey.Color,
@@ -482,8 +482,7 @@ internal sealed partial class MapRenderer
                         {
                             cancellationToken.ThrowIfCancellationRequested();
                             MapScreenPoint[] projected =
-                                ArrayPool<MapScreenPoint>.Shared.Rent(
-                                    ring.Points.Length);
+                                MapScreenPointPool.Rent(ring.Points.Length);
                             try
                             {
                                 for (int index = 0;
@@ -514,8 +513,7 @@ internal sealed partial class MapRenderer
                             }
                             finally
                             {
-                                ArrayPool<MapScreenPoint>.Shared.Return(
-                                    projected);
+                                MapScreenPointPool.Return(projected);
                             }
                         }
                     }
@@ -535,8 +533,7 @@ internal sealed partial class MapRenderer
                     VectorLineStyle style =
                         PrepareVectorLineForRasterization(line.Style);
                     MapScreenPoint[] projected =
-                        ArrayPool<MapScreenPoint>.Shared.Rent(
-                            line.Points.Length);
+                        MapScreenPointPool.Rent(line.Points.Length);
                     int triangleCount;
                     try
                     {
@@ -561,7 +558,7 @@ internal sealed partial class MapRenderer
                     }
                     finally
                     {
-                        ArrayPool<MapScreenPoint>.Shared.Return(projected);
+                        MapScreenPointPool.Return(projected);
                     }
                     if (triangleCount != 0)
                     {
@@ -625,7 +622,7 @@ internal sealed partial class MapRenderer
                 background.StyleLayerOrder,
                 VectorPolygonBatchKind.Fill,
                 color);
-            PooledGeometryBuffer buffer =
+            NativeGeometryBuffer buffer =
                 prepared.GetPolygonBuffer(key);
             double left = -viewportPadding;
             double top = -viewportPadding;
@@ -746,12 +743,12 @@ internal sealed partial class MapRenderer
 
         internal HashSet<VectorTileInstanceKey> IncludedTiles { get; }
 
-        internal Dictionary<VectorLineBatchKey, PooledGeometryBuffer>
+        internal Dictionary<VectorLineBatchKey, NativeGeometryBuffer>
             LineBatches { get; } = [];
 
         internal List<VectorLineBatchKey> LineBatchOrder { get; } = [];
 
-        internal Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer>
+        internal Dictionary<VectorPolygonBatchKey, NativeGeometryBuffer>
             PolygonBatches { get; } = [];
 
         internal List<VectorPolygonBatchKey> PolygonBatchOrder { get; } = [];
@@ -786,27 +783,27 @@ internal sealed partial class MapRenderer
 
         private VectorPolygonCachedBatch[]? CachedPolygonBatches { get; set; }
 
-        internal PooledGeometryBuffer GetLineBuffer(VectorLineBatchKey key)
+        internal NativeGeometryBuffer GetLineBuffer(VectorLineBatchKey key)
         {
             if (!LineBatches.TryGetValue(
                     key,
-                    out PooledGeometryBuffer? buffer))
+                    out NativeGeometryBuffer? buffer))
             {
-                buffer = new PooledGeometryBuffer();
+                buffer = new NativeGeometryBuffer();
                 LineBatches.Add(key, buffer);
                 LineBatchOrder.Add(key);
             }
             return buffer;
         }
 
-        internal PooledGeometryBuffer GetPolygonBuffer(
+        internal NativeGeometryBuffer GetPolygonBuffer(
             VectorPolygonBatchKey key)
         {
             if (!PolygonBatches.TryGetValue(
                     key,
-                    out PooledGeometryBuffer? buffer))
+                    out NativeGeometryBuffer? buffer))
             {
-                buffer = new PooledGeometryBuffer();
+                buffer = new NativeGeometryBuffer();
                 PolygonBatches.Add(key, buffer);
                 PolygonBatchOrder.Add(key);
             }
@@ -913,11 +910,11 @@ internal sealed partial class MapRenderer
 
         private void DisposeCpuBuffers()
         {
-            foreach (PooledGeometryBuffer buffer in LineBatches.Values)
+            foreach (NativeGeometryBuffer buffer in LineBatches.Values)
             {
                 buffer.Dispose();
             }
-            foreach (PooledGeometryBuffer buffer in PolygonBatches.Values)
+            foreach (NativeGeometryBuffer buffer in PolygonBatches.Values)
             {
                 buffer.Dispose();
             }

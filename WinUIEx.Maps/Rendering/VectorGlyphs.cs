@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -12,7 +13,7 @@ namespace WinUIEx.Maps.Rendering;
 internal sealed class AzureGlyphProvider : IVectorGlyphProvider
 {
     private const int MaximumGlyphRangeBytes = 2 * 1024 * 1024;
-    private const int MaximumCachedRanges = 512;
+    private const int MaximumPendingGlyphRanges = 32;
     private readonly object _sync = new();
     private readonly MapStyle _style;
     private readonly string _styleSlug;
@@ -41,34 +42,34 @@ internal sealed class AzureGlyphProvider : IVectorGlyphProvider
             }
             else
             {
-                if (_ranges.Count >= MaximumCachedRanges)
+                if (_ranges.Count >= MaximumPendingGlyphRanges)
                 {
                     throw new InvalidDataException(
-                        "The Azure vector glyph range cache exceeds its supported limit.");
+                        "Too many vector glyph ranges are pending.");
                 }
                 task = LoadRangeAsync(key, CancellationToken.None);
                 _ranges.Add(key, task);
+                _ = task.ContinueWith(
+                    _ => RemoveCompletedRange(key, task),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
             }
         }
 
-        try
+        return await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private void RemoveCompletedRange(
+        VectorGlyphRangeKey key,
+        Task<VectorGlyphRange> task)
+    {
+        lock (_sync)
         {
-            return await task.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            if (task.IsCompleted && !task.IsCompletedSuccessfully)
+            if (_ranges.TryGetValue(key, out Task<VectorGlyphRange>? current) &&
+                ReferenceEquals(current, task))
             {
-                lock (_sync)
-                {
-                    if (_ranges.TryGetValue(
-                            key,
-                            out Task<VectorGlyphRange>? current) &&
-                        ReferenceEquals(current, task))
-                    {
-                        _ranges.Remove(key);
-                    }
-                }
+                _ranges.Remove(key);
             }
         }
     }
@@ -143,7 +144,14 @@ internal readonly record struct VectorGlyphRangeKey(string FontStack, int RangeS
 internal sealed record VectorGlyphRange(
     string FontStack,
     int RangeStart,
-    IReadOnlyDictionary<int, VectorGlyph> Glyphs);
+    IReadOnlyDictionary<int, VectorGlyph> Glyphs)
+{
+    internal long ByteSize =>
+        Glyphs.Sum(pair =>
+            (long)pair.Value.Bitmap.Length +
+            (pair.Key.ToString(CultureInfo.InvariantCulture).Length * 2L) +
+            32);
+}
 
 internal sealed record VectorGlyph(
     int Id,
@@ -475,24 +483,32 @@ internal sealed class VectorGlyphAtlas
 {
     private const int MaximumGlyphTextures = 16_384;
     private const long MaximumGlyphTextureBytes = 64 * 1024 * 1024;
+    private const long MaximumGlyphRangeBytes = 32 * 1024 * 1024;
     private readonly object _sync = new();
     private readonly string _styleSlug;
     private readonly IVectorGlyphProvider? _provider;
-    private readonly Dictionary<VectorGlyphRangeKey, VectorGlyphRange> _ranges = [];
+    private readonly Dictionary<VectorGlyphRangeKey, GlyphRangeCacheEntry> _ranges = [];
     private readonly Dictionary<VectorGlyphKey, VectorSpriteTextureData> _textures = [];
+    private readonly long _maximumGlyphRangeBytes;
+    private long _rangeBytes;
     private long _textureBytes;
 
-    internal VectorGlyphAtlas(string styleSlug, IVectorGlyphProvider? provider)
+    internal VectorGlyphAtlas(
+        string styleSlug,
+        IVectorGlyphProvider? provider,
+        long maximumGlyphRangeBytes = MaximumGlyphRangeBytes)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumGlyphRangeBytes);
         _styleSlug = styleSlug;
         _provider = provider;
+        _maximumGlyphRangeBytes = maximumGlyphRangeBytes;
     }
 
     internal void AddRangeForTest(VectorGlyphRange range)
     {
         lock (_sync)
         {
-            _ranges[new VectorGlyphRangeKey(range.FontStack, range.RangeStart)] = range;
+            AddRange(range);
         }
     }
 
@@ -527,9 +543,7 @@ internal sealed class VectorGlyphAtlas
         {
             foreach (VectorGlyphRange range in loaded)
             {
-                _ranges.TryAdd(
-                    new VectorGlyphRangeKey(range.FontStack, range.RangeStart),
-                    range);
+                AddRange(range);
             }
         }
     }
@@ -544,14 +558,15 @@ internal sealed class VectorGlyphAtlas
             glyph = null!;
             VectorGlyphRangeKey rangeKey =
                 new(key.FontStack, key.CodePoint & ~255);
-            if (!_ranges.TryGetValue(rangeKey, out VectorGlyphRange? range) ||
-                !range.Glyphs.TryGetValue(
+            if (!_ranges.TryGetValue(rangeKey, out GlyphRangeCacheEntry? entry) ||
+                !entry.Range.Glyphs.TryGetValue(
                     key.CodePoint,
                     out VectorGlyph? foundGlyph))
             {
                 texture = null;
                 return false;
             }
+            entry.LastUsedTimestamp = Stopwatch.GetTimestamp();
             glyph = foundGlyph;
             if (_textures.TryGetValue(key, out texture))
             {
@@ -595,6 +610,56 @@ internal sealed class VectorGlyphAtlas
         }
     }
 
+    internal long CachedRangeBytesForTest
+    {
+        get
+        {
+            lock (_sync)
+                return _rangeBytes;
+        }
+    }
+
+    internal int CachedRangeCountForTest
+    {
+        get
+        {
+            lock (_sync)
+                return _ranges.Count;
+        }
+    }
+
+    private void AddRange(VectorGlyphRange range)
+    {
+        VectorGlyphRangeKey key = new(range.FontStack, range.RangeStart);
+        if (_ranges.Remove(key, out GlyphRangeCacheEntry? previous))
+        {
+            _rangeBytes -= previous.Range.ByteSize;
+        }
+        _ranges.Add(key, new GlyphRangeCacheEntry(range));
+        _rangeBytes += range.ByteSize;
+
+        int evictedCount = 0;
+        long evictedBytes = 0;
+        while (_rangeBytes > _maximumGlyphRangeBytes && _ranges.Count > 1)
+        {
+            KeyValuePair<VectorGlyphRangeKey, GlyphRangeCacheEntry> oldest =
+                _ranges.MinBy(pair => pair.Value.LastUsedTimestamp);
+            _ranges.Remove(oldest.Key);
+            long bytes = oldest.Value.Range.ByteSize;
+            _rangeBytes -= bytes;
+            evictedBytes += bytes;
+            evictedCount++;
+        }
+        if (evictedCount != 0)
+        {
+            MapControlEventSource.Log.VectorGlyphRangeCacheTrimmed(
+                evictedCount,
+                evictedBytes,
+                _ranges.Count,
+                _rangeBytes);
+        }
+    }
+
     internal static long CreateTextureId(
         string styleSlug,
         string fontStack,
@@ -606,6 +671,13 @@ internal sealed class VectorGlyphAtlas
         SHA256.HashData(identity, hash);
         return BinaryPrimitives.ReadInt64LittleEndian(hash) | long.MinValue;
     }
+}
+
+internal sealed class GlyphRangeCacheEntry(VectorGlyphRange range)
+{
+    internal VectorGlyphRange Range { get; } = range;
+
+    internal long LastUsedTimestamp { get; set; } = Stopwatch.GetTimestamp();
 }
 
 internal readonly record struct VectorGlyphKey(string FontStack, int CodePoint);

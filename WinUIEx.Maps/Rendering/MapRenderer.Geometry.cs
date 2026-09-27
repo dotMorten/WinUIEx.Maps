@@ -15,6 +15,10 @@ namespace WinUIEx.Maps.Rendering;
 internal sealed partial class MapRenderer
 {
     private const int GeometryVertexCapacity = 65_535;
+    private static readonly ArrayPool<MapScreenPoint> MapScreenPointPool =
+        ArrayPool<MapScreenPoint>.Create(
+            maxArrayLength: GeometryVertexCapacity,
+            maxArraysPerBucket: 2);
     private const double VectorGeometryCachePadding = 384;
     private const double VectorGeometryCachePanLimit = 320;
     private const double VectorBackgroundCachePadding = 640;
@@ -268,7 +272,7 @@ internal sealed partial class MapRenderer
 
     private unsafe void DrawGeometryBuffer(
         IntPtr context,
-        PooledGeometryBuffer buffer,
+        NativeGeometryBuffer buffer,
         Vector4 color,
         bool premultiplied = false,
         double offsetX = 0,
@@ -297,13 +301,14 @@ internal sealed partial class MapRenderer
             {
                 StreamGeometryTriangles(
                     context,
-                    chunk.Buffer.AsSpan(0, chunk.Count),
+                    chunk.Buffer[..chunk.Count],
                     vertices);
             }
         }
         finally
         {
             ArrayPool<GeometryVertex>.Shared.Return(vertices);
+            GC.KeepAlive(buffer);
         }
     }
 
@@ -350,7 +355,7 @@ internal sealed partial class MapRenderer
 
     private static unsafe GpuGeometryBuffer CreateGpuGeometryBuffer(
         IntPtr devicePointer,
-        PooledGeometryBuffer source,
+        NativeGeometryBuffer source,
         CancellationToken cancellationToken = default)
     {
         List<GpuGeometryChunk> chunks = [];
@@ -404,6 +409,7 @@ internal sealed partial class MapRenderer
         finally
         {
             ArrayPool<GeometryVertex>.Shared.Return(vertices);
+            GC.KeepAlive(source);
         }
     }
 
@@ -536,32 +542,44 @@ internal sealed partial class MapRenderer
     [StructLayout(LayoutKind.Sequential)]
     private readonly record struct GeometryVertex(Vector2 Position, Vector2 Coverage);
 
-    private sealed class PooledGeometryBuffer : IDisposable
+    internal sealed class NativeGeometryBuffer : IDisposable
     {
         private const int InitialVertexCapacity = 1023;
         private readonly List<GeometryBufferChunk> _chunks = [];
+        private bool _disposed;
+
+        internal static long AllocatedBytes;
+        internal static long ReleasedBytes;
 
         internal IReadOnlyList<GeometryBufferChunk> Chunks => _chunks;
 
         internal int Count { get; private set; }
 
+        internal long ByteSize => _chunks.Sum(chunk => chunk.ByteSize);
+
+        ~NativeGeometryBuffer() => Dispose();
+
         internal void Add(MapScreenPoint point)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             GeometryBufferChunk chunk = EnsureWritableChunk(1);
             chunk.Buffer[chunk.Count++] = point;
             Count++;
+            GC.KeepAlive(this);
         }
 
         internal MapScreenPoint[] ToArray()
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             MapScreenPoint[] result = new MapScreenPoint[Count];
             int offset = 0;
             foreach (GeometryBufferChunk chunk in _chunks)
             {
-                chunk.Buffer.AsSpan(0, chunk.Count).CopyTo(
+                chunk.Buffer[..chunk.Count].CopyTo(
                     result.AsSpan(offset, chunk.Count));
                 offset += chunk.Count;
             }
+            GC.KeepAlive(this);
             return result;
         }
 
@@ -569,21 +587,22 @@ internal sealed partial class MapRenderer
         {
             foreach (GeometryBufferChunk chunk in _chunks)
             {
-                ArrayPool<MapScreenPoint>.Shared.Return(chunk.Buffer);
+                chunk.Dispose();
             }
             _chunks.Clear();
             Count = 0;
+            _disposed = true;
+            GC.SuppressFinalize(this);
         }
 
         private GeometryBufferChunk EnsureWritableChunk(int requestedCount)
         {
             if (_chunks.Count == 0)
             {
-                GeometryBufferChunk initial = RentChunk(
+                GeometryBufferChunk initial = CreateChunk(
                     Math.Min(
                         GeometryVertexCapacity,
                         Math.Max(InitialVertexCapacity, requestedCount)));
-                _chunks.Add(initial);
                 return initial;
             }
 
@@ -602,46 +621,72 @@ internal sealed partial class MapRenderer
                         GeometryVertexCapacity,
                         capacity * 2);
                 }
-                GeometryBufferChunk grown = RentChunk(capacity);
-                current.Buffer.AsSpan(0, current.Count).CopyTo(grown.Buffer);
-                grown.Count = current.Count;
-                ArrayPool<MapScreenPoint>.Shared.Return(current.Buffer);
-                _chunks[^1] = grown;
-                return grown;
+                current.Grow(capacity);
+                return current;
             }
             if (current.Count < current.Capacity)
             {
                 return current;
             }
 
-            GeometryBufferChunk next = RentChunk(
+            GeometryBufferChunk next = CreateChunk(
                 Math.Min(
                     GeometryVertexCapacity,
                     Math.Max(InitialVertexCapacity, requestedCount)));
-            _chunks.Add(next);
             return next;
         }
 
-        private static GeometryBufferChunk RentChunk(int minimumCapacity)
+        private GeometryBufferChunk CreateChunk(int minimumCapacity)
         {
-            MapScreenPoint[] buffer =
-                ArrayPool<MapScreenPoint>.Shared.Rent(minimumCapacity);
-            int capacity = Math.Min(
-                GeometryVertexCapacity,
-                buffer.Length - (buffer.Length % 3));
-            return new GeometryBufferChunk(buffer, capacity);
+            GeometryBufferChunk chunk = new();
+            // Attach ownership before allocating, including on allocation failure.
+            _chunks.Add(chunk);
+            try
+            {
+                chunk.Grow(minimumCapacity);
+            }
+            catch
+            {
+                _chunks.RemoveAt(_chunks.Count - 1);
+                chunk.Dispose();
+                throw;
+            }
+            return chunk;
         }
     }
 
-    private sealed class GeometryBufferChunk(
-        MapScreenPoint[] buffer,
-        int capacity)
+    internal sealed unsafe class GeometryBufferChunk : IDisposable
     {
-        internal MapScreenPoint[] Buffer { get; } = buffer;
+        private MapScreenPoint* _buffer;
 
-        internal int Capacity { get; } = capacity;
+        internal Span<MapScreenPoint> Buffer => new(_buffer, Capacity);
+
+        internal int Capacity { get; private set; }
 
         internal int Count { get; set; }
+
+        internal long ByteSize => (long)Capacity * sizeof(MapScreenPoint);
+
+        internal void Grow(int capacity)
+        {
+            long bytes = checked((long)capacity * sizeof(MapScreenPoint));
+            void* allocation = NativeMemory.Realloc(_buffer, checked((nuint)bytes));
+            if (allocation is null)
+                throw new OutOfMemoryException();
+            Interlocked.Add(ref NativeGeometryBuffer.AllocatedBytes, bytes);
+            Interlocked.Add(ref NativeGeometryBuffer.ReleasedBytes, ByteSize);
+            _buffer = (MapScreenPoint*)allocation;
+            Capacity = capacity;
+        }
+
+        public void Dispose()
+        {
+            NativeMemory.Free(_buffer);
+            _buffer = null;
+            Interlocked.Add(ref NativeGeometryBuffer.ReleasedBytes, ByteSize);
+            Capacity = 0;
+            Count = 0;
+        }
     }
 
     private sealed class GpuGeometryBuffer(

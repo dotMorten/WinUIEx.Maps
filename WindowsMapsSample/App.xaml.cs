@@ -8,6 +8,7 @@ public partial class App : Application
 
     public App()
     {
+        // AppContext.SetSwitch("WinUIEx.Maps.DisableMultisampleAntialiasing", true);
         InitializeComponent();
         UnhandledException += (_, args) => Services.SampleEventSource.Log.UnhandledFailure(args.Exception);
     }

@@ -161,8 +161,21 @@ payload inspection is best in PerfView's Events view.
 | 85 | `IconRasterized` | Verbose/Icons | texture/version-correlated XAML capture dimensions and nontransparent pixel count; distinguishes an empty capture from GPU upload/draw failures without recording pixels |
 | 86 | `IconUploadPassTiming` | Verbose/Icons | queued and uploaded map-element versus vector-texture counts, render-lock wait, and total bounded upload-pass duration |
 | 88 | `VectorLineComposite` | Verbose/Tiles+VectorTiles | traffic road composite source count, physical width/height, sample count, final opacity, and retained native target bytes; no source identifiers or feature data |
+| 89 | `VectorGlyphRangeCacheTrimmed` | Info/Tiles+VectorTiles | aggregate decoded glyph-range LRU eviction count and byte totals; no font, range, or service data |
+| 90 | `GeometryScratchMemory` | Verbose/Frames | renderer/frame-correlated process-wide cumulative native geometry scratch allocation and release bytes |
 
 ### Frame-time investigations
+
+Geometry tessellation scratch uses explicitly owned native chunks, grown with
+`NativeMemory.Realloc` and freed on upload, completed draw, cancellation, or failure.
+This avoids large managed triangle arrays and their delayed GC reclamation. Short-lived
+line projection arrays still use the bounded managed pool. Event 90 counts requested
+native capacities: successful growth counts the new capacity as allocated and the old
+capacity as released, even if realloc grows in place. These are not OS commit counters.
+Counters cover all renderers and workers in the process; do not sum them across frames
+or renderers. At quiescence their difference is outstanding native scratch payload.
+Concurrent worker updates can straddle the two counter reads. Pair with events 63/83
+and OS allocation tracing to distinguish live preparation, GC commitment, and driver memory.
 
 Traffic roads share one reusable, surface-sized composite target across public traffic
 layers. Event 88 reports its retained bytes, not a new allocation per frame or per layer.

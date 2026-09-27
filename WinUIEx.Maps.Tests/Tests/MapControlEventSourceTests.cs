@@ -12,6 +12,25 @@ namespace WinUIEx.Maps.Tests;
 public sealed class MapControlEventSourceTests
 {
     [TestMethod]
+    public void GeometryScratchMemoryReportsWideCountersOnlyWithVerboseFrames()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.Frames);
+        MapControlEventSource.Log.GeometryScratchMemory(1, 2, 0x123456789L, 0x123450000L);
+        Assert.DoesNotContain(value => value.Id == 90, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.Device);
+        MapControlEventSource.Log.GeometryScratchMemory(1, 2, 0x123456789L, 0x123450000L);
+        Assert.DoesNotContain(value => value.Id == 90, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.Frames);
+        MapControlEventSource.Log.GeometryScratchMemory(1, 2, 0x123456789L, 0x123450000L);
+        CapturedEvent captured = listener.Single(90);
+        Assert.AreSequenceEqual(
+            ["rendererId", "frameId", "allocatedBytes", "releasedBytes"], captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>([1L, 2L, 0x123456789L, 0x123450000L], captured.Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
     public void LineCompositeReportsOnlyDimensionsOpacityAndResourceCounts()
     {
         using TestEventListener listener = new();
@@ -20,6 +39,25 @@ public sealed class MapControlEventSourceTests
         CapturedEvent captured = listener.Single(88);
         Assert.AreSequenceEqual(["sourceCount", "width", "height", "samples", "opacity", "retainedBytes"], captured.PayloadNames);
         Assert.AreSequenceEqual<object?>([2, 800, 600, 4, 0.5, 9600000L], captured.Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
+    public void GlyphRangeCacheTrimmingReportsOnlyAggregateByteCounts()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(
+            EventLevel.Informational,
+            MapControlEventSource.Keywords.Tiles |
+                MapControlEventSource.Keywords.VectorTiles);
+
+        MapControlEventSource.Log.VectorGlyphRangeCacheTrimmed(3, 2048, 5, 4096);
+
+        CapturedEvent captured = listener.Single(89);
+        Assert.AreSequenceEqual(
+            ["evictedCount", "evictedBytes", "remainingCount", "remainingBytes"],
+            captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>([3, 2048L, 5, 4096L], captured.Payload);
         Assert.DoesNotContain(value => value.Id == 0, listener.Events);
     }
 
@@ -617,7 +655,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 88),
+            Enumerable.Range(1, 90),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }

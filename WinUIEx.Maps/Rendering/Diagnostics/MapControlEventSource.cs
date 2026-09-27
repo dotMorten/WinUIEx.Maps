@@ -92,6 +92,35 @@ internal sealed class MapControlEventSource : EventSource
             WriteEvent(88, sourceCount, width, height, samples, opacity, retainedBytes);
     }
 
+    /// <summary>Reports aggregate decoded glyph-range cache trimming without font content.</summary>
+    [Event(89, Level = EventLevel.Informational, Keywords = Keywords.Tiles | Keywords.VectorTiles, Task = Tasks.VectorTiles)]
+    public void VectorGlyphRangeCacheTrimmed(
+        int evictedCount,
+        long evictedBytes,
+        int remainingCount,
+        long remainingBytes)
+    {
+        if (IsEnabled(EventLevel.Informational, Keywords.Tiles | Keywords.VectorTiles))
+            WriteEvent(89, evictedCount, evictedBytes, remainingCount, remainingBytes);
+    }
+
+    /// <summary>Reports process-wide native geometry scratch allocation and release totals.</summary>
+    [Event(90, Level = EventLevel.Verbose, Keywords = Keywords.Frames)]
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The fixed event payload contains only Int64 primitives.")]
+    public unsafe void GeometryScratchMemory(
+        long rendererId, long frameId, long allocatedBytes, long releasedBytes)
+    {
+        if (!IsEnabled(EventLevel.Verbose, Keywords.Frames))
+            return;
+        EventData* data = stackalloc EventData[4];
+        data[0] = new() { DataPointer = (IntPtr)(&rendererId), Size = sizeof(long) };
+        data[1] = new() { DataPointer = (IntPtr)(&frameId), Size = sizeof(long) };
+        data[2] = new() { DataPointer = (IntPtr)(&allocatedBytes), Size = sizeof(long) };
+        data[3] = new() { DataPointer = (IntPtr)(&releasedBytes), Size = sizeof(long) };
+        WriteEventCore(90, 4, data);
+    }
+
     /// <summary>
     /// Records creation of a map control instance.
     /// </summary>

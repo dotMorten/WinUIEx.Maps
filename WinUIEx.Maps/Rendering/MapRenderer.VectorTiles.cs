@@ -1204,7 +1204,7 @@ internal sealed partial class MapRenderer
         List<VectorSymbolPlacement> candidate)
     {
         VectorTilePoint[] linePoints = symbols[group[0]].LinePoints!;
-        MapScreenPoint[] path = ArrayPool<MapScreenPoint>.Shared.Rent(linePoints.Length);
+        MapScreenPoint[] path = MapScreenPointPool.Rent(linePoints.Length);
         double[]? distances = null;
         try
         {
@@ -1219,7 +1219,7 @@ internal sealed partial class MapRenderer
         }
         finally
         {
-            ArrayPool<MapScreenPoint>.Shared.Return(path);
+            MapScreenPointPool.Return(path);
             if (distances is not null)
                 ArrayPool<double>.Shared.Return(distances);
             candidate.Clear();

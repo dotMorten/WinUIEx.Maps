@@ -647,6 +647,11 @@ internal sealed partial class MapRenderer : DirectXRenderer
         }
         if (traceFrame)
         {
+            MapControlEventSource.Log.GeometryScratchMemory(
+                DiagnosticRendererId,
+                DiagnosticFrameId,
+                Interlocked.Read(ref NativeGeometryBuffer.AllocatedBytes),
+                Interlocked.Read(ref NativeGeometryBuffer.ReleasedBytes));
             long decodedBytes = 0, symbolBytes = 0, projectionBytes = 0;
             foreach (VectorTileCacheEntry tile in _vectorTiles.Values)
             {

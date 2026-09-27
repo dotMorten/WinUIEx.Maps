@@ -77,6 +77,55 @@ public sealed class VectorGlyphRangeDecoderTests
             VectorGlyphAtlas.CreateTextureId("road", "Roboto-Regular", 66));
     }
 
+    [TestMethod]
+    public void GlyphAtlasEvictsLeastRecentlyUsedDecodedRangesWithinByteBudget()
+    {
+        VectorGlyphAtlas atlas = new(
+            "road",
+            provider: null,
+            maximumGlyphRangeBytes: 2_600);
+        atlas.AddRangeForTest(CreateRange(0, 1_240));
+        atlas.AddRangeForTest(CreateRange(256, 1_240));
+
+        Assert.IsTrue(atlas.TryGetOrCreateTexture(
+            new VectorGlyphKey("Test", 1),
+            out _,
+            out _));
+
+        atlas.AddRangeForTest(CreateRange(512, 1_240));
+
+        Assert.AreEqual(2, atlas.CachedRangeCountForTest);
+        Assert.AreEqual(2_552L, atlas.CachedRangeBytesForTest);
+        Assert.IsTrue(atlas.TryGetOrCreateTexture(
+            new VectorGlyphKey("Test", 1),
+            out _,
+            out _));
+        Assert.IsFalse(atlas.TryGetOrCreateTexture(
+            new VectorGlyphKey("Test", 257),
+            out _,
+            out _));
+        Assert.IsTrue(atlas.TryGetOrCreateTexture(
+            new VectorGlyphKey("Test", 513),
+            out _,
+            out _));
+    }
+
+    private static VectorGlyphRange CreateRange(int rangeStart, int bitmapLength) =>
+        new(
+            "Test",
+            rangeStart,
+            new Dictionary<int, VectorGlyph>
+            {
+                [rangeStart + 1] = new(
+                    rangeStart + 1,
+                    new byte[bitmapLength],
+                    25,
+                    34,
+                    0,
+                    34,
+                    25),
+            });
+
     private static byte[] FontStack(
         string name,
         string range,

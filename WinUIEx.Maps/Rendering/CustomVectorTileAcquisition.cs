@@ -385,7 +385,7 @@ internal sealed class CustomVectorStyleProvider
 internal sealed class CustomVectorGlyphProvider : IVectorGlyphProvider
 {
     private const int MaximumGlyphRangeBytes = 2 * 1024 * 1024;
-    private const int MaximumCachedRanges = 512;
+    private const int MaximumPendingGlyphRanges = 32;
     private readonly object _sync = new();
     private readonly string _glyphTemplate;
     private readonly CustomRequestHeaders _requestHeaders;
@@ -410,34 +410,34 @@ internal sealed class CustomVectorGlyphProvider : IVectorGlyphProvider
         {
             if (!_ranges.TryGetValue(key, out task!))
             {
-                if (_ranges.Count >= MaximumCachedRanges)
+                if (_ranges.Count >= MaximumPendingGlyphRanges)
                 {
                     throw new InvalidDataException(
-                        "The vector glyph range cache exceeds its supported limit.");
+                        "Too many vector glyph ranges are pending.");
                 }
                 task = LoadRangeAsync(key, CancellationToken.None);
                 _ranges.Add(key, task);
+                _ = task.ContinueWith(
+                    _ => RemoveCompletedRange(key, task),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
             }
         }
 
-        try
+        return await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private void RemoveCompletedRange(
+        VectorGlyphRangeKey key,
+        Task<VectorGlyphRange> task)
+    {
+        lock (_sync)
         {
-            return await task.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            if (task.IsCompleted && !task.IsCompletedSuccessfully)
+            if (_ranges.TryGetValue(key, out Task<VectorGlyphRange>? current) &&
+                ReferenceEquals(current, task))
             {
-                lock (_sync)
-                {
-                    if (_ranges.TryGetValue(
-                            key,
-                            out Task<VectorGlyphRange>? current) &&
-                        ReferenceEquals(current, task))
-                    {
-                        _ranges.Remove(key);
-                    }
-                }
+                _ranges.Remove(key);
             }
         }
     }

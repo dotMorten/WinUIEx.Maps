@@ -65,7 +65,7 @@ internal sealed partial class MapRenderer
                 DeferVectorGeometryRebuild(layer, state, fallbackMask);
             if (versionsMatch || deferredRebuild)
             {
-                Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer>
+                Dictionary<VectorPolygonBatchKey, NativeGeometryBuffer>
                     pendingBatches = [];
                 List<VectorPolygonBatchKey> pendingOrder = [];
                 try
@@ -128,7 +128,7 @@ internal sealed partial class MapRenderer
                 }
                 finally
                 {
-                    foreach (PooledGeometryBuffer buffer in pendingBatches.Values)
+                    foreach (NativeGeometryBuffer buffer in pendingBatches.Values)
                     {
                         buffer.Dispose();
                     }
@@ -138,7 +138,7 @@ internal sealed partial class MapRenderer
 
         _vectorPolygonFrameCache?.Dispose();
         _vectorPolygonFrameCache = null;
-        Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches = [];
+        Dictionary<VectorPolygonBatchKey, NativeGeometryBuffer> batches = [];
         Dictionary<VectorPolygonBatchKey, List<TileVertex>> patternBatches = [];
         List<VectorPolygonBatchKey> batchOrder = [];
         try
@@ -201,7 +201,7 @@ internal sealed partial class MapRenderer
                 }
                 else
                 {
-                    PooledGeometryBuffer buffer = batches[key];
+                    NativeGeometryBuffer buffer = batches[key];
                     DrawGeometryBuffer(
                         context,
                         buffer,
@@ -256,7 +256,7 @@ internal sealed partial class MapRenderer
         }
         finally
         {
-            foreach (PooledGeometryBuffer buffer in batches.Values)
+            foreach (NativeGeometryBuffer buffer in batches.Values)
             {
                 buffer.Dispose();
             }
@@ -267,7 +267,7 @@ internal sealed partial class MapRenderer
         LayerRenderSnapshot layer,
         RasterLayerState state,
         IReadOnlySet<VectorTileInstanceKey> includedTiles,
-        Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        Dictionary<VectorPolygonBatchKey, NativeGeometryBuffer> batches,
         List<VectorPolygonBatchKey> batchOrder,
         ref VectorPolygonRenderResult result,
         out int pendingTileCount)
@@ -318,7 +318,7 @@ internal sealed partial class MapRenderer
         double viewportWidth,
         double viewportHeight,
         double viewportPadding,
-        Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        Dictionary<VectorPolygonBatchKey, NativeGeometryBuffer> batches,
         List<VectorPolygonBatchKey> batchOrder,
         ref VectorPolygonRenderResult result)
     {
@@ -345,7 +345,7 @@ internal sealed partial class MapRenderer
                 background.StyleLayerOrder,
                 VectorPolygonBatchKind.Fill,
                 color);
-            PooledGeometryBuffer buffer = GetOrCreatePolygonBuffer(
+            NativeGeometryBuffer buffer = GetOrCreatePolygonBuffer(
                 key,
                 batches,
                 batchOrder);
@@ -368,7 +368,7 @@ internal sealed partial class MapRenderer
         IntPtr context,
         LayerRenderSnapshot layer,
         VectorPolygonFrameCache cached,
-        IReadOnlyDictionary<VectorPolygonBatchKey, PooledGeometryBuffer> pending,
+        IReadOnlyDictionary<VectorPolygonBatchKey, NativeGeometryBuffer> pending,
         IReadOnlyList<VectorPolygonBatchKey> pendingOrder,
         MapViewportProjectiveTransform panTransform,
         ref VectorPolygonRenderResult pendingResult,
@@ -400,7 +400,7 @@ internal sealed partial class MapRenderer
             {
                 VectorPolygonBatchKey key = pendingOrder[pendingIndex++];
                 activeFade |= DrawReliefBefore(context, layer, key.StyleLayerOrder, ref hasDrawnRelief);
-                PooledGeometryBuffer buffer = pending[key];
+                NativeGeometryBuffer buffer = pending[key];
                 DrawGeometryBuffer(
                     context,
                     buffer,
@@ -414,7 +414,7 @@ internal sealed partial class MapRenderer
     private static VectorPolygonCachedBatch[] CreateVectorPolygonCachedBatches(
         IntPtr devicePointer,
         IReadOnlyList<VectorPolygonBatchKey> batchOrder,
-        IReadOnlyDictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        IReadOnlyDictionary<VectorPolygonBatchKey, NativeGeometryBuffer> batches,
         CancellationToken cancellationToken = default)
     {
         List<VectorPolygonCachedBatch> cached = [];
@@ -475,7 +475,7 @@ internal sealed partial class MapRenderer
     private bool CollectVectorPolygonScene(
         LayerRenderSnapshot layer,
         MapScene scene,
-        Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        Dictionary<VectorPolygonBatchKey, NativeGeometryBuffer> batches,
         Dictionary<VectorPolygonBatchKey, List<TileVertex>> patternBatches,
         List<VectorPolygonBatchKey> batchOrder,
         ref VectorPolygonRenderResult result,
@@ -506,7 +506,7 @@ internal sealed partial class MapRenderer
         LayerRenderSnapshot layer,
         IReadOnlySet<int> tileZooms,
         MapScene? activeScene,
-        Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        Dictionary<VectorPolygonBatchKey, NativeGeometryBuffer> batches,
         Dictionary<VectorPolygonBatchKey, List<TileVertex>> patternBatches,
         List<VectorPolygonBatchKey> batchOrder,
         ref VectorPolygonRenderResult result)
@@ -593,7 +593,7 @@ internal sealed partial class MapRenderer
         LayerRenderSnapshot layer,
         VisibleTile visibleTile,
         VectorTileCacheEntry tile,
-        Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        Dictionary<VectorPolygonBatchKey, NativeGeometryBuffer> batches,
         Dictionary<VectorPolygonBatchKey, List<TileVertex>> patternBatches,
         List<VectorPolygonBatchKey> batchOrder,
         ref VectorPolygonRenderResult result,
@@ -652,7 +652,7 @@ internal sealed partial class MapRenderer
                     polygon.StyleLayerOrder,
                     VectorPolygonBatchKind.Fill,
                     polygon.Style.Color * (float)opacity);
-                PooledGeometryBuffer fillBuffer =
+                NativeGeometryBuffer fillBuffer =
                     GetOrCreatePolygonBuffer(
                         fillKey,
                         batches,
@@ -696,7 +696,7 @@ internal sealed partial class MapRenderer
         VectorTileStyledPolygon polygon,
         VisibleTile tile,
         double opacity,
-        Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        Dictionary<VectorPolygonBatchKey, NativeGeometryBuffer> batches,
         List<VectorPolygonBatchKey> batchOrder)
     {
         if (!polygon.Style.Antialias ||
@@ -709,7 +709,7 @@ internal sealed partial class MapRenderer
             polygon.StyleLayerOrder,
             VectorPolygonBatchKind.Outline,
             outlineColor * (float)opacity);
-        PooledGeometryBuffer buffer = GetOrCreatePolygonBuffer(
+        NativeGeometryBuffer buffer = GetOrCreatePolygonBuffer(
             key,
             batches,
             batchOrder);
@@ -741,7 +741,7 @@ internal sealed partial class MapRenderer
         double heading,
         double pitch)
     {
-        using PooledGeometryBuffer triangles = new();
+        using NativeGeometryBuffer triangles = new();
         AppendVectorPolygonOutlineTriangles(
             rings,
             tile,
@@ -774,7 +774,7 @@ internal sealed partial class MapRenderer
         double translateX,
         double translateY,
         VectorTranslateAnchor translateAnchor,
-        PooledGeometryBuffer buffer)
+        NativeGeometryBuffer buffer)
     {
         int triangleCount = 0;
         foreach (VectorTileRing ring in rings)
@@ -782,7 +782,7 @@ internal sealed partial class MapRenderer
             if (ring.Points.Length < 3)
                 continue;
             MapScreenPoint[] projected =
-                ArrayPool<MapScreenPoint>.Shared.Rent(ring.Points.Length + 2);
+                MapScreenPointPool.Rent(ring.Points.Length + 2);
             try
             {
                 int count = 0;
@@ -837,7 +837,7 @@ internal sealed partial class MapRenderer
             }
             finally
             {
-                ArrayPool<MapScreenPoint>.Shared.Return(projected);
+                MapScreenPointPool.Return(projected);
             }
         }
         return triangleCount;
@@ -904,14 +904,14 @@ internal sealed partial class MapRenderer
             .ToArray();
     }
 
-    private static PooledGeometryBuffer GetOrCreatePolygonBuffer(
+    private static NativeGeometryBuffer GetOrCreatePolygonBuffer(
         VectorPolygonBatchKey key,
-        Dictionary<VectorPolygonBatchKey, PooledGeometryBuffer> batches,
+        Dictionary<VectorPolygonBatchKey, NativeGeometryBuffer> batches,
         List<VectorPolygonBatchKey> batchOrder)
     {
-        if (!batches.TryGetValue(key, out PooledGeometryBuffer? buffer))
+        if (!batches.TryGetValue(key, out NativeGeometryBuffer? buffer))
         {
-            buffer = new PooledGeometryBuffer();
+            buffer = new NativeGeometryBuffer();
             batches.Add(key, buffer);
             batchOrder.Add(key);
         }
@@ -947,7 +947,7 @@ internal sealed partial class MapRenderer
         {
             return [];
         }
-        using PooledGeometryBuffer projected = new();
+        using NativeGeometryBuffer projected = new();
         AppendProjectedVectorPolygonTriangles(
             triangles,
             tile,
@@ -974,7 +974,7 @@ internal sealed partial class MapRenderer
         double translateX,
         double translateY,
         VectorTranslateAnchor translateAnchor,
-        PooledGeometryBuffer visible)
+        NativeGeometryBuffer visible)
     {
         int initialCount = visible.Count;
         Span<VectorTilePoint> clippedA = stackalloc VectorTilePoint[12];
@@ -1023,7 +1023,7 @@ internal sealed partial class MapRenderer
         double translateX,
         double translateY,
         VectorTranslateAnchor translateAnchor,
-        PooledGeometryBuffer visible)
+        NativeGeometryBuffer visible)
     {
         MapScreenPoint first = ProjectVectorPoint(
             firstSource,
