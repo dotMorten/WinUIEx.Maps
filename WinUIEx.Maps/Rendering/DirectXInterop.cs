@@ -771,6 +771,27 @@ internal static class DirectXInterop
         method(context, 1, targets, IntPtr.Zero);
     }
 
+    internal static unsafe void SetDepthRenderTarget(IntPtr context, IntPtr target, IntPtr depth)
+    {
+        IntPtr* vtable = *(IntPtr**)context;
+        var method = (delegate* unmanaged[Stdcall]<IntPtr, uint, IntPtr*, IntPtr, void>)vtable[33];
+        method(context, 1, &target, depth);
+    }
+
+    internal static unsafe void SetDepthState(IntPtr context, IntPtr state)
+    {
+        IntPtr* vtable = *(IntPtr**)context;
+        var method = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, uint, void>)vtable[36];
+        method(context, state, 0);
+    }
+
+    internal static unsafe void ClearDepth(IntPtr context, IntPtr depth)
+    {
+        IntPtr* vtable = *(IntPtr**)context;
+        var method = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, uint, float, byte, void>)vtable[53];
+        method(context, depth, 1, 1, 0);
+    }
+
     /// <summary>
     /// Unbinds all output-merger render targets before resize or teardown.
     /// </summary>

@@ -205,9 +205,9 @@ internal sealed class CustomRasterTileAcquisitionSession : RasterTileAcquisition
     {
         double offset = Math.Log2(256d / tileSize);
         const int MaximumSourceZoomOffset = 3;
-        return Math.Min(
+        return Math.Max(0, Math.Min(
             (int)Math.Floor(cameraZoom + offset),
-            (int)Math.Floor(cameraZoom + MaximumSourceZoomOffset));
+            (int)Math.Floor(cameraZoom + MaximumSourceZoomOffset)));
     }
 
     /// <summary>

@@ -146,7 +146,7 @@ internal sealed partial class MapRenderer
         {
             return false;
         }
-        if (rasterStyle is null || rasterStyle.Order >= nextOrder)
+        if (rasterStyle is null || rasterStyle.Order >= nextOrder || !IsVectorOrderVisible(rasterStyle.Order))
             return false;
         hasDrawn = true;
         double opacity = rasterStyle.GetOpacity(assets.GetStyleZoom(_displayZoom));

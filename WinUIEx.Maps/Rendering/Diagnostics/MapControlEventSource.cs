@@ -170,6 +170,29 @@ internal sealed class MapControlEventSource : EventSource
             WriteEvent(93, rendererId, frameId, skippedSpans);
     }
 
+    [Event(94, Level = EventLevel.Verbose, Keywords = Keywords.VectorTiles | Keywords.Device)]
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The fixed event payload contains only Int32 and Int64 primitives.")]
+    public unsafe void VectorExtrusionRenderBatch(int triangles, int draws, int evaluationFailures, long meshBytes, long targetBytes)
+    {
+        if (!IsEnabled(EventLevel.Verbose, Keywords.VectorTiles | Keywords.Device))
+            return;
+        EventData* data = stackalloc EventData[5];
+        data[0] = new() { DataPointer = (IntPtr)(&triangles), Size = sizeof(int) };
+        data[1] = new() { DataPointer = (IntPtr)(&draws), Size = sizeof(int) };
+        data[2] = new() { DataPointer = (IntPtr)(&evaluationFailures), Size = sizeof(int) };
+        data[3] = new() { DataPointer = (IntPtr)(&meshBytes), Size = sizeof(long) };
+        data[4] = new() { DataPointer = (IntPtr)(&targetBytes), Size = sizeof(long) };
+        WriteEventCore(94, 5, data);
+    }
+
+    [Event(95, Level = EventLevel.Error, Keywords = Keywords.VectorTiles | Keywords.Errors)]
+    public void VectorExtrusionPreparationFailed(string exceptionType)
+    {
+        if (IsEnabled(EventLevel.Error, Keywords.VectorTiles | Keywords.Errors))
+            WriteEvent(95, exceptionType);
+    }
+
     /// <summary>
     /// Records creation of a map control instance.
     /// </summary>
@@ -2163,5 +2186,15 @@ internal sealed class MapControlEventSource : EventSource
             data[5] = new() { DataPointer = (IntPtr)(&totalMilliseconds), Size = sizeof(double) };
             WriteEventCore(86, 6, data);
         }
+    }
+
+    /// <summary>
+    /// Reports bounded glyph acquisition waiting without font or range identities.
+    /// </summary>
+    [Event(96, Level = EventLevel.Verbose, Keywords = Keywords.VectorTiles, Task = Tasks.VectorTiles)]
+    public void VectorGlyphRangeBackpressure(int pendingRangeCount, int waitingRequestCount)
+    {
+        if (IsEnabled(EventLevel.Verbose, Keywords.VectorTiles))
+            WriteEvent(96, pendingRangeCount, waitingRequestCount);
     }
 }

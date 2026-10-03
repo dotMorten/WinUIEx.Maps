@@ -353,6 +353,8 @@ internal sealed partial class MapRenderer
                             vectorTile.Features,
                             vectorTile.StyleAssets,
                             vectorTile.Style));
+                    if (state.VectorStyleAssets?.HasExtrusions != true && vectorTile.StyleAssets.HasExtrusions)
+                        _extrusionCoverageInvalidated = true;
                     state.VectorStyleAssets = vectorTile.StyleAssets;
                     OnVectorTilesChanged();
                     MapControlEventSource.Log.VectorTileCommitSummary(

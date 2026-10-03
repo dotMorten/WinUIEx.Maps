@@ -143,7 +143,7 @@ internal sealed class AzureVectorStyleProvider
             checked((int)decoded.Width),
             checked((int)decoded.Height),
             Stopwatch.GetElapsedTime(started).TotalMilliseconds);
-        VectorStyleCompatibility.Report((int)_style, styleJson.Memory);
+        VectorStyleCompatibility.Report((int)_style, styleJson.Memory, style);
         return assets;
     }
 
@@ -226,7 +226,7 @@ internal readonly record struct AzureVectorStyleAssetPaths(
 /// <summary>
 /// Combines parsed symbol layers with one premultiplied sprite atlas.
 /// </summary>
-internal sealed class VectorStyleAssets
+internal sealed partial class VectorStyleAssets
 {
     private readonly MapStyle _mapStyle;
     private readonly string _styleIdentity;
@@ -289,6 +289,7 @@ internal sealed class VectorStyleAssets
     internal VectorGlyphAtlas GlyphAtlas => _glyphAtlas;
 
     internal double GetStyleZoom(double displayZoom) => displayZoom + _displayZoomOffset;
+    internal bool HasTextLayers => _style.TextLayers.Length != 0;
 
     internal bool CanReuseSymbols(double previousZoom, double zoom)
     {
@@ -420,7 +421,8 @@ internal sealed class VectorStyleAssets
     internal VectorSymbolResolution ResolveSymbols(
         VectorTileFeatureCollection features,
         double zoom,
-        double textScaleFactor = 1)
+        double textScaleFactor = 1,
+        TextResolutionCache? textCache = null)
     {
         zoom = GetStyleZoom(zoom);
         if (_mapStyle == MapStyle.BlankAccessible)
@@ -428,7 +430,9 @@ internal sealed class VectorStyleAssets
             return new VectorSymbolResolution([], 0, 0);
         }
 
-        List<VectorTileSymbol> symbols = [];
+        List<VectorTileSymbol> symbols = new(textCache?.SymbolCapacity ?? 0);
+        if (textCache is not null)
+            textCache.GlyphVersion = _glyphAtlas.Version;
         VectorStyleResolutionCounts counts = Resolve(
             features,
             zoom,
@@ -450,8 +454,11 @@ internal sealed class VectorStyleAssets
             NormalizeTextScaleFactor(textScaleFactor),
             symbols,
             ref counts,
-            CancellationToken.None);
+            CancellationToken.None,
+            textCache);
         ApplyTextFit(symbols, ref counts);
+        if (textCache is not null)
+            textCache.SymbolCapacity = symbols.Count;
         return new VectorSymbolResolution(
             symbols.ToArray(),
             counts.EvaluationFailureCount,
@@ -481,14 +488,15 @@ internal sealed class VectorStyleAssets
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 VectorStyleEvaluationContext context = new(feature, zoom);
-                if (layer.EvaluateFilter(context) != VectorStyleFilterResult.Match ||
+                if (!layer.Placement.TryEvaluatePlacement(context, out VectorSymbolPlacementKind placement) ||
+                    layer.EvaluateFilter(context) != VectorStyleFilterResult.Match ||
                     layer.EvaluateAccessibilityText(
                         context,
                         out string name,
                         out double prominence) != VectorStyleTextResult.Resolved ||
                     !TryGetAccessibilityPosition(
                         feature,
-                        layer.Placement,
+                        placement,
                         out VectorTilePoint position))
                 {
                     continue;
@@ -526,14 +534,45 @@ internal sealed class VectorStyleAssets
                 }
             }
         }
-        else if (feature.Points.Length != 0)
+        else if (GetPointSymbolCount(feature) != 0)
         {
-            position = feature.Points[0];
+            position = GetPointSymbolAnchor(feature, 0);
             return true;
         }
 
         position = default;
         return false;
+    }
+
+    private static int GetPointSymbolCount(VectorTileFeature feature) =>
+        feature.Points.Length != 0 ? feature.Points.Length : feature.Lines.Length;
+
+    private static VectorTilePoint GetPointSymbolAnchor(VectorTileFeature feature, int index)
+    {
+        if (feature.Points.Length != 0)
+            return feature.Points[index];
+
+        VectorTilePoint[] points = feature.Lines[index].Points;
+        double length = 0;
+        for (int i = 1; i < points.Length; i++)
+            length += SegmentLength(points[i - 1], points[i]);
+        double remaining = length / 2;
+        for (int i = 1; i < points.Length; i++)
+        {
+            double segment = SegmentLength(points[i - 1], points[i]);
+            if (segment > 0 && remaining <= segment)
+            {
+                double fraction = remaining / segment;
+                return new VectorTilePoint(
+                    points[i - 1].X + (points[i].X - points[i - 1].X) * fraction,
+                    points[i - 1].Y + (points[i].Y - points[i - 1].Y) * fraction);
+            }
+            remaining -= segment;
+        }
+        return points[0];
+
+        static double SegmentLength(VectorTilePoint a, VectorTilePoint b) =>
+            Math.Sqrt((b.X - a.X) * (b.X - a.X) + (b.Y - a.Y) * (b.Y - a.Y));
     }
 
     private static MapAccessibilityFeatureKind ClassifyAccessibilityFeature(
@@ -780,6 +819,8 @@ internal sealed class VectorStyleAssets
         Dictionary<long, VectorSpriteTextureData> textures,
         CancellationToken cancellationToken)
     {
+        if (HasExtrusions)
+            PrepareExtrusionPatternTextures(features, zoom, textures, cancellationToken);
         foreach (VectorFillStyleLayer layer in _style.FillLayers)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1121,13 +1162,15 @@ internal sealed class VectorStyleAssets
             }
             foreach (VectorTileFeature feature in features.GetSourceLayer(layer.SourceLayer))
             {
-                if (layer.Placement == VectorSymbolPlacementKind.Line
+                VectorStyleEvaluationContext context = new(feature, zoom);
+                if (!layer.Placement.TryEvaluatePlacement(context, out VectorSymbolPlacementKind placement))
+                    continue;
+                if (placement == VectorSymbolPlacementKind.Line
                     ? feature.Lines.Length == 0
-                    : feature.Points.Length == 0)
+                    : GetPointSymbolCount(feature) == 0)
                 {
                     continue;
                 }
-                VectorStyleEvaluationContext context = new(feature, zoom);
                 if (layer.EvaluateFilter(context) != VectorStyleFilterResult.Match ||
                     layer.EvaluateText(context, out VectorTextStyle text) !=
                         VectorStyleTextResult.Resolved)
@@ -1152,7 +1195,8 @@ internal sealed class VectorStyleAssets
         double textScaleFactor,
         List<VectorTileSymbol> symbols,
         ref VectorStyleResolutionCounts counts,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TextResolutionCache? cache = null)
     {
         int nextLabelId = 0;
         foreach (VectorTextStyleLayer layer in _style.TextLayers)
@@ -1161,21 +1205,33 @@ internal sealed class VectorStyleAssets
             VectorStyleVisibilityResult visibility = layer.EvaluateVisibility(zoom);
             if (visibility != VectorStyleVisibilityResult.Visible)
             {
+                cache?.Remove(layer);
                 if (visibility == VectorStyleVisibilityResult.EvaluationFailure)
                 {
                     counts.EvaluationFailureCount++;
                 }
                 continue;
             }
+            long glyphVersion = _glyphAtlas.Version;
+            if (cache is not null && cache.TryAppend(layer, zoom, textScaleFactor, glyphVersion, symbols, ref counts, ref nextLabelId))
+                continue;
+            int firstSymbol = symbols.Count;
+            int firstLabel = nextLabelId;
+            VectorStyleResolutionCounts previousCounts = counts;
             foreach (VectorTileFeature feature in features.GetSourceLayer(layer.SourceLayer))
             {
-                if (layer.Placement == VectorSymbolPlacementKind.Line
+                VectorStyleEvaluationContext context = new(feature, zoom);
+                if (!layer.Placement.TryEvaluatePlacement(context, out VectorSymbolPlacementKind placement))
+                {
+                    counts.EvaluationFailureCount++;
+                    continue;
+                }
+                if (placement == VectorSymbolPlacementKind.Line
                     ? feature.Lines.Length == 0
-                    : feature.Points.Length == 0)
+                    : GetPointSymbolCount(feature) == 0)
                 {
                     continue;
                 }
-                VectorStyleEvaluationContext context = new(feature, zoom);
                 VectorStyleFilterResult filter = layer.EvaluateFilter(context);
                 if (filter != VectorStyleFilterResult.Match)
                 {
@@ -1192,7 +1248,7 @@ internal sealed class VectorStyleAssets
                     continue;
                 }
                 text = text with { Size = text.Size * textScaleFactor };
-                if (layer.Placement == VectorSymbolPlacementKind.Line)
+                if (placement == VectorSymbolPlacementKind.Line)
                 {
                     foreach (VectorTileLine line in feature.Lines)
                     {
@@ -1210,10 +1266,10 @@ internal sealed class VectorStyleAssets
                 else
                 {
                     for (int pointIndex = 0;
-                        pointIndex < feature.Points.Length;
+                        pointIndex < GetPointSymbolCount(feature);
                         pointIndex++)
                     {
-                        VectorTilePoint point = feature.Points[pointIndex];
+                        VectorTilePoint point = GetPointSymbolAnchor(feature, pointIndex);
                         AddTextSymbols(
                             layer.Order,
                             point,
@@ -1226,6 +1282,84 @@ internal sealed class VectorStyleAssets
                     }
                 }
             }
+            cache?.Store(layer, zoom, textScaleFactor, glyphVersion, symbols, firstSymbol,
+                firstLabel, nextLabelId - firstLabel, previousCounts, counts);
+        }
+    }
+
+    // Owned by one immutable tile, never shared with acquisition workers or other tiles.
+    internal sealed class TextResolutionCache
+    {
+        private readonly Dictionary<VectorTextStyleLayer, Entry> _layers = [];
+        internal long ByteSize { get; private set; }
+        internal int BuildCount { get; private set; }
+        internal int SymbolCapacity { get; set; }
+        internal long GlyphVersion { get; set; }
+
+        private sealed record Entry(double Zoom, double Scale, long GlyphVersion, VectorTileSymbol[] Symbols,
+            int FirstLabel, int LabelCount, int Failures, int MissingGlyphs, int Glyphs)
+        {
+            internal long Bytes => 128L + (long)Symbols.Length *
+                System.Runtime.CompilerServices.Unsafe.SizeOf<VectorTileSymbol>();
+        }
+
+        internal bool TryAppend(VectorTextStyleLayer layer, double zoom, double scale, long glyphVersion,
+            List<VectorTileSymbol> symbols, ref VectorStyleResolutionCounts counts, ref int nextLabel)
+        {
+            if (!_layers.TryGetValue(layer, out var entry) ||
+                (entry.MissingGlyphs != 0 && entry.GlyphVersion != glyphVersion))
+                return false;
+            bool resize = entry.Scale != scale || !layer.CanReuseZoom(entry.Zoom, zoom);
+            double ratio = 1, haloOffset = 0, haloBlur = 0;
+            if (resize)
+            {
+                if (!layer.TryGetUniformTextResize(
+                        entry.Zoom, zoom, out double previousSize, out double size, out double haloWidth, out double blur))
+                    return false;
+                ratio = size * scale / (previousSize * entry.Scale);
+                double glyphScale = size * scale / 24;
+                haloOffset = Math.Clamp(haloWidth / (8 * glyphScale), 0, 0.5);
+                haloBlur = Math.Clamp(blur / (8 * glyphScale), 0, 0.5);
+            }
+            int offset = nextLabel - entry.FirstLabel;
+            symbols.EnsureCapacity(symbols.Count + entry.Symbols.Length);
+            foreach (var symbol in entry.Symbols)
+                symbols.Add(resize ? symbol with
+                {
+                    LabelId = symbol.LabelId + offset,
+                    Width = symbol.Width * ratio,
+                    Height = symbol.Height * ratio,
+                    OffsetX = symbol.OffsetX * ratio,
+                    OffsetY = symbol.OffsetY * ratio,
+                    Paint = symbol.Paint with { HaloOffset = haloOffset, HaloBlur = haloBlur },
+                } : symbol with { LabelId = symbol.LabelId + offset });
+            counts.ResolvedGlyphCount += entry.Glyphs;
+            counts.EvaluationFailureCount += entry.Failures;
+            counts.UnavailableGlyphCount += entry.MissingGlyphs;
+            nextLabel += entry.LabelCount;
+            return true;
+        }
+
+        internal void Remove(VectorTextStyleLayer layer)
+        {
+            if (_layers.Remove(layer, out var entry))
+                ByteSize -= entry.Bytes;
+        }
+
+        internal void Store(VectorTextStyleLayer layer, double zoom, double scale, long glyphVersion,
+            List<VectorTileSymbol> symbols, int firstSymbol, int firstLabel, int labelCount,
+            VectorStyleResolutionCounts before, VectorStyleResolutionCounts after)
+        {
+            Remove(layer);
+            VectorTileSymbol[] saved = new VectorTileSymbol[symbols.Count - firstSymbol];
+            symbols.CopyTo(firstSymbol, saved, 0, saved.Length);
+            Entry entry = new(zoom, scale, glyphVersion, saved, firstLabel, labelCount,
+                after.EvaluationFailureCount - before.EvaluationFailureCount,
+                after.UnavailableGlyphCount - before.UnavailableGlyphCount,
+                after.ResolvedGlyphCount - before.ResolvedGlyphCount);
+            _layers.Add(layer, entry);
+            ByteSize += entry.Bytes;
+            BuildCount++;
         }
     }
 
@@ -1255,8 +1389,7 @@ internal sealed class VectorStyleAssets
         string[] lines = WrapText(
             text.Text.Replace("\r\n", "\n", StringComparison.Ordinal)
                 .Replace('\r', '\n'),
-            text,
-            scale);
+            text);
         List<(VectorGlyph Glyph, VectorSpriteTextureData Texture, double X)>[] shaped =
             new List<(VectorGlyph, VectorSpriteTextureData, double)>[lines.Length];
         double[] widths = new double[lines.Length];
@@ -1373,15 +1506,15 @@ internal sealed class VectorStyleAssets
 
     private string[] WrapText(
         string text,
-        VectorTextStyle style,
-        double scale)
+        VectorTextStyle style)
     {
         if (style.MaximumWidth <= 0)
         {
             return text.Split('\n');
         }
 
-        double maximumWidth = style.MaximumWidth * style.Size;
+        // Compare in glyph-em units so exact wrap boundaries do not move with text-size.
+        double maximumWidth = style.MaximumWidth * 24;
         List<string> lines = [];
         foreach (string paragraph in text.Split('\n'))
         {
@@ -1398,7 +1531,7 @@ internal sealed class VectorStyleAssets
             for (int index = 1; index < words.Length; index++)
             {
                 string candidate = $"{current} {words[index]}";
-                if (MeasureTextWidth(candidate, style, scale) <= maximumWidth)
+                if (MeasureTextWidth(candidate, style) <= maximumWidth)
                 {
                     current.Append(' ').Append(words[index]);
                 }
@@ -1416,8 +1549,7 @@ internal sealed class VectorStyleAssets
 
     private double MeasureTextWidth(
         string text,
-        VectorTextStyle style,
-        double scale)
+        VectorTextStyle style)
     {
         double width = 0;
         foreach (Rune rune in text.EnumerateRunes())
@@ -1430,8 +1562,7 @@ internal sealed class VectorStyleAssets
             {
                 continue;
             }
-            width += (glyph.Advance * scale) +
-                (style.LetterSpacing * style.Size);
+            width += glyph.Advance + (style.LetterSpacing * 24);
         }
         return width;
     }
@@ -1491,13 +1622,18 @@ internal sealed class VectorStyleAssets
             foreach (VectorTileFeature feature in candidates)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (layer.Placement == VectorSymbolPlacementKind.Line
+                VectorStyleEvaluationContext context = new(feature, zoom);
+                if (!layer.Placement.TryEvaluatePlacement(context, out VectorSymbolPlacementKind placement))
+                {
+                    counts.EvaluationFailureCount++;
+                    continue;
+                }
+                if (placement == VectorSymbolPlacementKind.Line
                     ? feature.Lines.Length == 0
-                    : feature.Points.Length == 0)
+                    : GetPointSymbolCount(feature) == 0)
                 {
                     continue;
                 }
-                VectorStyleEvaluationContext context = new(feature, zoom);
                 VectorStyleFilterResult filter = layer.EvaluateFilter(context);
                 if (filter != VectorStyleFilterResult.Match)
                 {
@@ -1549,10 +1685,10 @@ internal sealed class VectorStyleAssets
                 if (spriteResult != VectorSpriteLookupResult.Found ||
                     texture is null)
                 {
-                    counts.UnavailableSpriteCount += layer.Placement ==
+                    counts.UnavailableSpriteCount += placement ==
                         VectorSymbolPlacementKind.Line
                         ? feature.Lines.Length
-                        : feature.Points.Length;
+                        : GetPointSymbolCount(feature);
                     continue;
                 }
 
@@ -1580,7 +1716,7 @@ internal sealed class VectorStyleAssets
                     continue;
                 }
 
-                if (layer.Placement == VectorSymbolPlacementKind.Line)
+                if (placement == VectorSymbolPlacementKind.Line)
                 {
                     foreach (VectorTileLine line in feature.Lines)
                     {
@@ -1615,10 +1751,10 @@ internal sealed class VectorStyleAssets
                 else
                 {
                     for (int pointIndex = 0;
-                        pointIndex < feature.Points.Length;
+                        pointIndex < GetPointSymbolCount(feature);
                         pointIndex++)
                     {
-                        VectorTilePoint point = feature.Points[pointIndex];
+                        VectorTilePoint point = GetPointSymbolAnchor(feature, pointIndex);
                         symbols.Add(new VectorTileSymbol(
                             layer.Order,
                             point.X,
@@ -1659,7 +1795,7 @@ internal sealed class VectorStyleAssets
         ((long)(order & 0xFFFF) << 16) |
         (uint)(geometryIndex & 0xFFFF);
 
-    private struct VectorStyleResolutionCounts
+    internal struct VectorStyleResolutionCounts
     {
         internal int EvaluationFailureCount;
         internal int UnavailableSpriteCount;
@@ -1671,7 +1807,7 @@ internal sealed class VectorStyleAssets
 /// <summary>
 /// Parses supported Style Spec v8 line and symbol layers.
 /// </summary>
-internal sealed class VectorStyle
+internal sealed partial class VectorStyle
 {
     private const int MaximumStyleLayers = 4096;
     private const int MaximumSymbolLayers = 2048;
@@ -1686,7 +1822,8 @@ internal sealed class VectorStyle
         VectorLineStyleLayer[] lineLayers,
         VectorFillStyleLayer[] fillLayers,
         VectorBackgroundStyleLayer[] backgroundLayers,
-        int[] unsupportedLayerCounts)
+        int[] unsupportedLayerCounts,
+        VectorExtrusionStyleLayer[]? extrusionLayers = null)
     {
         IconLayers = layers;
         TextLayers = textLayers;
@@ -1694,6 +1831,7 @@ internal sealed class VectorStyle
         FillLayers = fillLayers;
         BackgroundLayers = backgroundLayers;
         _unsupportedLayerCounts = unsupportedLayerCounts;
+        ExtrusionLayers = extrusionLayers ?? [];
         List<double> stops = [];
         foreach (VectorIconStyleLayer layer in layers)
         {
@@ -1715,6 +1853,8 @@ internal sealed class VectorStyle
         {
             layer.CollectZoomStops(stops);
         }
+        foreach (var layer in ExtrusionLayers)
+            layer.CollectZoomStops(stops);
         _zoomStops =
         [
             .. stops
@@ -1743,7 +1883,7 @@ internal sealed class VectorStyle
     internal int LayerCount =>
         IconLayers.Length + TextLayers.Length + LineLayers.Length +
         FillLayers.Length + BackgroundLayers.Length + (Relief is null ? 0 : 1) +
-        (RoadDetails is null ? 0 : 1);
+        (RoadDetails is null ? 0 : 1) + ExtrusionLayers.Length;
 
     internal int UnsupportedLayerCount =>
         _unsupportedLayerCounts.Sum();
@@ -1792,6 +1932,7 @@ internal sealed class VectorStyle
         List<VectorTextStyleLayer> parsedText = [];
         List<VectorLineStyleLayer> parsedLines = [];
         List<VectorFillStyleLayer> parsedFills = [];
+        List<VectorExtrusionStyleLayer>? parsedExtrusions = null;
         List<VectorBackgroundStyleLayer> parsedBackgrounds = [];
         HashSet<string>? baseVectorSources = GetVectorSources(
             root,
@@ -1844,7 +1985,19 @@ internal sealed class VectorStyle
                 }
                 continue;
             }
-            if (string.Equals(layerType, "fill", StringComparison.Ordinal))
+            if (layerType == "fill-extrusion")
+            {
+                VectorStyleLayerParseResult result = TryParseExtrusionLayer(
+                    layer, baseVectorSources, layerCount - 1, out VectorExtrusionStyleLayer? extrusion);
+                if (result == VectorStyleLayerParseResult.InvalidDefinition)
+                    throw new InvalidDataException("The vector style contains an invalid extrusion layer.");
+                if (result != VectorStyleLayerParseResult.Parsed)
+                    unsupportedLayerCounts[(int)result]++;
+                else
+                    (parsedExtrusions ??= []).Add(extrusion!);
+                continue;
+            }
+            if (layerType == "fill")
             {
                 VectorStyleLayerParseResult result = TryParseFillLayer(
                     layer,
@@ -1967,10 +2120,12 @@ internal sealed class VectorStyle
             parsedLines.ToArray(),
             parsedFills.ToArray(),
             parsedBackgrounds.ToArray(),
-            unsupportedLayerCounts)
+            unsupportedLayerCounts,
+            parsedExtrusions?.ToArray())
         {
             Relief = relief,
             RoadDetails = roadDetails,
+            ExtrusionLight = parsedExtrusions is null ? null : ParseExtrusionLight(root),
             AzureBaseTileParameters = azureBaseSourceOnly ? GetAzureBaseTileParameters(root) : string.Empty,
         };
     }
@@ -2076,7 +2231,7 @@ internal sealed class VectorStyle
         }
         if (!TryParseSymbolPlacement(
                 layout,
-                out VectorSymbolPlacementKind placement))
+                out VectorStyleExpression placement))
         {
             return VectorStyleLayerParseResult.UnsupportedSymbolPlacement;
         }
@@ -2270,7 +2425,7 @@ internal sealed class VectorStyle
         }
         if (!TryParseSymbolPlacement(
                 layout,
-                out VectorSymbolPlacementKind placement))
+                out VectorStyleExpression placement))
         {
             return VectorStyleLayerParseResult.UnsupportedSymbolPlacement;
         }
@@ -2496,26 +2651,19 @@ internal sealed class VectorStyle
 
     private static bool TryParseSymbolPlacement(
         JsonElement layout,
-        out VectorSymbolPlacementKind placement)
+        out VectorStyleExpression placement)
     {
-        placement = VectorSymbolPlacementKind.Point;
+        placement = VectorStyleExpression.Literal(VectorStyleValue.FromString("point"));
         if (!layout.TryGetProperty(
                 "symbol-placement",
                 out JsonElement symbolPlacement))
         {
             return true;
         }
-        if (symbolPlacement.ValueKind != JsonValueKind.String)
-        {
+        if (symbolPlacement.ValueKind == JsonValueKind.String &&
+            symbolPlacement.GetString() is not ("point" or "line"))
             return false;
-        }
-        placement = symbolPlacement.GetString() switch
-        {
-            "point" => VectorSymbolPlacementKind.Point,
-            "line" => VectorSymbolPlacementKind.Line,
-            _ => (VectorSymbolPlacementKind)(-1),
-        };
-        return (int)placement >= 0;
+        return VectorStyleExpression.TryParseStyleValue(symbolPlacement, out placement);
     }
 
     private static VectorStyleLayerParseResult TryParseFillLayer(
@@ -3007,7 +3155,7 @@ internal sealed class VectorIconStyleLayer(
     double maximumZoom,
     VectorStyleExpression visibility,
     VectorStyleExpression filter,
-    VectorSymbolPlacementKind placement,
+    VectorStyleExpression placement,
     VectorStyleExpression symbolSpacing,
     VectorStyleExpression iconImage,
     VectorStyleExpression iconSize,
@@ -3027,7 +3175,7 @@ internal sealed class VectorIconStyleLayer(
     VectorStyleExpression iconColor)
 {
     private readonly VectorStyleExpression[] _zoomExpressions = VectorStyleExpression.GetZoomDependencies(
-        visibility, filter, symbolSpacing, iconImage, iconSize, iconOffset,
+        visibility, filter, placement, symbolSpacing, iconImage, iconSize, iconOffset,
         iconAnchor, iconRotate, iconRotationAlignment, iconTextFit,
         iconTextFitPadding, iconPadding, symbolAvoidEdges, symbolSortKey,
         iconAllowOverlap, iconIgnorePlacement, iconOptional, iconOpacity, iconColor);
@@ -3040,7 +3188,7 @@ internal sealed class VectorIconStyleLayer(
 
     internal string SourceLayer { get; } = sourceLayer;
 
-    internal VectorSymbolPlacementKind Placement { get; } = placement;
+    internal VectorStyleExpression Placement => placement;
 
     internal VectorStyleVisibilityResult EvaluateVisibility(double zoom)
     {
@@ -3151,9 +3299,10 @@ internal sealed class VectorIconStyleLayer(
             !iconRotationAlignment.TryEvaluate(
                 context,
                 out VectorStyleValue alignmentValue) ||
+            !Placement.TryEvaluatePlacement(context, out VectorSymbolPlacementKind resolvedPlacement) ||
             !TryGetViewportAlignment(
                 alignmentValue,
-                Placement,
+                resolvedPlacement,
                 out viewportAligned) ||
             !iconTextFit.TryEvaluate(context, out VectorStyleValue fitValue) ||
             fitValue.Kind != VectorStyleValueKind.String ||
@@ -3336,6 +3485,7 @@ internal sealed class VectorIconStyleLayer(
         stops.Add(maximumZoom);
         visibility.CollectZoomStops(stops);
         filter.CollectZoomStops(stops);
+        placement.CollectZoomStops(stops);
         symbolSpacing.CollectZoomStops(stops);
         iconImage.CollectZoomStops(stops);
         iconSize.CollectZoomStops(stops);
@@ -3880,7 +4030,7 @@ internal sealed class VectorTextStyleLayer(
     double maximumZoom,
     VectorStyleExpression visibility,
     VectorStyleExpression filter,
-    VectorSymbolPlacementKind placement,
+    VectorStyleExpression placement,
     VectorStyleExpression symbolSpacing,
     VectorStyleExpression textField,
     VectorStyleExpression textFont,
@@ -3910,12 +4060,41 @@ internal sealed class VectorTextStyleLayer(
     VectorStyleExpression textOptional)
 {
     private readonly VectorStyleExpression[] _zoomExpressions = VectorStyleExpression.GetZoomDependencies(
-        visibility, filter, symbolSpacing, textField, textFont, textSize,
+        visibility, filter, placement, symbolSpacing, textField, textFont, textSize,
         textMaxWidth, textLineHeight, textJustify, textPadding, textKeepUpright,
         textMaxAngle, symbolAvoidEdges, textOffset, textAnchor, textVariableAnchor,
         textRadialOffset, textLetterSpacing, textTransform, textRotationAlignment,
         textColor, textHaloColor, textHaloWidth, textHaloBlur, textOpacity,
         symbolSortKey, textAllowOverlap, textIgnorePlacement, textOptional);
+
+    private readonly VectorStyleExpression[] _shapeZoomExpressions = VectorStyleExpression.GetZoomDependencies(
+        visibility, filter, placement, symbolSpacing, textField, textFont,
+        textMaxWidth, textLineHeight, textJustify, textPadding, textKeepUpright,
+        textMaxAngle, symbolAvoidEdges, textOffset, textAnchor, textVariableAnchor,
+        textRadialOffset, textLetterSpacing, textTransform, textRotationAlignment,
+        textColor, textHaloColor, textHaloWidth, textHaloBlur, textOpacity,
+        symbolSortKey, textAllowOverlap, textIgnorePlacement, textOptional);
+
+    internal bool TryGetUniformTextResize(double previousZoom, double zoom,
+        out double previousSize, out double size, out double haloWidth, out double blur)
+    {
+        previousSize = size = haloWidth = blur = 0;
+        // Glyph layout is linear in text-size; em-based wrapping and anchoring
+        // are unchanged. Pixel-based spacing, padding, and halos are not scaled.
+        return !textSize.DependsOnFeature && !textHaloWidth.DependsOnFeature && !textHaloBlur.DependsOnFeature &&
+            VectorStyleExpression.CanReuseLayerZoom(previousZoom, zoom, minimumZoom, maximumZoom, _shapeZoomExpressions) &&
+            TryNumber(textSize, previousZoom, out previousSize) && previousSize is > 0 and <= 256 &&
+            TryNumber(textSize, zoom, out size) && size is > 0 and <= 256 &&
+            TryNumber(textHaloWidth, zoom, out haloWidth) && haloWidth is >= 0 and <= 32 &&
+            TryNumber(textHaloBlur, zoom, out blur) && blur is >= 0 and <= 32;
+
+        static bool TryNumber(VectorStyleExpression expression, double zoom, out double value)
+        {
+            value = 0;
+            return expression.TryEvaluate(new(null, zoom), out var result) &&
+                result.TryGetNumber(out value) && double.IsFinite(value);
+        }
+    }
 
     internal bool CanReuseZoom(double previousZoom, double zoom) =>
         VectorStyleExpression.CanReuseLayerZoom(
@@ -3925,7 +4104,7 @@ internal sealed class VectorTextStyleLayer(
 
     internal string SourceLayer { get; } = sourceLayer;
 
-    internal VectorSymbolPlacementKind Placement { get; } = placement;
+    internal VectorStyleExpression Placement => placement;
 
     internal VectorStyleVisibilityResult EvaluateVisibility(double zoom)
     {
@@ -4030,9 +4209,10 @@ internal sealed class VectorTextStyleLayer(
             !textRotationAlignment.TryEvaluate(
                 context,
                 out VectorStyleValue alignmentValue) ||
+            !Placement.TryEvaluatePlacement(context, out VectorSymbolPlacementKind resolvedPlacement) ||
             !TryGetViewportAlignment(
                 alignmentValue,
-                Placement,
+                resolvedPlacement,
                 out bool viewportAligned) ||
             !textColor.TryEvaluate(context, out VectorStyleValue colorValue) ||
             !TryParseColor(colorValue, out Vector4 color) ||
@@ -4180,6 +4360,7 @@ internal sealed class VectorTextStyleLayer(
         stops.Add(maximumZoom);
         visibility.CollectZoomStops(stops);
         filter.CollectZoomStops(stops);
+        placement.CollectZoomStops(stops);
         symbolSpacing.CollectZoomStops(stops);
         textField.CollectZoomStops(stops);
         textFont.CollectZoomStops(stops);
@@ -4348,7 +4529,8 @@ internal sealed class VectorTextStyleLayer(
 
     internal static bool TryParseColor(
         VectorStyleValue value,
-        out Vector4 color)
+        out Vector4 color,
+        bool ignoreAlpha = false)
     {
         color = default;
         if (value.Kind != VectorStyleValueKind.String ||
@@ -4356,52 +4538,64 @@ internal sealed class VectorTextStyleLayer(
         {
             return false;
         }
-        if (TryParseFunctionalColor(text, out color))
+        if (TryParseFunctionalColor(text, out color, ignoreAlpha))
         {
             return true;
         }
-        if (text.Length is not (7 or 9) ||
-            text[0] != '#' ||
-            !byte.TryParse(
-                text.AsSpan(1, 2),
-                NumberStyles.HexNumber,
+        if (ignoreAlpha && text.Length != 0 && text[0] != '#')
+        {
+            System.Drawing.Color named = System.Drawing.Color.FromName(text);
+            if (named.IsKnownColor && !named.IsSystemColor)
+            {
+                color = new(named.R / 255f, named.G / 255f, named.B / 255f, 1);
+                return true;
+            }
+        }
+        if (text.Length is not (4 or 5 or 7 or 9) || text[0] != '#')
+            return false;
+        int digits = text.Length <= 5 ? 1 : 2;
+        if (!byte.TryParse(
+                text.AsSpan(1, digits),
+                NumberStyles.AllowHexSpecifier,
                 CultureInfo.InvariantCulture,
                 out byte red) ||
             !byte.TryParse(
-                text.AsSpan(3, 2),
-                NumberStyles.HexNumber,
+                text.AsSpan(1 + digits, digits),
+                NumberStyles.AllowHexSpecifier,
                 CultureInfo.InvariantCulture,
                 out byte green) ||
             !byte.TryParse(
-                text.AsSpan(5, 2),
-                NumberStyles.HexNumber,
+                text.AsSpan(1 + 2 * digits, digits),
+                NumberStyles.AllowHexSpecifier,
                 CultureInfo.InvariantCulture,
                 out byte blue))
         {
             return false;
         }
-        byte alpha = byte.MaxValue;
-        if (text.Length == 9 &&
+        byte alpha = (byte)(digits == 1 ? 15 : 255);
+        if (text.Length == 1 + 4 * digits &&
             !byte.TryParse(
-                text.AsSpan(7, 2),
-                NumberStyles.HexNumber,
+                text.AsSpan(1 + 3 * digits, digits),
+                NumberStyles.AllowHexSpecifier,
                 CultureInfo.InvariantCulture,
                 out alpha))
         {
             return false;
         }
-        float normalizedAlpha = alpha / 255f;
+        float maximum = digits == 1 ? 15f : 255f;
+        float normalizedAlpha = ignoreAlpha ? 1 : alpha / maximum;
         color = new Vector4(
-            (red / 255f) * normalizedAlpha,
-            (green / 255f) * normalizedAlpha,
-            (blue / 255f) * normalizedAlpha,
+            (red / maximum) * normalizedAlpha,
+            (green / maximum) * normalizedAlpha,
+            (blue / maximum) * normalizedAlpha,
             normalizedAlpha);
         return true;
     }
 
     private static bool TryParseFunctionalColor(
         string text,
-        out Vector4 color)
+        out Vector4 color,
+        bool ignoreAlpha = false)
     {
         color = default;
         bool hasAlpha;
@@ -4498,7 +4692,7 @@ internal sealed class VectorTextStyleLayer(
             green = (green + offset) * 255;
             blue = (blue + offset) * 255;
         }
-        float normalizedAlpha = (float)alpha;
+        float normalizedAlpha = ignoreAlpha ? 1 : (float)alpha;
         color = new Vector4(
             (float)(red / 255) * normalizedAlpha,
             (float)(green / 255) * normalizedAlpha,
@@ -4623,6 +4817,13 @@ internal enum VectorStyleExpressionOperator
     Multiply,
     Number,
     Add,
+    NotEqual,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    InterpolateLinearOpaqueColor,
+    InterpolateExponentialOpaqueColor,
 }
 
 /// <summary>
@@ -4659,6 +4860,25 @@ internal sealed class VectorStyleExpression
         new(VectorStyleExpressionOperator.Literal, value, null, []);
 
     internal bool DependsOnZoom => _containsZoom;
+
+    internal bool DependsOnFeature =>
+        _operator is VectorStyleExpressionOperator.Get or VectorStyleExpressionOperator.Has or
+            VectorStyleExpressionOperator.GeometryType or VectorStyleExpressionOperator.TokenString ||
+        _arguments.Any(static argument => argument.DependsOnFeature);
+
+    internal VectorStyleExpression WithOpaqueColorInterpolation()
+    {
+        var operation = _operator switch
+        {
+            VectorStyleExpressionOperator.InterpolateLinear => VectorStyleExpressionOperator.InterpolateLinearOpaqueColor,
+            VectorStyleExpressionOperator.InterpolateExponential => VectorStyleExpressionOperator.InterpolateExponentialOpaqueColor,
+            _ => _operator,
+        };
+        if (_arguments.Length == 0)
+            return this;
+        return new(operation, _literal, _name,
+            _arguments.Select(static argument => argument.WithOpaqueColorInterpolation()).ToArray());
+    }
 
     internal bool IsNullLiteral =>
         _operator == VectorStyleExpressionOperator.Literal &&
@@ -4713,7 +4933,9 @@ internal sealed class VectorStyleExpression
             return true;
         }
         if (_operator is VectorStyleExpressionOperator.InterpolateLinear or
-                VectorStyleExpressionOperator.InterpolateExponential &&
+                VectorStyleExpressionOperator.InterpolateExponential or
+                VectorStyleExpressionOperator.InterpolateLinearOpaqueColor or
+                VectorStyleExpressionOperator.InterpolateExponentialOpaqueColor &&
             _arguments[0]._operator == VectorStyleExpressionOperator.Zoom)
         {
             if (!_arguments[1].TryGetLiteralNumber(out double firstStop))
@@ -4830,6 +5052,20 @@ internal sealed class VectorStyleExpression
         out VectorStyleValue value) =>
         TryEvaluate(context, variables: null, out value);
 
+    internal bool TryEvaluatePlacement(
+        VectorStyleEvaluationContext context,
+        out VectorSymbolPlacementKind placement)
+    {
+        placement = VectorSymbolPlacementKind.Point;
+        if (!TryEvaluate(context, out VectorStyleValue value) ||
+            value.Kind != VectorStyleValueKind.String ||
+            value.StringValue is not ("point" or "line"))
+            return false;
+        placement = value.StringValue == "line"
+            ? VectorSymbolPlacementKind.Line : VectorSymbolPlacementKind.Point;
+        return true;
+    }
+
     internal void CollectZoomStops(List<double> values)
     {
         if (!_containsZoom)
@@ -4854,6 +5090,8 @@ internal sealed class VectorStyleExpression
                 break;
             case VectorStyleExpressionOperator.InterpolateLinear:
             case VectorStyleExpressionOperator.InterpolateExponential:
+            case VectorStyleExpressionOperator.InterpolateLinearOpaqueColor:
+            case VectorStyleExpressionOperator.InterpolateExponentialOpaqueColor:
                 _arguments[0].CollectZoomStops(values);
                 if (_arguments[0]._containsZoom)
                 {
@@ -4868,6 +5106,11 @@ internal sealed class VectorStyleExpression
                 }
                 break;
             case VectorStyleExpressionOperator.Equal:
+            case VectorStyleExpressionOperator.NotEqual:
+            case VectorStyleExpressionOperator.LessThan:
+            case VectorStyleExpressionOperator.LessThanOrEqual:
+            case VectorStyleExpressionOperator.GreaterThan:
+            case VectorStyleExpressionOperator.GreaterThanOrEqual:
                 foreach (VectorStyleExpression argument in _arguments)
                 {
                     argument.CollectZoomStops(values);
@@ -5138,7 +5381,7 @@ internal sealed class VectorStyleExpression
             return true;
         }
 
-        if (operation is "==" or "!=")
+        if (operation is "==" or "!=" or "<" or "<=" or ">" or ">=")
         {
             if (items.Length != 3 ||
                 !TryCreateLegacyFilterAccessor(
@@ -5149,18 +5392,12 @@ internal sealed class VectorStyleExpression
             {
                 return false;
             }
-            VectorStyleExpression equal = new(
-                VectorStyleExpressionOperator.Equal,
+            TryGetOperator(operation, out VectorStyleExpressionOperator comparison);
+            expression = new VectorStyleExpression(
+                comparison,
                 default,
                 null,
                 [accessor, Literal(expected)]);
-            expression = operation == "!="
-                ? new VectorStyleExpression(
-                    VectorStyleExpressionOperator.Not,
-                    default,
-                    null,
-                    [equal])
-                : equal;
             return true;
         }
 
@@ -5477,8 +5714,12 @@ internal sealed class VectorStyleExpression
                 return false;
             }
         }
+        // Some hosted styles include a redundant unit base for linear interpolation.
         else if (interpolationKind != "linear" ||
-            interpolation.Length != 1)
+            (interpolation.Length == 2 &&
+                (interpolation[1].ValueKind != JsonValueKind.Number ||
+                 !interpolation[1].TryGetDouble(out double linearBase) ||
+                 linearBase != 1)))
         {
             return false;
         }
@@ -5737,6 +5978,11 @@ internal sealed class VectorStyleExpression
         expressionOperator = operation switch
         {
             "==" => VectorStyleExpressionOperator.Equal,
+            "!=" => VectorStyleExpressionOperator.NotEqual,
+            "<" => VectorStyleExpressionOperator.LessThan,
+            "<=" => VectorStyleExpressionOperator.LessThanOrEqual,
+            ">" => VectorStyleExpressionOperator.GreaterThan,
+            ">=" => VectorStyleExpressionOperator.GreaterThanOrEqual,
             "!" => VectorStyleExpressionOperator.Not,
             "all" => VectorStyleExpressionOperator.All,
             "any" => VectorStyleExpressionOperator.Any,
@@ -5752,7 +5998,7 @@ internal sealed class VectorStyleExpression
             "number" => VectorStyleExpressionOperator.Number,
             _ => default,
         };
-        return operation is "==" or "!" or "all" or "any" or "in" or
+        return operation is "==" or "!=" or "<" or "<=" or ">" or ">=" or "!" or "all" or "any" or "in" or
             "case" or "coalesce" or "concat" or "match" or "step" or
             "to-string" or "*" or "+" or "number";
     }
@@ -5762,7 +6008,9 @@ internal sealed class VectorStyleExpression
         int count) =>
         expressionOperator switch
         {
-            VectorStyleExpressionOperator.Equal => count == 2,
+            VectorStyleExpressionOperator.Equal or VectorStyleExpressionOperator.NotEqual or
+                VectorStyleExpressionOperator.LessThan or VectorStyleExpressionOperator.LessThanOrEqual or
+                VectorStyleExpressionOperator.GreaterThan or VectorStyleExpressionOperator.GreaterThanOrEqual => count == 2,
             VectorStyleExpressionOperator.Not => count == 1,
             VectorStyleExpressionOperator.All or VectorStyleExpressionOperator.Any =>
                 count >= 1,
@@ -5830,7 +6078,12 @@ internal sealed class VectorStyleExpression
                 value = VectorStyleValue.Null;
                 return false;
             case VectorStyleExpressionOperator.Equal:
-                return TryEvaluateEqual(context, variables, out value);
+            case VectorStyleExpressionOperator.NotEqual:
+            case VectorStyleExpressionOperator.LessThan:
+            case VectorStyleExpressionOperator.LessThanOrEqual:
+            case VectorStyleExpressionOperator.GreaterThan:
+            case VectorStyleExpressionOperator.GreaterThanOrEqual:
+                return TryEvaluateComparison(context, variables, out value);
             case VectorStyleExpressionOperator.Not:
                 return TryEvaluateNot(context, variables, out value);
             case VectorStyleExpressionOperator.All:
@@ -5852,6 +6105,8 @@ internal sealed class VectorStyleExpression
                 return TryEvaluateStep(context, variables, out value);
             case VectorStyleExpressionOperator.InterpolateLinear:
             case VectorStyleExpressionOperator.InterpolateExponential:
+            case VectorStyleExpressionOperator.InterpolateLinearOpaqueColor:
+            case VectorStyleExpressionOperator.InterpolateExponentialOpaqueColor:
                 return TryEvaluateInterpolate(context, variables, out value);
             case VectorStyleExpressionOperator.Let:
                 return TryEvaluateLet(context, variables, out value);
@@ -5868,7 +6123,7 @@ internal sealed class VectorStyleExpression
         }
     }
 
-    private bool TryEvaluateEqual(
+    private bool TryEvaluateComparison(
         VectorStyleEvaluationContext context,
         Dictionary<string, VectorStyleValue>? variables,
         out VectorStyleValue value)
@@ -5880,7 +6135,36 @@ internal sealed class VectorStyleExpression
             return false;
         }
 
-        value = VectorStyleValue.FromBoolean(left.EqualsValue(right));
+        if (_operator is VectorStyleExpressionOperator.Equal or VectorStyleExpressionOperator.NotEqual)
+        {
+            bool equal = left.EqualsValue(right);
+            value = VectorStyleValue.FromBoolean(
+                _operator == VectorStyleExpressionOperator.Equal ? equal : !equal);
+            return true;
+        }
+
+        int comparison;
+        if (left.Kind == VectorStyleValueKind.Number && right.Kind == VectorStyleValueKind.Number)
+        {
+            comparison = left.NumberValue.CompareTo(right.NumberValue);
+        }
+        else if (left.Kind == VectorStyleValueKind.String && right.Kind == VectorStyleValueKind.String)
+        {
+            comparison = string.CompareOrdinal(left.StringValue, right.StringValue);
+        }
+        else
+        {
+            value = default;
+            return false;
+        }
+        value = VectorStyleValue.FromBoolean(_operator switch
+        {
+            VectorStyleExpressionOperator.LessThan => comparison < 0,
+            VectorStyleExpressionOperator.LessThanOrEqual => comparison <= 0,
+            VectorStyleExpressionOperator.GreaterThan => comparison > 0,
+            VectorStyleExpressionOperator.GreaterThanOrEqual => comparison >= 0,
+            _ => false,
+        });
         return true;
     }
 
@@ -6319,8 +6603,9 @@ internal sealed class VectorStyleExpression
             if (input <= stop)
             {
                 double amount = (input - previousStop) / (stop - previousStop);
-                if (_operator ==
-                    VectorStyleExpressionOperator.InterpolateExponential &&
+                if (_operator is
+                    VectorStyleExpressionOperator.InterpolateExponential or
+                    VectorStyleExpressionOperator.InterpolateExponentialOpaqueColor &&
                     _literal.TryGetNumber(out double interpolationBase) &&
                     interpolationBase != 1)
                 {
@@ -6336,7 +6621,9 @@ internal sealed class VectorStyleExpression
                     previousOutput,
                     output,
                     amount,
-                    out value);
+                    out value,
+                    ignoreColorAlpha: _operator is VectorStyleExpressionOperator.InterpolateLinearOpaqueColor or
+                        VectorStyleExpressionOperator.InterpolateExponentialOpaqueColor);
             }
             previousStop = stop;
             previousOutput = output;
@@ -6485,7 +6772,8 @@ internal readonly record struct VectorStyleValue
         VectorStyleValue from,
         VectorStyleValue to,
         double amount,
-        out VectorStyleValue value)
+        out VectorStyleValue value,
+        bool ignoreColorAlpha = false)
     {
         amount = Math.Clamp(amount, 0, 1);
         if (from.TryGetNumber(out double fromNumber) &&
@@ -6496,8 +6784,8 @@ internal readonly record struct VectorStyleValue
         }
         if (from.Kind == VectorStyleValueKind.String &&
             to.Kind == VectorStyleValueKind.String &&
-            VectorTextStyleLayer.TryParseColor(from, out Vector4 fromColor) &&
-            VectorTextStyleLayer.TryParseColor(to, out Vector4 toColor))
+            VectorTextStyleLayer.TryParseColor(from, out Vector4 fromColor, ignoreColorAlpha) &&
+            VectorTextStyleLayer.TryParseColor(to, out Vector4 toColor, ignoreColorAlpha))
         {
             value = FromString(ToColorString(Vector4.Lerp(
                 fromColor,

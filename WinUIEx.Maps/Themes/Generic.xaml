@@ -3,7 +3,17 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:WinUIEx.Maps">
 
+    <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+            <SolidColorBrush x:Key="MapControlBackgroundBrush" Color="#F0F0F0"/>
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+            <SolidColorBrush x:Key="MapControlBackgroundBrush" Color="#202020"/>
+        </ResourceDictionary>
+    </ResourceDictionary.ThemeDictionaries>
+
     <Style TargetType="local:MapControl" >
+        <Setter Property="Background" Value="{ThemeResource MapControlBackgroundBrush}"/>
         <Setter Property="IsDoubleTapEnabled" Value="True"/>
         <Setter Property="IsTabStop" Value="True"/>
         <Setter

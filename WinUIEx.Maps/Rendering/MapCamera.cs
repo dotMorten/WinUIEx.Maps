@@ -76,7 +76,8 @@ internal static class MapCamera
         double viewportHeight,
         double heading = 0,
         double pitch = 0,
-        double coverageMargin = 0)
+        double coverageMargin = 0,
+        bool includeElevatedGeometry = false)
     {
         double normalizedZoom = NormalizeZoom(zoom);
         double normalizedLatitude = double.IsFinite(latitude)
@@ -103,6 +104,18 @@ internal static class MapCamera
             out double maximumX,
             out double maximumY,
             coverageMargin);
+        if (includeElevatedGeometry)
+        {
+            // At the supported pitch/FOV every view ray points toward the ground.
+            // Elevated intersections lie between that ground footprint and the camera's
+            // vertical projection, so this bounds visible buildings without a height cap.
+            double cameraY = GetPerspectiveDistance(viewportHeight) * Math.Sin(normalizedPitch * Math.PI / 180);
+            UnrotateViewportOffset(0, cameraY, normalizedHeading, out double cameraX, out double cameraMapY);
+            minimumX = Math.Min(minimumX, cameraX);
+            maximumX = Math.Max(maximumX, cameraX);
+            minimumY = Math.Min(minimumY, cameraMapY);
+            maximumY = Math.Max(maximumY, cameraMapY);
+        }
         double coverageLeft = centerX + minimumX;
         double coverageTop = centerY + minimumY;
         double coverageWidth = maximumX - minimumX;

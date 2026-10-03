@@ -13,66 +13,24 @@ namespace WinUIEx.Maps.Rendering;
 internal sealed class AzureGlyphProvider : IVectorGlyphProvider
 {
     private const int MaximumGlyphRangeBytes = 2 * 1024 * 1024;
-    private const int MaximumPendingGlyphRanges = 32;
-    private readonly object _sync = new();
     private readonly MapStyle _style;
     private readonly string _styleSlug;
     private readonly string _token;
-    private readonly Dictionary<VectorGlyphRangeKey, Task<VectorGlyphRange>> _ranges = [];
+    private readonly VectorGlyphRangeRequests _ranges;
 
     internal AzureGlyphProvider(MapStyle style, string token)
     {
         _style = style;
         _styleSlug = AzureTileAcquisitionSession.GetAzureStyleName(style);
         _token = token;
+        _ranges = new(LoadRangeAsync);
     }
 
-    internal async Task<VectorGlyphRange> GetRangeAsync(
+    internal Task<VectorGlyphRange> GetRangeAsync(
         string fontStack,
         int rangeStart,
         CancellationToken cancellationToken)
-    {
-        VectorGlyphRangeKey key = new(fontStack, rangeStart);
-        Task<VectorGlyphRange> task;
-        lock (_sync)
-        {
-            if (_ranges.TryGetValue(key, out task!))
-            {
-                task = _ranges[key];
-            }
-            else
-            {
-                if (_ranges.Count >= MaximumPendingGlyphRanges)
-                {
-                    throw new InvalidDataException(
-                        "Too many vector glyph ranges are pending.");
-                }
-                task = LoadRangeAsync(key, CancellationToken.None);
-                _ranges.Add(key, task);
-                _ = task.ContinueWith(
-                    _ => RemoveCompletedRange(key, task),
-                    CancellationToken.None,
-                    TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
-            }
-        }
-
-        return await task.WaitAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private void RemoveCompletedRange(
-        VectorGlyphRangeKey key,
-        Task<VectorGlyphRange> task)
-    {
-        lock (_sync)
-        {
-            if (_ranges.TryGetValue(key, out Task<VectorGlyphRange>? current) &&
-                ReferenceEquals(current, task))
-            {
-                _ranges.Remove(key);
-            }
-        }
-    }
+        => _ranges.GetAsync(new(fontStack, rangeStart), cancellationToken);
 
     Task<VectorGlyphRange> IVectorGlyphProvider.GetRangeAsync(
         string fontStack,
@@ -135,6 +93,72 @@ internal sealed class AzureGlyphProvider : IVectorGlyphProvider
                 encoded.Length,
                 System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds);
             return range;
+        }
+    }
+}
+
+// Deduplicates only active loads. Decoded ranges remain owned by the bounded atlas.
+internal sealed class VectorGlyphRangeRequests(
+    Func<VectorGlyphRangeKey, CancellationToken, Task<VectorGlyphRange>> load)
+{
+    private const int MaximumPendingRanges = 32;
+    private readonly object _sync = new();
+    private readonly Dictionary<VectorGlyphRangeKey, Task<VectorGlyphRange>> _pending = [];
+    private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _waitingCount;
+
+    internal async Task<VectorGlyphRange> GetAsync(VectorGlyphRangeKey key, CancellationToken cancellationToken)
+    {
+        Task<VectorGlyphRange> task;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Task changed;
+            int waitingCount;
+            lock (_sync)
+            {
+                if (_pending.TryGetValue(key, out task!))
+                    break;
+                if (_pending.Count < MaximumPendingRanges)
+                {
+                    // A canceled waiter must not cancel a load shared with another tile.
+                    task = load(key, CancellationToken.None);
+                    _pending.Add(key, task);
+                    _ = task.ContinueWith(
+                        _ => RemoveCompleted(key, task),
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                    break;
+                }
+                changed = _changed.Task;
+                waitingCount = ++_waitingCount;
+            }
+            MapControlEventSource.Log.VectorGlyphRangeBackpressure(MaximumPendingRanges, waitingCount);
+            try
+            {
+                await changed.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (_sync)
+                    _waitingCount--;
+            }
+        }
+        return await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private void RemoveCompleted(VectorGlyphRangeKey key, Task<VectorGlyphRange> task)
+    {
+        lock (_sync)
+        {
+            if (_pending.TryGetValue(key, out var current) && ReferenceEquals(current, task))
+            {
+                _pending.Remove(key);
+                var changed = _changed;
+                _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                changed.TrySetResult();
+            }
         }
     }
 }
@@ -492,6 +516,9 @@ internal sealed class VectorGlyphAtlas
     private readonly long _maximumGlyphRangeBytes;
     private long _rangeBytes;
     private long _textureBytes;
+    private long _version;
+
+    internal long Version => Interlocked.Read(ref _version);
 
     internal VectorGlyphAtlas(
         string styleSlug,
@@ -658,6 +685,7 @@ internal sealed class VectorGlyphAtlas
                 _ranges.Count,
                 _rangeBytes);
         }
+        Interlocked.Increment(ref _version);
     }
 
     internal static long CreateTextureId(

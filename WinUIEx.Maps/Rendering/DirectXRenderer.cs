@@ -14,6 +14,12 @@ using static WinUIEx.Maps.Rendering.DirectXInterop;
 
 namespace WinUIEx.Maps.Rendering;
 
+internal enum PresentationSurfaceMode
+{
+    Opaque,
+    PremultipliedAlpha,
+}
+
 /// <summary>
 /// Owns the WinUI swap-chain attachment, D3D11 device lifecycle, synchronization, and
 /// dedicated frame-rendering thread shared by concrete map renderers.
@@ -42,6 +48,7 @@ namespace WinUIEx.Maps.Rendering;
 /// </remarks>
 internal abstract class DirectXRenderer : IDisposable
 {
+    private static readonly float[] DefaultClearColor = [0.94f, 0.94f, 0.94f, 1];
     private static long _nextRendererId;
     private readonly long _rendererId = Interlocked.Increment(ref _nextRendererId);
     private long _frameId;
@@ -69,6 +76,8 @@ internal abstract class DirectXRenderer : IDisposable
     private bool _disposed;
     private bool _attachmentReconciliationQueued;
     private volatile bool _needsRender;
+    private PresentationSurfaceMode _presentationSurfaceMode;
+    private float[] _clearColor = DefaultClearColor;
     private D3D11_VIEWPORT _viewport;
     private RenderSurfaceSize _surfaceSize = new(1, 1, 1, 1);
     protected object RenderLock => _renderLock;
@@ -91,6 +100,40 @@ internal abstract class DirectXRenderer : IDisposable
     internal int RenderSampleCount { get; private set; } = 1;
     internal static bool IsPresentationAntialiasingEnabled =>
         !AppContext.TryGetSwitch("WinUIEx.Maps.DisableMultisampleAntialiasing", out bool disabled) || !disabled;
+
+    internal void SetPresentationSurface(
+        PresentationSurfaceMode mode,
+        float red,
+        float green,
+        float blue,
+        float alpha)
+    {
+        float[] clearColor = [red, green, blue, alpha];
+        lock (_renderLock)
+        {
+            bool modeChanged = _presentationSurfaceMode != mode;
+            _presentationSurfaceMode = mode;
+            _clearColor = clearColor;
+            if (!modeChanged || !_initialized || _swapChainPointer == IntPtr.Zero)
+            {
+                RequestRender();
+                return;
+            }
+
+            if (_panel is not null)
+            {
+                SetSwapChain(_panel, IntPtr.Zero);
+            }
+            UnsetRenderTarget(_contextPointer);
+            ReleasePointer(ref _renderTargetPointer);
+            ReleasePointer(ref _presentationMultisampleTargetPointer);
+            ReleasePointer(ref _swapChainPointer);
+            SetSwapChainMemoryPressure(0);
+            CreateSwapChain();
+            CreateSizeDependentResources();
+            RequestRender();
+        }
+    }
 
     protected void WaitForGpuCompletion()
     {
@@ -207,7 +250,7 @@ internal abstract class DirectXRenderer : IDisposable
             Clear(
                 _contextPointer,
                 _renderTargetPointer,
-                [0.94f, 0.94f, 0.94f, 1]);
+                _clearColor);
             SetRenderTarget(_contextPointer, _renderTargetPointer);
             SetViewport(_contextPointer, _viewport);
             _frameId++;
@@ -627,7 +670,9 @@ internal abstract class DirectXRenderer : IDisposable
                 BufferCount = 2,
                 Scaling = DXGI_SCALING.DXGI_SCALING_STRETCH,
                 SwapEffect = DXGI_SWAP_EFFECT.DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
-                AlphaMode = DXGI_ALPHA_MODE.DXGI_ALPHA_MODE_IGNORE,
+                AlphaMode = _presentationSurfaceMode == PresentationSurfaceMode.Opaque
+                    ? DXGI_ALPHA_MODE.DXGI_ALPHA_MODE_IGNORE
+                    : DXGI_ALPHA_MODE.DXGI_ALPHA_MODE_PREMULTIPLIED,
             };
 
             _swapChainPointer = CreateSwapChainForComposition(_devicePointer, &description);
@@ -805,7 +850,7 @@ internal abstract class DirectXRenderer : IDisposable
                 _needsRender = false;
                 _frameId++;
                 acquired = traceFrame ? Stopwatch.GetTimestamp() : 0;
-                Clear(_contextPointer, _renderTargetPointer, [0.94f, 0.94f, 0.94f, 1]);
+                Clear(_contextPointer, _renderTargetPointer, _clearColor);
                 SetRenderTarget(_contextPointer, _renderTargetPointer);
                 SetViewport(_contextPointer, _viewport);
                 RenderFrame();

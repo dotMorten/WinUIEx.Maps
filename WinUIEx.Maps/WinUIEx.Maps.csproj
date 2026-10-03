@@ -33,8 +33,13 @@
     <Authors>Morten Nielsen - https://xaml.dev</Authors>
     <Company>Morten Nielsen - https://xaml.dev</Company>
     <PackageIcon>logo.png</PackageIcon>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <Description>A WinUI 3 map control with Azure Maps vector and raster basemaps, custom tile layers, map elements, and using Direct3D rendering.</Description>
+    <PackageReleaseNotes>
+        - Added support for vector-tile `fill-extrusion` to support extruded 3D buildings.
+        - Improved vector style support to support more style properties.
+        - Performance and memory improvements.
+    </PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>

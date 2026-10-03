@@ -10,6 +10,7 @@ using WinUIEx.Maps.Rendering.Diagnostics;
 using WinUIEx.Maps.Automation.Peers;
 using WinUIEx.Maps.Localization;
 using System.Collections.Specialized;
+using System.Numerics;
 using Windows.Devices.Geolocation;
 using Windows.Foundation;
 
@@ -20,6 +21,12 @@ namespace WinUIEx.Maps;
 /// tile layers, and lightweight geographic elements.
 /// </summary>
 /// <remarks>
+/// <para>
+/// <see cref="Control.Background"/> supplies the canvas before tiles arrive and wherever map
+/// content is transparent. The default is a theme-aware opaque gray. An opaque
+/// <see cref="SolidColorBrush"/> is cleared directly by the renderer; a transparent or
+/// non-solid brush is composited beneath the map surface.
+/// </para>
 /// <para>
 /// The control creates its rendering and tile-acquisition resources when its template is
 /// applied. Loading resumes acquisition and rendering; unloading suspends network work while
@@ -150,6 +157,9 @@ public sealed partial class MapControl : Control
     private bool _areElementChangesQueued;
     private MapControlAutomationPeer? _automationPeer;
     private int _automationCameraUpdateQueued;
+    private SolidColorBrush? _solidBackground;
+    private long _solidBackgroundColorToken;
+    private Vector4? _opaqueVectorCanvas;
 
     internal int TrackedElementReferenceCount => _elementCounts.Values.Sum();
 
@@ -267,6 +277,7 @@ public sealed partial class MapControl : Control
         _renderer.DisplayedCameraChanged += OnRendererDisplayedCameraChanged;
         _renderer.AccessibilitySnapshotChanged +=
             OnRendererAccessibilitySnapshotChanged;
+        _renderer.OpaqueVectorCanvasChanged += OnOpaqueVectorCanvasChanged;
         _iconService = new MapIconService(_renderer, DispatcherQueue);
         _rasterTileManager = new RasterTileManager(_renderer);
         _rasterTileManager.AttributionChanged += OnAttributionChanged;
@@ -283,6 +294,7 @@ public sealed partial class MapControl : Control
         AddHandler(PointerCanceledEvent, new PointerEventHandler(OnTouchContactCanceled), true);
         AddHandler(PointerCaptureLostEvent, new PointerEventHandler(OnTouchContactCanceled), true);
         ActualThemeChanged += OnActualThemeChanged;
+        RegisterPropertyChangedCallback(BackgroundProperty, OnBackgroundChanged);
         AddHandler(
             PointerEnteredEvent,
             new PointerEventHandler(OnMapElementPointerEntered),
@@ -395,6 +407,7 @@ public sealed partial class MapControl : Control
         _panel.SizeChanged += OnPanelSizeChanged;
 
         UpdateCameraTarget(forceImmediate: true);
+        UpdatePresentationSurface();
         _renderer.Attach(panel);
         AttachIconXamlRoot();
         _renderer.SetMaximumTileZoom(MapCamera.MaximumTileZoom);
@@ -1382,6 +1395,66 @@ public sealed partial class MapControl : Control
     private void OnActualThemeChanged(FrameworkElement sender, object args)
     {
         _iconService.InvalidateTheme();
+        UpdatePresentationSurface();
+    }
+
+    private void OnBackgroundChanged(DependencyObject sender, DependencyProperty property) =>
+        UpdatePresentationSurface();
+
+    private void OnSolidBackgroundColorChanged(DependencyObject sender, DependencyProperty property) =>
+        UpdatePresentationSurface();
+
+    private void OnOpaqueVectorCanvasChanged(Vector4? canvas)
+    {
+        _opaqueVectorCanvas = canvas;
+        DispatcherQueue.TryEnqueue(UpdatePresentationSurface);
+    }
+
+    private void UpdatePresentationSurface()
+    {
+        if (_solidBackground is not null)
+        {
+            _solidBackground.UnregisterPropertyChangedCallback(
+                SolidColorBrush.ColorProperty,
+                _solidBackgroundColorToken);
+            _solidBackground = null;
+        }
+
+        if (Background is SolidColorBrush solid)
+        {
+            _solidBackground = solid;
+            _solidBackgroundColorToken = solid.RegisterPropertyChangedCallback(
+                SolidColorBrush.ColorProperty,
+                OnSolidBackgroundColorChanged);
+            if (solid.Color.A == byte.MaxValue)
+            {
+                _renderer.SetPresentationSurface(
+                    PresentationSurfaceMode.Opaque,
+                    solid.Color.R / 255f,
+                    solid.Color.G / 255f,
+                    solid.Color.B / 255f,
+                    1);
+                return;
+            }
+        }
+
+        if (_opaqueVectorCanvas is Vector4 canvas)
+        {
+            _renderer.SetPresentationSurface(
+                PresentationSurfaceMode.Opaque,
+                canvas.X,
+                canvas.Y,
+                canvas.Z,
+                1);
+            return;
+        }
+
+        _renderer.SetPresentationSurface(
+            PresentationSurfaceMode.PremultipliedAlpha,
+            0,
+            0,
+            0,
+            0);
     }
 
     private void EnsureUiThread()

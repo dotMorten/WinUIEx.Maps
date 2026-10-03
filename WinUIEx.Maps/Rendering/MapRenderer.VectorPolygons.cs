@@ -116,6 +116,8 @@ internal sealed partial class MapRenderer
                     {
                         foreach (VectorPolygonCachedBatch batch in cached.Batches)
                         {
+                            if (!IsVectorOrderVisible(batch.Key.StyleLayerOrder))
+                                continue;
                             activeFade |= DrawStyleRasterBefore(context, layer, batch.Key.StyleLayerOrder, ref hasDrawnRelief);
                             DrawGpuGeometryBuffer(
                                 context,
@@ -197,6 +199,8 @@ internal sealed partial class MapRenderer
             batchOrder.Sort(CompareVectorPolygonBatches);
             foreach (VectorPolygonBatchKey key in batchOrder)
             {
+                if (!IsVectorOrderVisible(key.StyleLayerOrder))
+                    continue;
                 activeFade |= DrawStyleRasterBefore(context, layer, key.StyleLayerOrder, ref hasDrawnRelief);
                 if (key.Kind == VectorPolygonBatchKind.Pattern)
                 {
@@ -447,6 +451,8 @@ internal sealed partial class MapRenderer
             {
                 VectorPolygonCachedBatch batch =
                     cached.Batches[cachedIndex++];
+                if (!IsVectorOrderVisible(batch.Key.StyleLayerOrder))
+                    continue;
                 activeFade |= DrawStyleRasterBefore(context, layer, batch.Key.StyleLayerOrder, ref hasDrawnRelief);
                 DrawGpuGeometryBuffer(
                     context,
@@ -458,6 +464,8 @@ internal sealed partial class MapRenderer
             else
             {
                 VectorPolygonBatchKey key = pendingOrder[pendingIndex++];
+                if (!IsVectorOrderVisible(key.StyleLayerOrder))
+                    continue;
                 activeFade |= DrawStyleRasterBefore(context, layer, key.StyleLayerOrder, ref hasDrawnRelief);
                 foreach (var draw in pending[key])
                     pendingResult.DrawCallCount += DrawPendingGeometry(context, draw, key.Color);
@@ -900,7 +908,7 @@ internal sealed partial class MapRenderer
     // MVT rings can close at the edge of their buffer (Azure footprints use 600/4096).
     // Clip original outline segments, not a clipped polygon: closing the latter would
     // invent a stroked tile edge, while stroking the buffer paints across adjacent tiles.
-    private static bool TryClipVectorPolygonOutlineSegment(
+    internal static bool TryClipVectorPolygonOutlineSegment(
         VectorTilePoint start,
         VectorTilePoint end,
         out VectorTilePoint clippedStart,
@@ -1270,7 +1278,7 @@ internal sealed partial class MapRenderer
             patternHeight));
     }
 
-    private static int ClipVectorTileTriangle(
+    internal static int ClipVectorTileTriangle(
         VectorTilePoint first,
         VectorTilePoint second,
         VectorTilePoint third,

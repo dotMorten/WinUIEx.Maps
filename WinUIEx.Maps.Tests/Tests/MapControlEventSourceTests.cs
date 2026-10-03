@@ -251,6 +251,80 @@ public sealed class MapControlEventSourceTests
     }
 
     [TestMethod]
+    public void SupportedExtrusionsDoNotReportFlatFallbackDiagnostics()
+    {
+        byte[] json = Encoding.UTF8.GetBytes(
+            """
+            {"version":8,"layers":[{
+              "id":"private-building-layer","type":"fill-extrusion","source-layer":"private-source",
+              "paint":{
+                "fill-extrusion-color":"#abc","fill-extrusion-opacity":0.8,
+                "fill-extrusion-height":["get","private-height"],
+                "fill-extrusion-base":["get","private-base"],
+                "fill-extrusion-vertical-gradient":true
+              }
+            }]}
+            """);
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Warning, MapControlEventSource.Keywords.VectorTiles);
+        VectorStyleCompatibility.Report(-1, json, VectorStyle.ParseCustom(json));
+        Assert.DoesNotContain(value => value.Id == 75, listener.Events);
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.VectorTiles);
+        VectorStyleCompatibility.Report(-1, json, VectorStyle.ParseCustom(json));
+        var events = listener.Events.Where(value => value.Id == 75).ToArray();
+        Assert.IsEmpty(events);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
+    public void ExtrusionDiagnosticsAreGatedAndPreserveNativeByteWidths()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.VectorTiles);
+        MapControlEventSource.Log.VectorExtrusionRenderBatch(10, 2, 0, 0x123456789L, 0x23456789AL);
+        Assert.DoesNotContain(value => value.Id == 94, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.VectorTiles);
+        MapControlEventSource.Log.VectorExtrusionRenderBatch(10, 2, 0, 0x123456789L, 0x23456789AL);
+        var captured = listener.Single(94);
+        Assert.AreSequenceEqual(["triangles", "draws", "evaluationFailures", "meshBytes", "targetBytes"], captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>([10, 2, 0, 0x123456789L, 0x23456789AL], captured.Payload);
+        MapControlEventSource.Log.VectorExtrusionPreparationFailed("InvalidDataException");
+        Assert.AreSequenceEqual<object?>(["InvalidDataException"], listener.Single(95).Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
+    public void SkippedStyleComponentsReportOnlyParseReasonsAndCounts()
+    {
+        using TestEventListener listener = new();
+        byte[] json = Encoding.UTF8.GetBytes(
+            """
+            {
+              "version":8,
+              "layers":[{
+                "id":"private-layer",
+                "type":"fill",
+                "source-layer":"private-source",
+                "filter":["unsupported-private-expression","private-value"]
+              }]
+            }
+            """);
+        VectorStyle parsed = VectorStyle.ParseCustom(json);
+        Assert.AreEqual(1, parsed.UnsupportedLayerCount);
+        listener.Enable(EventLevel.Warning, MapControlEventSource.Keywords.VectorTiles);
+        VectorStyleCompatibility.Report(-1, json, parsed);
+        Assert.DoesNotContain(value => value.Id == 75, listener.Events);
+
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.VectorTiles);
+        VectorStyleCompatibility.Report(-1, json, parsed);
+        CapturedEvent captured = listener.Single(75);
+        Assert.AreSequenceEqual(
+            ["style", "issueKind", "construct", "count"], captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>([-1, 5, "UnsupportedExpression", 1], captured.Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
     public void IgnoredTileEdgeLayoutReportsOnlySanitizedCompatibilityCounts()
     {
         using TestEventListener listener = new();
@@ -707,7 +781,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 93),
+            Enumerable.Range(1, 96),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }
@@ -781,6 +855,24 @@ public sealed class MapControlEventSourceTests
         Assert.AreEqual(nameof(InvalidOperationException), failure.Payload[6]);
         Assert.AreEqual(-1, failure.Payload[7]);
         Assert.DoesNotContain(captured => captured.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
+    public void GlyphBackpressureReportsOnlyCountsAtVerboseVectorLevel()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational);
+        MapControlEventSource.Log.VectorGlyphRangeBackpressure(32, 7);
+        Assert.DoesNotContain(captured => captured.Id is 0 or 96, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.Device);
+        MapControlEventSource.Log.VectorGlyphRangeBackpressure(32, 7);
+        Assert.DoesNotContain(captured => captured.Id is 0 or 96, listener.Events);
+        listener.Enable(EventLevel.Verbose, MapControlEventSource.Keywords.VectorTiles);
+        MapControlEventSource.Log.VectorGlyphRangeBackpressure(32, 7);
+        var captured = listener.Single(96);
+        Assert.AreSequenceEqual(["pendingRangeCount", "waitingRequestCount"], captured.PayloadNames);
+        Assert.AreSequenceEqual<object?>([32, 7], captured.Payload);
+        Assert.DoesNotContain(item => item.Id == 0, listener.Events);
     }
 
     [TestMethod]

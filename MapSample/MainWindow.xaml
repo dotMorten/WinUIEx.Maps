@@ -49,14 +49,6 @@
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem
-                    AutomationProperties.AutomationId="MapComparisonNavigationItem"
-                    Content="Map comparison"
-                    Tag="map-comparison">
-                    <NavigationViewItem.Icon>
-                        <SymbolIcon Symbol="TwoPage" />
-                    </NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem
                     Content="Azure traffic"
                     AutomationProperties.AutomationId="AzureTrafficNavigationItem"
                     Tag="azure-traffic">
@@ -86,6 +78,22 @@
                     Tag="arcgis-vector">
                     <NavigationViewItem.Icon>
                         <SymbolIcon Symbol="World" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
+                    AutomationProperties.AutomationId="OpenStreetMapVectorTilesNavigationItem"
+                    Content="OpenStreetMap vector tiles"
+                    Tag="openstreetmap-vector">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="Globe" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
+                    AutomationProperties.AutomationId="MapComparisonNavigationItem"
+                    Content="Map comparison"
+                    Tag="map-comparison">
+                    <NavigationViewItem.Icon>
+                        <SymbolIcon Symbol="TwoPage" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItemHeader Content="Interaction" />

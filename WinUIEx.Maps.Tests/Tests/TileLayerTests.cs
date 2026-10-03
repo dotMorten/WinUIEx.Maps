@@ -180,6 +180,10 @@ public sealed class TileLayerTests
     [DataRow(8.9, 512, 7)]
     [DataRow(8.9, 128, 9)]
     [DataRow(8.9, 1, 11)]
+    [DataRow(0d, 512, 0)]
+    [DataRow(0.99, 512, 0)]
+    [DataRow(0d, 1024, 0)]
+    [DataRow(1d, 1024, 0)]
     public void TileSizeSelectsLogicalSourceZoom(double zoom, int tileSize, int expected)
     {
         Assert.AreEqual(

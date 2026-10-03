@@ -355,6 +355,81 @@ public sealed class VectorStyleTests
     }
 
     [TestMethod]
+    [DataRow("[\"step\",[\"zoom\"],\"point\",10.5,\"line\"]")]
+    [DataRow("{\"stops\":[[0,\"point\"],[10.5,\"line\"]]}")]
+    public async Task ZoomDependentShieldPlacementUpdatesIconsGlyphsAndAccessibility(string placement)
+    {
+        VectorStyleAssets assets = CreateAssets(
+            $$"""
+            {
+              "version":8,
+              "layers":[{
+                "type":"symbol", "source-layer":"road",
+                "layout":{
+                  "symbol-placement":{{placement}},
+                  "icon-image":"shield",
+                  "text-field":"R", "text-font":["Roboto-Regular"],
+                  "text-size":24
+                }
+              }]
+            }
+            """,
+            """{"shield":{"x":0,"y":0,"width":1,"height":1,"pixelRatio":1}}""",
+            PixelBytes(9), 1, 1);
+        assets.GlyphAtlas.AddRangeForTest(new VectorGlyphRange(
+            "Roboto-Regular", 0, new Dictionary<int, VectorGlyph>
+            {
+                ['R'] = new('R', GlyphBitmap(8, 128), 2, 2, 0, 2, 3),
+            }));
+        VectorTilePoint[] points = [new(0, 0.5), new(0.1, 0.5), new(1, 0.5)];
+        VectorTileFeatureCollection features = new([
+            new("road", VectorTileGeometryType.LineString, [], [], [new(points)], []),
+        ]);
+        Assert.HasCount(2, await assets.PrepareTexturesAsync(features, 10, CancellationToken.None));
+
+        VectorSymbolResolution before = assets.ResolveSymbols(features, 10.49);
+        VectorSymbolResolution after = assets.ResolveSymbols(features, 10.5);
+        Assert.HasCount(2, before.Symbols);
+        Assert.HasCount(2, after.Symbols);
+        Assert.AreEqual(0, before.EvaluationFailureCount);
+        Assert.AreEqual(0, after.EvaluationFailureCount);
+        foreach (VectorTileSymbol symbol in before.Symbols)
+        {
+            Assert.IsNull(symbol.LinePoints);
+            Assert.AreEqual(0.5, symbol.X, 0.000001);
+            Assert.AreEqual(0.5, symbol.Y, 0.000001);
+            Assert.IsTrue(symbol.ViewportAligned);
+        }
+        foreach (VectorTileSymbol symbol in after.Symbols)
+        {
+            Assert.AreSame(points, symbol.LinePoints);
+            Assert.IsFalse(symbol.ViewportAligned);
+        }
+        Assert.AreEqual(before.Symbols[0].SymbolGroupId, before.Symbols[1].SymbolGroupId);
+        Assert.AreEqual(after.Symbols[0].SymbolGroupId, after.Symbols[1].SymbolGroupId);
+        Assert.IsFalse(assets.CanReuseSymbols(10.49, 10.5));
+        Assert.IsTrue(assets.CanReuseSymbols(10.5, 10.6));
+        var accessible = Assert.ContainsSingle(assets.ResolveAccessibilityFeatures(features, 10.49));
+        Assert.AreEqual(0.5, accessible.X, 0.000001);
+        Assert.AreEqual("R", accessible.Name);
+    }
+
+    [TestMethod]
+    public void InvalidDynamicPlacementIsAnExplicitEvaluationFailure()
+    {
+        VectorStyleAssets assets = CreateAssets(
+            """
+            {"version":8,"layers":[{
+              "type":"symbol","source-layer":"poi",
+              "layout":{"symbol-placement":["step",["zoom"],"point",10,42],"icon-image":"marker"}
+            }]}
+            """, "{}", PixelBytes(0), 1, 1);
+        VectorSymbolResolution result = assets.ResolveSymbols(CreateFeatures(), 10);
+        Assert.IsEmpty(result.Symbols);
+        Assert.AreEqual(1, result.EvaluationFailureCount);
+    }
+
+    [TestMethod]
     public async Task LinePlacementResolvesIconsAndTextAgainstLineGeometry()
     {
         VectorStyleAssets assets = CreateAssets(
@@ -965,6 +1040,94 @@ public sealed class VectorStyleTests
         Assert.HasCount(3, line.Style.Gradient);
         Assert.AreEqual(new Vector4(1, 0, 0, 1), line.Style.Gradient[0].Color);
         Assert.AreEqual(new Vector4(0, 0, 1, 1), line.Style.Gradient[2].Color);
+    }
+
+    [TestMethod]
+    public void ExtrusionsPreservePaintFiltersZoomVisibilityAndOrder()
+    {
+        const string json = """
+            {"version":8,"layers":[
+              {"type":"background","paint":{"background-color":"#ffffff"}},
+              {
+                "type":"fill-extrusion","source-layer":"land","minzoom":14,"maxzoom":18,
+                "filter":["==",["get","class"],"building"],
+                "layout":{"visibility":["step",["zoom"],"visible",17,"none"]},
+                "paint":{
+                  "fill-extrusion-color":["match",["get","class"],"building","#f00","#00f"],
+                  "fill-extrusion-opacity":["interpolate",["linear"],["zoom"],14,0.4,16,0.8],
+                  "fill-extrusion-height":100,
+                  "fill-extrusion-base":20,
+                  "fill-extrusion-vertical-gradient":true,
+                  "fill-extrusion-translate":[2,3],
+                  "fill-extrusion-translate-anchor":"viewport"
+                }
+              },
+              {"type":"fill","source-layer":"land","minzoom":19,"paint":{"fill-color":"#0f0"}}
+            ]}
+            """;
+        VectorStyle parsed = VectorStyle.ParseCustom(Encoding.UTF8.GetBytes(json));
+        Assert.AreEqual(0, parsed.UnsupportedLayerCount);
+        Assert.HasCount(1, parsed.FillLayers);
+        Assert.AreEqual(1, Assert.ContainsSingle(parsed.ExtrusionLayers).Order);
+        Assert.AreEqual(2, parsed.FillLayers[0].Order);
+        VectorStyleAssets assets = CreateAssets(json, "{}", PixelBytes(0), 1, 1);
+        var buildings = CreatePolygonFeatures("building");
+        Assert.IsEmpty(assets.ResolveExtrusions(buildings, 13.99).Extrusions);
+        Assert.IsEmpty(assets.ResolveExtrusions(buildings, 17).Extrusions);
+        Assert.IsEmpty(assets.ResolveExtrusions(buildings, 18).Extrusions);
+        Assert.IsEmpty(assets.ResolveExtrusions(CreatePolygonFeatures("park"), 15).Extrusions);
+        var result = assets.ResolveExtrusions(buildings, 15);
+        var polygon = Assert.ContainsSingle(result.Extrusions);
+        Assert.AreEqual(0, result.EvaluationFailures);
+        Assert.AreEqual(1, polygon.Order);
+        Assert.AreEqual(new Vector4(1, 0, 0, 1), polygon.Paint.Color);
+        Assert.AreEqual(100d, polygon.Paint.Height);
+        Assert.AreEqual(20d, polygon.Paint.Base);
+        Assert.IsTrue(parsed.ExtrusionLayers[0].TryEvaluateLayer(15, out var paint));
+        Assert.AreEqual(0.6, paint.Opacity, 0.000001);
+        Assert.AreEqual(2d, paint.TranslateX);
+        Assert.AreEqual(3d, paint.TranslateY);
+        Assert.IsTrue(paint.ViewportTranslation);
+    }
+
+    [TestMethod]
+    public void ExtrusionsUseDefaultsAndExclusiveMaximumZoom()
+    {
+        VectorStyleAssets assets = CreateAssets(
+            """
+            {"version":8,"layers":[{
+              "type":"fill-extrusion","source-layer":"land","minzoom":14,"maxzoom":18,
+              "paint":{"fill-color":"#f00","fill-opacity":0,"fill-antialias":false}
+            }]}
+            """, "{}", PixelBytes(0), 1, 1);
+        var features = CreatePolygonFeatures("building");
+        Assert.IsEmpty(assets.ResolveExtrusions(features, 13.99).Extrusions);
+        var polygon = Assert.ContainsSingle(assets.ResolveExtrusions(features, 14).Extrusions);
+        Assert.AreEqual(new Vector4(0, 0, 0, 1), polygon.Paint.Color);
+        Assert.AreEqual(0d, polygon.Paint.Height);
+        Assert.AreEqual(0d, polygon.Paint.Base);
+        Assert.ContainsSingle(assets.ResolveExtrusions(features, 17.99).Extrusions);
+        Assert.IsEmpty(assets.ResolveExtrusions(features, 18).Extrusions);
+    }
+
+    [TestMethod]
+    public async Task ExtrusionsReuseFillPatternResources()
+    {
+        VectorStyleAssets assets = CreateAssets(
+            """
+            {"version":8,"layers":[{
+              "type":"fill-extrusion","source-layer":"land",
+              "paint":{"fill-extrusion-pattern":"brick","fill-extrusion-opacity":0.5}
+            }]}
+            """,
+            """{"brick":{"x":0,"y":0,"width":1,"height":1,"pixelRatio":1}}""",
+            PixelBytes(200), 1, 1);
+        var features = CreatePolygonFeatures("building");
+        Assert.ContainsSingle(await assets.PrepareTexturesAsync(features, 15, CancellationToken.None));
+        var polygon = Assert.ContainsSingle(assets.ResolveExtrusions(features, 15).Extrusions);
+        Assert.AreNotEqual(0L, polygon.Paint.TextureId);
+        Assert.IsTrue(assets.ExtrusionLayers[0].TryEvaluateLayer(15, out var paint));
+        Assert.AreEqual(0.5, paint.Opacity);
     }
 
     [TestMethod]
@@ -2053,6 +2216,148 @@ public sealed class VectorStyleTests
     {
         using JsonDocument document = JsonDocument.Parse(json);
         Assert.IsFalse(VectorStyleExpression.TryParse(document.RootElement, out _));
+    }
+
+    [TestMethod]
+    [DataRow("[\"!=\",1,2]", true)]
+    [DataRow("[\"!=\",1,1]", false)]
+    [DataRow("[\"!=\",1,\"1\"]", true)]
+    [DataRow("[\"!=\",null,\"tunnel\"]", true)]
+    [DataRow("[\"!=\",null,null]", false)]
+    [DataRow("[\"<\",3,4]", true)]
+    [DataRow("[\"<\",4,4]", false)]
+    [DataRow("[\"<=\",4,4]", true)]
+    [DataRow("[\"<=\",5,4]", false)]
+    [DataRow("[\">\",5,4]", true)]
+    [DataRow("[\">\",4,4]", false)]
+    [DataRow("[\">=\",4,4]", true)]
+    [DataRow("[\">=\",3,4]", false)]
+    [DataRow("[\"<\",\"a\",\"b\"]", true)]
+    [DataRow("[\">=\",\"b\",\"b\"]", true)]
+    [DataRow("[\"!=\",[\"get\",\"missing\"],\"tunnel\"]", true)]
+    [DataRow("[\"all\",[\">=\",[\"zoom\"],7],[\"<\",[\"zoom\"],20]]", true)]
+    public void ComparisonExpressionsPreserveTypesAndBoundaries(string json, bool expected)
+    {
+        AssertExpressionBoolean(json, new VectorStyleEvaluationContext(null, 10), expected);
+    }
+
+    [TestMethod]
+    [DataRow("[\"<\",1,\"2\"]")]
+    [DataRow("[\"<=\",null,2]")]
+    [DataRow("[\">\",true,false]")]
+    [DataRow("[\">=\",[\"literal\",[1]],[\"literal\",[2]]]")]
+    [DataRow("[\"!=\",1,[\"var\",\"missing\"]]")]
+    public void ComparisonsPropagateEvaluationFailures(string json)
+    {
+        AssertExpressionFails(json, new VectorStyleEvaluationContext(null, 10));
+    }
+
+    [TestMethod]
+    [DataRow("[\"!=\",1]")]
+    [DataRow("[\"<\"]")]
+    [DataRow("[\"<=\",1,2,3]")]
+    [DataRow("[\">\",1,2,{}]")]
+    [DataRow("[\">=\",1]")]
+    public void ComparisonExpressionsRejectInvalidArity(string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.IsFalse(VectorStyleExpression.TryParse(document.RootElement, out _));
+    }
+
+    [TestMethod]
+    [DataRow("[\"all\",[\">=\",\"rank\",7],[\"<\",\"rank\",20]]")]
+    [DataRow("[\"all\",[\">=\",[\"get\",\"rank\"],7],[\"<\",[\"get\",\"rank\"],20]]")]
+    public void LegacyAndExpressionRankFiltersAgree(string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.IsTrue(VectorStyleExpression.TryParseFilter(document.RootElement, out var expression));
+        foreach (int rank in new[] { 6, 7, 19, 20 })
+        {
+            var feature = CreateFeatures(new VectorTileProperty("rank", VectorTileValue.FromInt(rank))).Features[0];
+            Assert.IsTrue(expression.TryEvaluate(new(feature, 10), out var result));
+            Assert.AreEqual(rank >= 7 && rank < 20, result.BooleanValue, $"Rank {rank}");
+        }
+    }
+
+    [TestMethod]
+    public void OpenMapTilesWaterAndRoadFiltersDoNotDropOrdinaryFeatures()
+    {
+        VectorStyleAssets assets = CreateAssets(
+            """
+            {
+              "version":8,
+              "layers":[
+                {
+                  "type":"fill", "source-layer":"land",
+                  "filter":["!=",["get","brunnel"],"tunnel"],
+                  "paint":{"fill-color":"#9ebdff"}
+                },
+                {
+                  "type":"line", "source-layer":"road",
+                  "filter":["all",
+                    ["==",["get","class"],"motorway"],
+                    ["!=",["get","ramp"],1],
+                    ["match",["get","brunnel"],["bridge","tunnel"],false,true]],
+                  "paint":{"line-color":"#fc8","line-width":3}
+                }
+              ]
+            }
+            """, "{}", PixelBytes(0), 1, 1);
+
+        VectorPolygonResolution water = assets.ResolvePolygons(CreatePolygonFeatures("water"), 10);
+        Assert.ContainsSingle(water.Polygons);
+        Assert.AreEqual(0, water.EvaluationFailureCount);
+        Assert.AreEqual(1f, water.Polygons[0].Style.Color.Z);
+
+        VectorTileProperty motorway = new("class", VectorTileValue.FromString("motorway"));
+        VectorLineResolution roads = assets.ResolveLines(CreateLineFeatures(motorway), 10);
+        Assert.ContainsSingle(roads.Lines);
+        Assert.AreEqual(0, roads.EvaluationFailureCount);
+        Assert.IsEmpty(assets.ResolveLines(CreateLineFeatures(
+            motorway, new("ramp", VectorTileValue.FromUInt(1))), 10).Lines);
+        Assert.IsEmpty(assets.ResolveLines(CreateLineFeatures(
+            motorway, new("brunnel", VectorTileValue.FromString("tunnel"))), 10).Lines);
+    }
+
+    [TestMethod]
+    public void ComparisonZoomDependenciesIncludeStopsAndInvalidateCrossings()
+    {
+        using JsonDocument document = JsonDocument.Parse("""["<",["zoom"],10.5]""");
+        Assert.IsTrue(VectorStyleExpression.TryParse(document.RootElement, out var expression));
+        List<double> stops = [];
+        expression.CollectZoomStops(stops);
+        Assert.Contains(10.5, stops);
+        Assert.IsFalse(expression.CanReuseZoom(10.4, 10.5));
+    }
+
+    [TestMethod]
+    public void ShorthandColorsInterpolateInRoadPaint()
+    {
+        VectorStyleAssets assets = CreateAssets(
+            """
+            {"version":8,"layers":[{
+              "type":"line","source-layer":"road",
+              "paint":{"line-color":["interpolate",["linear"],["zoom"],5,"#000",7,"#fff"],"line-width":3}
+            }]}
+            """, "{}", PixelBytes(0), 1, 1);
+        VectorLineResolution result = assets.ResolveLines(CreateLineFeatures(), 6);
+        Assert.AreEqual(0, result.EvaluationFailureCount);
+        float expected = 128 / 255f;
+        Assert.AreEqual(new Vector4(expected, expected, expected, 1), Assert.ContainsSingle(result.Lines).Style.Color);
+    }
+
+    [TestMethod]
+    public void OpenFreeMapLinearInterpolationAcceptsOnlyARedundantUnitBase()
+    {
+        AssertExpressionNumber(
+            """["interpolate",["linear",1],["zoom"],7,1,11,2]""",
+            new(null, 9), 1.5);
+        foreach (string interpolation in new[] { """["linear",2]""", """["linear","1"]""", """["linear",1,1]""" })
+        {
+            using JsonDocument document = JsonDocument.Parse(
+                $$"""["interpolate",{{interpolation}},["zoom"],7,1,11,2]""");
+            Assert.IsFalse(VectorStyleExpression.TryParse(document.RootElement, out _));
+        }
     }
 
     [TestMethod]

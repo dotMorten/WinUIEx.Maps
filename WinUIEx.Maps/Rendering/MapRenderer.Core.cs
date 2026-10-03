@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.InteropServices;
 using WinUIEx.Maps.Rendering.Diagnostics;
 using static WinUIEx.Maps.Rendering.DirectXInterop;
@@ -107,12 +108,15 @@ internal sealed partial class MapRenderer : DirectXRenderer
     private int _geometryDiscardCount;
     private long _geometryUploadBytes;
     private long _geometryUploadTicks;
+    private Vector4? _opaqueVectorCanvas;
 
     public event Action<MapScene>? SceneChanged;
 
     internal event Action<MapScene>? DisplayedCameraChanged;
 
     internal event Action<MapAccessibilitySnapshot>? AccessibilitySnapshotChanged;
+
+    internal event Action<Vector4?>? OpaqueVectorCanvasChanged;
 
     /// <summary>
     /// Publishes the ordered layer-snapshot plan consumed by the render thread.
@@ -517,6 +521,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
         ProcessCompletedRasterUploads();
         ProcessCompletedVectorTiles();
         ProcessCompletedIconUploads();
+        UpdateOpaqueVectorCanvas();
         long commitEnd = traceFrame ? Stopwatch.GetTimestamp() : 0;
         long rasterTicks = 0, polygonTicks = 0, lineTicks = 0, symbolTicks = 0;
 
@@ -583,7 +588,11 @@ internal sealed partial class MapRenderer : DirectXRenderer
                 LayerRenderKind.VectorPoints or LayerRenderKind.HybridTiles)
             {
                 long stageStart = traceFrame ? Stopwatch.GetTimestamp() : 0;
-                if (layer.LineCompositeOpacity >= 1)
+                bool hasExtrusions = _rasterLayers.TryGetValue(layer.RuntimeId, out var extrusionSource) &&
+                    extrusionSource.VectorStyleAssets?.HasExtrusions == true;
+                if (hasExtrusions)
+                    hasRasterFade |= DrawVectorExtrudedLayer(context, layer, extrusionSource!);
+                else if (layer.LineCompositeOpacity >= 1)
                     hasRasterFade |= DrawVectorPolygonLayer(context, layer);
                 if (traceFrame)
                 {
@@ -591,7 +600,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
                     polygonTicks += end - stageStart;
                     stageStart = end;
                 }
-                if (layer.LineCompositeOpacity < 1)
+                if (!hasExtrusions && layer.LineCompositeOpacity < 1)
                 {
                     if (planIndex == 0 || plan[planIndex - 1].LayerIndex != layer.LayerIndex ||
                         plan[planIndex - 1].LineCompositeOpacity >= 1)
@@ -600,7 +609,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
                         usedLineComposite |= used;
                     }
                 }
-                else
+                else if (!hasExtrusions)
                 {
                     hasRasterFade |= DrawVectorLineLayer(context, layer);
                 }
@@ -631,6 +640,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
         }
         if (!usedLineComposite && _lineCompositeTarget != IntPtr.Zero)
             ReleaseLineComposite();
+        if (_extrusions is not null)
+            TrimExtrusions();
         if (updateAccessibility)
         {
             PublishAccessibilitySnapshot(
@@ -723,6 +734,39 @@ internal sealed partial class MapRenderer : DirectXRenderer
         {
             _uploadEnteredRenderLock.WaitOne(TimeSpan.FromMilliseconds(16));
         }
+    }
+
+    private void UpdateOpaqueVectorCanvas()
+    {
+        Vector4? canvas = null;
+        foreach (LayerRenderSnapshot layer in _layerRenderPlan)
+        {
+            if (!layer.IsVisible || layer.Opacity < 1 ||
+                layer.Kind is not (LayerRenderKind.VectorPoints or LayerRenderKind.HybridTiles) ||
+                !_rasterLayers.TryGetValue(layer.RuntimeId, out RasterLayerState? state) ||
+                state.VectorStyleAssets is null)
+            {
+                continue;
+            }
+
+            Vector4 color = default;
+            foreach (VectorResolvedBackground background in
+                state.VectorStyleAssets.ResolveBackgrounds(_displayZoom).Backgrounds)
+            {
+                color = background.Style.Color + color * (1 - background.Style.Color.W);
+            }
+            if (color.W >= 0.999f)
+            {
+                canvas = new Vector4(color.X, color.Y, color.Z, 1);
+                break;
+            }
+        }
+        if (_opaqueVectorCanvas == canvas)
+        {
+            return;
+        }
+        _opaqueVectorCanvas = canvas;
+        OpaqueVectorCanvasChanged?.Invoke(canvas);
     }
 
     protected override bool CanCompleteFrameCaptures()
@@ -849,7 +893,8 @@ internal sealed partial class MapRenderer : DirectXRenderer
         _frameSourceScenes.Add(tileZoom, scene);
         DisplayedCameraChanged?.Invoke(scene);
 
-        IReadOnlyList<TileId> requiredTiles = scene.RequiredTiles;
+        IReadOnlyList<TileId> requiredTiles = _extrusions is not null || _extrusionCoverageInvalidated
+            ? CreateExtrusionScene(scene).RequiredTiles : scene.RequiredTiles;
         bool crossedLayerZoomLimit = previousZoom != scene.Zoom &&
             _layerRenderPlan.Any(layer =>
                 (previousZoom >= layer.MinZoom && previousZoom < layer.MaxZoom) !=
@@ -858,8 +903,9 @@ internal sealed partial class MapRenderer : DirectXRenderer
                  scene.Zoom >= layer.MinZoom && scene.Zoom < layer.MaxZoom &&
                  CustomRasterTileAcquisitionSession.GetSourceZoom(previousZoom + .5, layer.TileSize) !=
                  CustomRasterTileAcquisitionSession.GetSourceZoom(scene.Zoom + .5, layer.TileSize)));
-        if (crossedLayerZoomLimit || !_lastRequiredTiles.SetEquals(requiredTiles))
+        if (_extrusionCoverageInvalidated || crossedLayerZoomLimit || !_lastRequiredTiles.SetEquals(requiredTiles))
         {
+            _extrusionCoverageInvalidated = false;
             _lastRequiredTiles.Clear();
             _lastRequiredTiles.UnionWith(requiredTiles);
             MapControlEventSource.Log.SceneChanged(

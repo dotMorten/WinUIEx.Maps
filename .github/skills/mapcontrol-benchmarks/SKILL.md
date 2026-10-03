@@ -39,6 +39,12 @@ The project is `WinUIEx.Maps.Benchmarks`.
 - `VectorSymbolResolutionBenchmarks` measures text/icon style resolution and label
   construction using deterministic generated point features, glyph bitmaps, and a sprite
   atlas at two symbol densities.
+- `VectorExtrusionBenchmarks` compares 64 deterministic building footprints rendered as
+  ordinary fills, hidden extrusions, or elevated buildings. Mesh preparation measures
+  native roof/wall scratch creation and disposal without GPU upload; completed-frame
+  rendering excludes initial asynchronous preparation and lazy target/shader creation.
+  Control scenes assert that no extrusion meshes or targets are allocated. Native mesh
+  and target bytes are reported by event 94, not by `MemoryDiagnoser`.
 - `VectorSymbolUploadBenchmarks` measures immutable upload and GPU completion for the
   generated glyph and sprite texture set.
 - `VectorSymbolRenderFrameBenchmarks` measures steady-state collision, texture batching,

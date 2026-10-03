@@ -31,11 +31,11 @@ internal sealed partial class MapRenderer
         RasterLayerState state,
         ulong fallbackMask)
     {
-        if (fallbackMask != 0 ||
+        if (state.VectorStyleAssets?.HasExtrusions != true && (fallbackMask != 0 ||
             _zoomAnimation.IsActive ||
             _headingAnimation.IsActive ||
             _pitchAnimation.IsActive ||
-            !CanEnumerateRasterScene(_displayZoom, state.Scene!.TileZoom))
+            !CanEnumerateRasterScene(_displayZoom, state.Scene!.TileZoom)))
         {
             return false;
         }
@@ -147,8 +147,13 @@ internal sealed partial class MapRenderer
     {
         List<VectorLinePreparationTile> lineTiles = [];
         List<VectorPolygonPreparationTile> polygonTiles = [];
+        List<VectorExtrusionPreparationTile>? extrusionTiles =
+            state.VectorStyleAssets?.HasExtrusions == true &&
+            state.VectorStyleAssets.HasVisibleExtrusions(_displayZoom) && NeedsExtrusionFrame(layer, state) ? [] : null;
         HashSet<VectorTileInstanceKey> includedTiles = [];
         MapScene scene = CreateCurrentRasterScene(state.Scene!.TileZoom);
+        if (state.VectorStyleAssets?.HasExtrusions == true)
+            scene = CreateExtrusionScene(scene);
         foreach (VisibleTile visibleTile in scene.VisibleTiles)
         {
             RasterTileKey tileKey = new(layer.RuntimeId, visibleTile.Id);
@@ -177,6 +182,7 @@ internal sealed partial class MapRenderer
             polygonTiles.Add(new(
                 visibleTile,
                 tile.GetPolygons(_displayZoom)));
+            extrusionTiles?.Add(new(visibleTile, tile.ResolveExtrusions(_displayZoom)));
         }
 
         IntPtr devicePointer = DevicePointer;
@@ -201,7 +207,8 @@ internal sealed partial class MapRenderer
                 new VectorBackgroundResolution([], 0),
             lineTiles.ToArray(),
             polygonTiles.ToArray(),
-            includedTiles);
+            includedTiles,
+            extrusionTiles?.ToArray());
         return true;
     }
 
@@ -209,6 +216,8 @@ internal sealed partial class MapRenderer
         LayerRenderSnapshot layer,
         RasterLayerState state)
     {
+        if (_drawingExtrusions)
+            return;
         if (_completedVectorGeometryPreparations.TryPeek(out var next) &&
             next.Job.Key.RuntimeId != layer.RuntimeId)
         {
@@ -233,6 +242,8 @@ internal sealed partial class MapRenderer
             completed.Job.Cancellation.Dispose();
             if (completed.Task.Status != TaskStatus.RanToCompletion)
             {
+                if (state.VectorStyleAssets?.HasExtrusions == true && completed.Task.Exception is { } failure)
+                    MapControlEventSource.Log.VectorExtrusionPreparationFailed(failure.GetBaseException().GetType().Name);
                 _ = completed.Task.Exception;
                 lock (_vectorGeometryPreparationSync)
                 {
@@ -257,6 +268,13 @@ internal sealed partial class MapRenderer
                 {
                     _vectorGeometryPreparationJob = null;
                 }
+            }
+            if (currentJob && prepared.Key.RuntimeId == layer.RuntimeId &&
+                prepared.Key.Generation == state.Generation && prepared.Key.DeviceEpoch == _deviceEpoch &&
+                state.VectorStyleAssets?.HasExtrusions == true &&
+                state.VectorStyleAssets.CanReuseExtrusions(prepared.Zoom, _displayZoom))
+            {
+                AcceptExtrusionFrame(layer, state, prepared);
             }
             if (!currentJob ||
                 !prepared.Key.Matches(
@@ -396,6 +414,11 @@ internal sealed partial class MapRenderer
             starting?.Invoke();
             cancellationToken.ThrowIfCancellationRequested();
             prepared = new(input) { TraceTiming = tracePreparation };
+            if (input.ExtrusionTiles is not null)
+            {
+                prepared.ExtrusionBatches = BuildExtrusionBatches(input, cancellationToken);
+                prepared.ExtrusionEvaluationFailures = input.ExtrusionTiles.Sum(tile => tile.Resolution.EvaluationFailures);
+            }
             VectorPolygonPreparationTile[] polygonTiles = input.PolygonTiles;
             foreach (VectorPolygonPreparationTile tile in polygonTiles)
             {
@@ -630,7 +653,11 @@ internal sealed partial class MapRenderer
         VectorBackgroundResolution Backgrounds,
         VectorLinePreparationTile[] LineTiles,
         VectorPolygonPreparationTile[] PolygonTiles,
-        HashSet<VectorTileInstanceKey> IncludedTiles);
+        HashSet<VectorTileInstanceKey> IncludedTiles,
+        VectorExtrusionPreparationTile[]? ExtrusionTiles = null);
+
+    private readonly record struct VectorExtrusionPreparationTile(
+        VisibleTile Tile, VectorExtrusionResolution Resolution);
 
     private readonly record struct VectorLinePreparationTile(
         VisibleTile Tile,
@@ -733,6 +760,8 @@ internal sealed partial class MapRenderer
         internal VectorLineRenderResult LineResult;
 
         internal VectorPolygonRenderResult PolygonResult;
+        internal ExtrusionBatch[]? ExtrusionBatches;
+        internal int ExtrusionEvaluationFailures;
 
         internal int LineVertexCount { get; private set; }
 
@@ -866,6 +895,12 @@ internal sealed partial class MapRenderer
 
         public void Dispose()
         {
+            if (ExtrusionBatches is not null)
+            {
+                foreach (var batch in ExtrusionBatches)
+                    batch.Buffer.Dispose();
+                ExtrusionBatches = null;
+            }
             DisposeCpuBuffers();
             if (CachedLineBatches is not null)
             {

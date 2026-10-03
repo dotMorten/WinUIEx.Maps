@@ -58,12 +58,17 @@ Relative sprite and glyph URLs resolve from the style URL. Keep all resources re
 from the application and use provider-authorized origins.
 
 WinUIEx.Maps intentionally implements a subset of the Style Specification. It supports the
-background, fill, line, circle, and symbol behavior used by its renderer, including many
+background, fill, fill-extrusion, line, circle, and symbol behavior used by its renderer, including many
 expressions (including numeric `+` and `*`), legacy stop functions, text and icon tokens,
 sprites, glyphs, collision, line
 decorations, and common advanced line and symbol properties. Unsupported layer types,
 properties, or expressions are skipped rather than treated as full Mapbox compatibility.
 Test every style used by the application.
+
+Classic `fill-extrusion` layers render depth-tested building roofs and walls using
+meter-based height and base values, color, opacity, patterns, translation, vertical
+gradients, and root style lighting. Labels and icons remain overlays. Terrain, shadows,
+modern material effects, and timed paint transitions are not supported.
 
 Symbols and complete labels may cross tile boundaries. Collision handling is shared across
 the visible tiles, so `symbol-avoid-edges` is parsed for compatibility but its tile-local
@@ -175,6 +180,41 @@ Map.Layers.Add(vectorLayer);
 
 Public layers retain collection order above the hidden Azure layer. Use a blank style only
 when no Azure base map is wanted.
+
+## 7. OpenStreetMap with 3D buildings
+
+The sample application's
+[`OpenStreetMapVectorTilesPage`](../MapSample/Samples/Maps/OpenStreetMapVectorTilesPage.xaml.cs)
+uses OpenStreetMap data served by [OpenFreeMap](https://openfreemap.org/), with the
+OpenMapTiles schema and Liberty style. It uses the same `TileLayer` infrastructure as the
+other custom vector examples and requires no Azure Maps token.
+
+<img width="642" height="433" alt="Image" src="https://github.com/user-attachments/assets/a4c28949-4bac-467e-83d2-4b1841669a8e" />
+
+Starting with the `Map` control above, configure the source and a tilted Seattle view:
+
+```csharp
+
+Map.Layers.Add(new TileLayer(
+    new TileLayerOptions
+    {
+        TileUrl = "https://tiles.openfreemap.org/planet/20260913_164504_pt/{z}/{x}/{y}.pbf",
+        StyleUrl = "https://tiles.openfreemap.org/styles/liberty",
+        TileSize = 512,
+        MaxSourceZoom = 14,
+    },
+    id: "openstreetmap-vector-sample")
+{
+    Attribution = "© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors",
+    AttributionLink = new Uri("https://openfreemap.org/"),
+});
+```
+
+The tile template above matches the sample's dated OpenFreeMap dataset. For a deployed
+application, discover the current template and source limits from OpenFreeMap's
+[TileJSON metadata](https://tiles.openfreemap.org/planet), following the metadata
+validation guidance above, rather than assuming that dated endpoint is permanent.
+Keep the provider and OpenStreetMap attribution visible.
 
 ## Troubleshooting
 

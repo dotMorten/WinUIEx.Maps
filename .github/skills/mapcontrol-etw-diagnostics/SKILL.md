@@ -155,7 +155,7 @@ payload inspection is best in PerfView's Events view.
 | 72 | `AccessibilitySnapshotPublished` | Info/VectorTiles+Accessibility | displayed semantic candidates, deduplication, bounded publication count, and scene version |
 | 73 | `AccessibilityAnnouncementDecision` | Info/Accessibility | feature count and whether a settled semantic update raised or suppressed a live-region announcement |
 | 74 | `AnimationsEnabledChanged` | Info/Camera+Accessibility | effective system animation preference changed, suppressing camera interpolation, touch inertia, focus transitions, and layer fades when disabled |
-| 75 | `VectorStyleCompatibilityIssue` | Info/Tiles+VectorTiles | aggregate unsupported or intentionally ignored Style Spec construct and occurrence count; custom styles use `style = -1`; ignored `symbol-avoid-edges` uses issue kind 4 because collisions span visible tiles |
+| 75 | `VectorStyleCompatibilityIssue` | Info/Tiles+VectorTiles | aggregate unsupported or intentionally ignored Style Spec construct and occurrence count; custom styles use `style = -1`; ignored `symbol-avoid-edges` uses issue kind 4 because collisions span visible tiles; kind 5 counts skipped components by sanitized parser reason; kinds 6/7 are reserved legacy flat-extrusion diagnostics and are no longer emitted for supported extrusion paints |
 | 76 | `VectorSymbolWorkingMemoryReleased` | Info/Icons+VectorTiles | renderer-owned symbol instance, placement, collision, and accessibility working capacities released when map resources become dormant |
 | 77 | `RenderFrameTiming` | Verbose/Frames | renderer/frame-correlated render-lock wait, CPU-side rendering, readback, Present, producer handoff, and total pass duration |
 | 78 | `MapFrameStageTiming` | Verbose/Frames | renderer/frame-correlated camera/scene, completion commits, raster, polygon, line, symbol, and remaining frame work |
@@ -173,6 +173,9 @@ payload inspection is best in PerfView's Events view.
 | 91 | `VectorPendingGeometry` | Verbose/VectorTiles | line/polygon pending tile-instance reuse and admission flags, and total pending bytes for that frame-cache owner; no source or tile-content identifiers |
 | 92 | `VectorCacheOwnership` | Verbose/Frames | renderer/frame-correlated ownership estimates for decoded features and tile-derived CPU storage, separate pending GPU geometry bytes, and resident tile count |
 | 93 | `VectorDashWork` | Verbose/Frames | renderer/frame-correlated process-wide cumulative offscreen dash spans skipped while Frames tracing is enabled |
+| 94 | `VectorExtrusionRenderBatch` | Verbose/VectorTiles+Device | aggregate triangles, draws including composite, evaluation failures, retained mesh bytes, and shared color/depth target bytes; zero-draw records also expose failed evaluations with no drawable geometry |
+| 95 | `VectorExtrusionPreparationFailed` | Error/VectorTiles+Errors | shared preparation worker failure, containing only the exception type, never feature values or style text |
+| 96 | `VectorGlyphRangeBackpressure` | Verbose/VectorTiles | per-provider active glyph-range and waiting-request counts when the 32-load limit is reached; no font, range, URL, or label content |
 
 ### Frame-time investigations
 
@@ -324,6 +327,26 @@ within unchanged literal zoom-step intervals, or beyond interpolation endpoints.
 interpolation, visibility crossings, evaluation failures, missing assets and text scaling still
 invalidate as needed; no zoom quantization or label reduction is applied.
 
+For zoom-heavy label stalls, compare symbol-stage time (78), glyph/failure counts (53),
+and GC CPU samples. Each tile lazily retains text-layer layouts independently: changing
+one layer no longer reshapes every label. Uniform, feature-independent text-size changes
+rescale the original layout when all other dependencies remain reusable. Wrapping is
+compared in glyph-em units; pixel spacing/padding remain unchanged and SDF halo widths
+are renormalized from their original values. Feature-dependent or otherwise incompatible
+changes still reevaluate. Missing-glyph layouts retry when the atlas revision changes,
+including at an unchanged camera zoom; unchanged failures retain their diagnostic counts.
+The cache does not mutate published symbol arrays, and its retained payload contributes
+to the existing tile CPU budget and event 92. Hidden layers release their saved symbols;
+styles without text allocate no text-layer cache.
+
+An ARM64 Release/CoreCLR tilted Liberty replay used eight wheel inputs, a matched
+1921-by-1162 physical map viewport, and provider mask `0x542` at Verbose. The original
+render mean/median/p95 were 92.55/107.68/166.45 ms. Two optimized replays measured
+64.51/53.07/157.46 and 51.13/42.90/124.50 ms; mean symbol work fell from 75.25 ms
+to 40.19 and 32.37 ms. All captures had zero lost events and no renderer/pipeline errors.
+Asynchronous tile arrivals and GC differ between replays, and long frames remain:
+these are CPU-side render-pass observations, not GPU timings or displayed-FPS guarantees.
+
 Polygon decoding reuses one LibTess tessellator per decode call. Its scratch pool is never
 shared between workers or retained by cached tiles, and published ring/triangle arrays remain
 independently owned. An ARM64 Debug/.NET 10 workload decoding 256 rectangles eight times
@@ -438,6 +461,27 @@ and request URLs out of traces.
 
 ## Reproduce and interpret
 
+For incomplete world views after leaving a detailed city, correlate acquisition failures
+(37/79) with glyph loads (52) and commits (49), rather than assuming extrusion preparation
+is stalled. World labels can need more than 32 font ranges concurrently. Both providers
+now wait for capacity in their shared in-flight deduplication helper instead of failing
+tiles with `InvalidDataException` at that limit. Event 96 reports backpressure; the
+32-active-load limit is unchanged. Canceled waiters leave promptly without canceling
+another tile's shared load, and failures/completions release capacity. Completed ranges
+remain owned by the bounded atlas, not by the request helper.
+Custom source selection also clamps its physical level to zero before applying explicit
+source limits: 512-pixel tiles must not select level -1 and deactivate below camera zoom 1.
+A positive `MinSourceZoom` still suppresses acquisition below that configured level.
+An ARM64 Release/CoreCLR reproduction (`0x5DF`, Verbose, 1286-by-874 physical viewport)
+recorded three acquisition-stage `InvalidDataException` failures while flattening Seattle
+and zooming to level 2. A fresh-source replay after the fix recorded 28 backpressure events,
+all four required tiles committed, no failures, and zero lost events, without further input.
+That replay's four-tile wave took 217 ms with warm HTTP assets; a separate cold-asset
+level-zero wave took about 10 seconds but completed automatically. Do not interpret the
+warm result as a guaranteed network latency. In packaged comparisons, verify the deployed
+library hash: an existing `AppX` staging directory can contain an older DLL than the
+just-built project output.
+
 - **Pan/zoom/rotate/tilt:** collect Camera+Tiles+Cache (`0x1C`) at Informational. Use
   `CameraTargetChanged`, `CameraHeadingTargetChanged`, and `CameraPitchTargetChanged` as the intent,
   `TileWaveStart/Stop` as the work, and generation plus sceneVersion as correlation.
@@ -483,7 +527,40 @@ and request URLs out of traces.
   managed symbol working capacities were dropped during dormant-resource release. The
   compatibility event's `issueKind` is `1` for
   layer types, `2` for unsupported layout properties, `3` for paint properties, and `4`
-  for intentionally ignored layout properties. Kind `4`, construct `symbol-avoid-edges`,
+  for intentionally ignored layout properties, and `5` for skipped icon/text/line/fill
+  components with a fixed parser-enum reason (for example `UnsupportedExpression` or
+  `UnsupportedSymbolPlacement`). Kind 5 uses the already parsed style, not a second parse,
+  and never includes source-layer names, expression text, or feature data.
+  An OpenFreeMap Liberty reproduction loaded 92 components and skipped 29 (ID 50);
+  ID 75 originally reported only one raster and one fill-extrusion layer, hiding the
+  comparison/placement parsing gaps. Modern `!=`, `<`, `<=`, `>`, and `>=` expressions
+  and legacy relational filters now resolve without dropping water, roads, boundaries,
+  POIs, and city labels. Zoom-dependent point/line placement participates in glyph
+  preparation, cache invalidation, alignment, and accessibility; point placement on
+  a line uses its length midpoint. Existing IDs 50/51/53/56/58 expose supported counts,
+  evaluation failures, and actual draws. Liberty also uses shorthand hex colors throughout
+  road interiors and labels: `#RGB` and `#RGBA` expand with the same premultiplied-alpha
+  contract as `#RRGGBB` and `#RRGGBBAA`, including interpolated colors. A successful parse
+  alone does not prove correct styling; check per-frame evaluation failures as well.
+  The hosted boundary style's redundant `["linear", 1]` is accepted as linear
+  interpolation; other extra bases remain unsupported.
+  With comparison/placement/color fixes the live style loads 121 components with zero
+  parser skips (ID 50). Classic extrusion adds the building layer for 122 components.
+  ID 75 still reports unsupported raster relief. Liberty's `render_height` and
+  `render_min_height` provide top/base elevations in meters, not additive heights.
+  Extrusions use separate lazy meshes, depth-tested roofs/walls, root style lighting,
+  and optional repeating patterns. Layer opacity is applied once after visible surfaces
+  have been resolved, preventing overlapping walls from accumulating opacity.
+  IDs 94/95 expose geometry, native target/mesh ownership, and evaluation/preparation
+  failures. Mesh scratch also contributes to ID 90. Dedicated resources are created
+  only for drawable extrusions and released when sources become ineligible or are removed.
+  Elevated acquisition coverage includes the camera footprint so tall offscreen buildings
+  are not culled solely by their ground position. The existing scheduler and preparation
+  owner remain shared with ordinary tiles. Labels/icons remain overlays; no terrain,
+  shadows, modern material effects, or timed paint/pattern transitions are implemented.
+  Kinds 6/7 remain reserved for compatibility with older traces, not emitted for current
+  supported extrusion properties.
+  Kind `4`, construct `symbol-avoid-edges`,
   confirms the renderer allows complete symbols across tile boundaries and relies on
   viewport-wide collision handling instead of tile-local edge rejection.
 - **Cache/dedup:** inspect ID 18 over time. A high `pendingDedupCount` is expected while a

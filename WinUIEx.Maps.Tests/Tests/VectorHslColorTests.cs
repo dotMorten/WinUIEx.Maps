@@ -7,6 +7,21 @@ namespace WinUIEx.Maps.Tests;
 public sealed class VectorHslColorTests
 {
     [TestMethod]
+    [DataRow("#fff", "#ffffff")]
+    [DataRow("#666", "#666666")]
+    [DataRow("#fc8", "#ffcc88")]
+    [DataRow("#AbC", "#aabbcc")]
+    [DataRow("#1238", "#11223388")]
+    [DataRow("#ffff", "#ffffffff")]
+    [DataRow("#f000", "#ff000000")]
+    public void ShorthandHexColorsMatchExpandedPremultipliedRgba(string shorthand, string expanded)
+    {
+        Assert.IsTrue(VectorTextStyleLayer.TryParseColor(VectorStyleValue.FromString(expanded), out var expected));
+        Assert.IsTrue(VectorTextStyleLayer.TryParseColor(VectorStyleValue.FromString(shorthand), out var actual));
+        Assert.AreEqual(expected, actual);
+    }
+
+    [TestMethod]
     [DataRow("hsl(0, 100%, 50%)", 1d, 0d, 0d, 1d)]
     [DataRow("hsl(120, 100%, 50%)", 0d, 1d, 0d, 1d)]
     [DataRow("hsl(-120, 100%, 50%)", 0d, 0d, 1d, 1d)]
@@ -35,6 +50,12 @@ public sealed class VectorHslColorTests
     [DataRow("hsla(0, 50%, 50%, NaN)")]
     [DataRow("rgb(NaN, 0, 0)")]
     [DataRow("rgba(0, 0, 0, NaN)")]
+    [DataRow("#ff")]
+    [DataRow("#fffff")]
+    [DataRow("#ggg")]
+    [DataRow("#123z")]
+    [DataRow("#12 456")]
+    [DataRow("#12  ")]
     public void MalformedOrNonfiniteColorsDoNotReachGpuBuffers(string text) =>
         Assert.IsFalse(VectorTextStyleLayer.TryParseColor(VectorStyleValue.FromString(text), out _));
 }

@@ -8,6 +8,40 @@ namespace WinUIEx.Maps.Tests;
 public sealed class MapRendererRasterTests
 {
     [TestMethod]
+    public void OpaquePresentationSurfaceUsesConfiguredClearColor()
+    {
+        using MapRenderer renderer = new();
+        renderer.SetPresentationSurface(
+            PresentationSurfaceMode.Opaque,
+            0.1f,
+            0.2f,
+            0.3f,
+            1);
+        renderer.InitializeOffscreenForBenchmark(1, 1);
+
+        MapRenderFrame frame = renderer.CaptureOffscreenFrameForBenchmark();
+
+        Assert.AreSequenceEqual(new byte[] { 77, 51, 26, 255 }, frame.Pixels.ToArray());
+    }
+
+    [TestMethod]
+    public void AlphaPresentationSurfaceClearsTransparent()
+    {
+        using MapRenderer renderer = new();
+        renderer.SetPresentationSurface(
+            PresentationSurfaceMode.PremultipliedAlpha,
+            0,
+            0,
+            0,
+            0);
+        renderer.InitializeOffscreenForBenchmark(1, 1);
+
+        MapRenderFrame frame = renderer.CaptureOffscreenFrameForBenchmark();
+
+        Assert.AreSequenceEqual(new byte[] { 0, 0, 0, 0 }, frame.Pixels.ToArray());
+    }
+
+    [TestMethod]
     public async Task LiveRefreshRetainsVectorGeometryButRequestsAndCommitsNewGeneration()
     {
         using MapRenderer renderer = new();

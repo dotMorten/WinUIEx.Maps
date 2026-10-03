@@ -7,6 +7,32 @@ namespace WinUIEx.Maps.Tests;
 public sealed class VectorMemoryOwnershipTests
 {
     [TestMethod]
+    public void TextLayoutCacheIsChargedAndMissingGlyphsRetryWithoutCameraChanges()
+    {
+        byte[] bytes = new MapboxVectorTileBuilder().AddPoint("poi", 2048, 2048).Build();
+        var source = TestVectorTileSource.Create(new(14, 4823, 6160), bytes, """
+            {"version":8,"layers":[{"type":"symbol","source-layer":"poi","minzoom":13,
+              "layout":{"text-field":"AAAA","text-font":["Test"],
+                "text-size":["interpolate",["linear"],["zoom"],13,12,16,24]}}]}
+            """, "{}", [0, 0, 0, 0], 1, 1);
+        var entry = new MapRenderer.VectorTileCacheEntry(VectorTileDecoder.Decode(bytes), source.StyleAssets, 0);
+        long initial = entry.ByteSize;
+        Assert.AreEqual(4, entry.GetSymbols(14, 1).UnavailableGlyphCount);
+        source.AddGlyphs("Test", TestGlyph.RectangleSdf('A'));
+        var first = entry.GetSymbols(14, 1);
+        Assert.AreEqual(0, first.UnavailableGlyphCount);
+        Assert.HasCount(4, first.Symbols);
+        Assert.IsGreaterThan(2 * entry.SymbolPayloadBytes, entry.ByteSize - initial,
+            "Both published symbols and the retained original glyph layout must be charged.");
+        long resolved = entry.ByteSize;
+        var next = entry.GetSymbols(14.5, 1);
+        Assert.AreNotSame(first.Symbols, next.Symbols);
+        Assert.AreEqual(resolved, entry.ByteSize);
+        Assert.IsEmpty(entry.GetSymbols(12, 1).Symbols);
+        Assert.AreEqual(initial, entry.ByteSize, "Hidden layouts must release retained symbol payloads.");
+    }
+
+    [TestMethod]
     public void DecoderOwnershipFastPathMatchesReferenceDeduplication()
     {
         MapboxVectorTileBuilder builder = new();

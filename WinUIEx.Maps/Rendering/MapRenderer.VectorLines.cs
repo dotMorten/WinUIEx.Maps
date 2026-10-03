@@ -108,6 +108,8 @@ internal sealed partial class MapRenderer
                     {
                         foreach (VectorLineCachedBatch batch in cached.Batches)
                         {
+                            if (!IsVectorOrderVisible(batch.Key.StyleLayerOrder))
+                                continue;
                             DrawGpuGeometryBuffer(
                                 context,
                                 batch.Buffer,
@@ -174,6 +176,8 @@ internal sealed partial class MapRenderer
             batchOrder.Sort(CompareVectorLineBatches);
             foreach (VectorLineBatchKey key in batchOrder)
             {
+                if (!IsVectorOrderVisible(key.StyleLayerOrder))
+                    continue;
                 NativeGeometryBuffer buffer = batches[key];
                 DrawGeometryBuffer(
                     context,
@@ -341,6 +345,8 @@ internal sealed partial class MapRenderer
                      pendingOrder[pendingIndex]) <= 0))
             {
                 VectorLineCachedBatch batch = cached.Batches[cachedIndex++];
+                if (!IsVectorOrderVisible(batch.Key.StyleLayerOrder))
+                    continue;
                 DrawGpuGeometryBuffer(
                     context,
                     batch.Buffer,
@@ -351,6 +357,8 @@ internal sealed partial class MapRenderer
             else
             {
                 VectorLineBatchKey key = pendingOrder[pendingIndex++];
+                if (!IsVectorOrderVisible(key.StyleLayerOrder))
+                    continue;
                 foreach (var draw in pending[key])
                     pendingResult.DrawCallCount += DrawPendingGeometry(context, draw, key.Color);
             }

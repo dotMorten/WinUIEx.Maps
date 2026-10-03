@@ -124,6 +124,7 @@ internal sealed partial class MapRenderer : DirectXRenderer
     /// </remarks>
     protected override void ReleaseRendererResources()
     {
+        ReleaseExtrusions();
         ReleaseLineComposite();
         MapControlEventSource.Log.DeviceResourcesReleased(
             GetType().Name,

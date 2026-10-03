@@ -20,9 +20,17 @@ namespace WinUIEx.Maps;
 /// Set <see cref="StyleUrl"/> to interpret <see cref="TileUrl"/> as a Mapbox Vector Tile
 /// PBF template and load its Mapbox Style Specification, sprites, and glyphs. Leave
 /// <see cref="StyleUrl"/> null for raster image tiles. The supported style subset includes
-/// first-layer solid backgrounds plus the fill, line, circle, and symbol behavior used by
-/// the renderer. Both expression arrays and legacy stop functions are accepted for
+/// first-layer solid backgrounds plus fill, line, circle, symbol, and classic
+/// <c>fill-extrusion</c> layers. Extrusions render roofs and walls with nonnegative
+/// meter-based height/base, color or repeating sprite patterns, layer opacity,
+/// translation, vertical gradients, and root style lighting. Color alpha is ignored;
+/// use extrusion opacity for transparency. Labels and map icons remain overlays.
+/// Terrain, shadows, modern material effects, and timed paint/pattern transitions
+/// are not supported. Styles without extrusions do not allocate extrusion resources.
+/// Both expression arrays and legacy stop functions are accepted for
 /// supported properties, and token substitution is supported for text and icon fields.
+/// Comparison filters support equality, inequality, and numeric or ordinal string ordering.
+/// Symbol placement can switch between point anchors and repeated line symbols with zoom.
 /// Unsupported style layers and expressions are skipped.
 /// </para>
 /// <para>
@@ -302,7 +310,8 @@ public class TileLayer : MapLayer
     /// <value>An inclusive source zoom from 0 through 22. The default is 0.</value>
     /// <remarks>
     /// The layer does not acquire tiles when the source zoom selected from the camera and
-    /// <see cref="TileSize"/> is below this level.
+    /// <see cref="TileSize"/> is below this level. Source selection is clamped to level zero,
+    /// so sources starting at zero remain visible at world zoom even with larger tiles.
     /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">
     /// The value is outside 0 through 22 or exceeds <see cref="MaxSourceZoom"/>.

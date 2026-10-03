@@ -1189,7 +1189,7 @@ internal sealed class RasterTileManager : IDisposable
                 // the normal active source level and never fills fallback levels.
                 IReadOnlyList<TileId> required = GetActiveRequestTiles(
                     layer.Acquisition.RenderKind is LayerRenderKind.VectorPoints or LayerRenderKind.HybridTiles
-                        ? MapCamera.CreateLabelCollisionScene(sourceScene)
+                        ? _renderer.CreateVectorRequestScene(RuntimeId, sourceScene)
                         : sourceScene,
                     layer.Acquisition.IncludesTile);
                 RasterTileLookupResult lookup = _renderer.GetMissingRasterTiles(

@@ -64,6 +64,7 @@ public sealed partial class MainWindow : Window
             "azure-traffic" or "azure-weather" => typeof(AzureOverlaysPage),
             "openstreetmap" => typeof(OpenStreetMapPage),
             "arcgis-vector" => typeof(CustomVectorTilesPage),
+            "openstreetmap-vector" => typeof(OpenStreetMapVectorTilesPage),
             "elements" => typeof(MapElementsPage),
             "camera" => typeof(CameraBindingPage),
             "set-view" => typeof(TrySetViewPage),

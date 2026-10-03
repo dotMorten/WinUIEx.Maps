@@ -593,6 +593,7 @@ public sealed class RasterTileManagerTests
 
     [TestMethod]
     [DataRow(-1, 0, 22, null)]
+    [DataRow(0, 1, 22, null)]
     [DataRow(12, 0, 22, 12)]
     [DataRow(23, 0, 22, 22)]
     public void SourceZoomClampsAboveMaximumAndRejectsBelowMinimum(

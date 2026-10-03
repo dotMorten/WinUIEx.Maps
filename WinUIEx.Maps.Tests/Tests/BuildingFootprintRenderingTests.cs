@@ -8,6 +8,67 @@ namespace WinUIEx.Maps.Tests;
 public sealed class BuildingFootprintRenderingTests
 {
     [TestMethod]
+    [DataRow(0d, 1d)]
+    [DataRow(45d, 1d)]
+    [DataRow(0d, 0.5)]
+    [DataRow(45d, 0.5)]
+    public async Task ZeroHeightExtrusionsPreserveCourtyardsAndLayerOpacity(double pitch, double opacity)
+    {
+        MapRenderFrame expected = await Render("fill");
+        MapRenderFrame actual = await Render("fill-extrusion");
+        int different = 0;
+        for (int i = 0; i < actual.Pixels.Length; i += 4)
+            if (Math.Abs(actual.Pixels.Span[i] - expected.Pixels.Span[i]) > 3 ||
+                Math.Abs(actual.Pixels.Span[i + 2] - expected.Pixels.Span[i + 2]) > 3)
+                different++;
+        Assert.IsLessThan(512, different, "Only boundary antialiasing may differ from the flat fill.");
+        Assert.IsGreaterThan(100, actual.Pixels.Span.ToArray()
+            .Where((value, index) => index % 4 == 2 && value > 80).Count(),
+            "The fallback must contribute building pixels, not merely match empty frames.");
+
+        async Task<MapRenderFrame> Render(string type)
+        {
+            using MapRenderer renderer = new();
+            renderer.InitializeOffscreenForBenchmark(256, 256);
+            TileId tile = new(15, 16384, 16384);
+            byte[] bytes = new MapboxVectorTileBuilder()
+                .AddPolygon("land", [[new(0, 0), new(4096, 0), new(4096, 4096), new(0, 4096)]])
+                .AddPolygon("building", [
+                    [new(512, 512), new(3584, 512), new(3584, 3584), new(512, 3584)],
+                    [new(1536, 1536), new(1536, 2560), new(2560, 2560), new(2560, 1536)]])
+                .AddLine("road", [new(0, 1024), new(4096, 1024)]).Build();
+            var source = TestVectorTileSource.Create(tile, bytes,
+                $$$"""
+                {"version":8,"light":{"intensity":0},"layers":[
+                  {"type":"fill","source-layer":"land","paint":{"fill-color":"#00f"}},
+                  {"type":"{{{type}}}","source-layer":"building","minzoom":14,"paint":{
+                    "{{{type}}}-color":"#f00","{{{type}}}-opacity":0.8,"fill-antialias":false}},
+                  {"type":"line","source-layer":"road","paint":{"line-color":"#0f0","line-width":8}}
+                ]}
+                """, "{}", [0, 0, 0, 0], 1, 1);
+            renderer.SetLayerRenderPlan([new(LayerRenderKind.VectorPoints, 0, 1, true, opacity,
+                TimeSpan.Zero, 0, 24, 0, 256)]);
+            renderer.SetCameraTargetImmediately(source.TileCenter.Longitude, source.TileCenter.Latitude,
+                15, 256, 256, 20, pitch);
+            renderer.ActivateRasterTileSet(1, 1, 1,
+                MapCamera.CreateScene(source.TileCenter.Longitude, source.TileCenter.Latitude,
+                    15, 15, 256, 256, 20, pitch),
+                id => id == tile, RasterSourceKind.Custom, LayerRenderKind.VectorPoints, false);
+            renderer.AddVectorTileForBenchmark(new(1, tile), VectorTileDecoder.Decode(bytes), source.StyleAssets);
+            if (type == "fill-extrusion")
+            {
+                using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+                while (renderer.ExtrusionMeshBytesForTest == 0)
+                {
+                    renderer.RenderOffscreenFrameForBenchmark();
+                    await Task.Delay(10, timeout.Token);
+                }
+            }
+            return renderer.CaptureOffscreenFrameForBenchmark();
+        }
+    }
+
+    [TestMethod]
     [DataRow(1d)]
     [DataRow(0.5)]
     public void AzureHslaFootprintsRenderPolygonsWithHolesOutlinesAndRoadsAbove(double opacity)

@@ -10,6 +10,9 @@ internal enum VectorStyleCompatibilityIssueKind
     UnsupportedLayoutProperty = 2,
     UnsupportedPaintProperty = 3,
     IgnoredLayoutProperty = 4,
+    SkippedLayer = 5,
+    FlatLayerFallback = 6,
+    IgnoredPaintProperty = 7,
 }
 
 internal readonly record struct VectorStyleCompatibilityIssue(
@@ -25,6 +28,7 @@ internal static class VectorStyleCompatibility
             {
                 ["background"] = ["visibility"],
                 ["fill"] = ["visibility"],
+                ["fill-extrusion"] = ["visibility"],
                 ["line"] =
                 [
                     "visibility",
@@ -91,6 +95,17 @@ internal static class VectorStyleCompatibility
                     "fill-translate",
                     "fill-translate-anchor",
                     "fill-antialias",
+                ],
+                ["fill-extrusion"] =
+                [
+                    "fill-extrusion-color",
+                    "fill-extrusion-opacity",
+                    "fill-extrusion-pattern",
+                    "fill-extrusion-translate",
+                    "fill-extrusion-translate-anchor",
+                    "fill-extrusion-height",
+                    "fill-extrusion-base",
+                    "fill-extrusion-vertical-gradient",
                 ],
                 ["line"] =
                 [
@@ -208,7 +223,7 @@ internal static class VectorStyleCompatibility
         ];
     }
 
-    internal static void Report(int style, ReadOnlyMemory<byte> json)
+    internal static void Report(int style, ReadOnlyMemory<byte> json, VectorStyle? parsedStyle = null)
     {
         if (!MapControlEventSource.Log.IsEnabled(
                 EventLevel.Informational,
@@ -225,6 +240,21 @@ internal static class VectorStyleCompatibility
                 (int)issue.Kind,
                 issue.Construct,
                 issue.Count);
+        }
+        if (parsedStyle is not null)
+        {
+            foreach (VectorStyleLayerParseResult reason in Enum.GetValues<VectorStyleLayerParseResult>())
+            {
+                int count = parsedStyle.GetUnsupportedLayerCount(reason);
+                if (count > 0)
+                {
+                    MapControlEventSource.Log.VectorStyleCompatibilityIssue(
+                        style,
+                        (int)VectorStyleCompatibilityIssueKind.SkippedLayer,
+                        reason.ToString(),
+                        count);
+                }
+            }
         }
     }
 

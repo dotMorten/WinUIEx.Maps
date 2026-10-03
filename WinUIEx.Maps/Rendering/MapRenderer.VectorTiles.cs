@@ -177,6 +177,8 @@ internal sealed partial class MapRenderer
             if (previous is not null)
                 entry.ReadyTimestamp = previous.ReadyTimestamp;
             _vectorTiles[completed.Tile.Key] = entry;
+            if (state.VectorStyleAssets?.HasExtrusions != true && completed.Tile.StyleAssets.HasExtrusions)
+                _extrusionCoverageInvalidated = true;
             state.VectorStyleAssets = completed.Tile.StyleAssets;
             OnVectorTilesChanged(disposeGeometryCaches: replacing, completed.Tile.Key.SourceId);
             acceptedCount++;
@@ -2102,6 +2104,9 @@ internal sealed partial class MapRenderer
                     .Where(state.IncludesTile)
                     .Select(id => new RasterTileKey(sourceId, id)));
             MapScene scene = CreateCurrentRasterScene(state.Scene.TileZoom);
+            if (state.VectorStyleAssets?.HasExtrusions == true)
+                protectedKeys.UnionWith(CreateExtrusionScene(scene).RequiredTiles
+                    .Where(state.IncludesTile).Select(id => new RasterTileKey(sourceId, id)));
             protectedKeys.UnionWith(
                 MapCamera.CreateLabelCollisionScene(scene).RequiredTiles
                     .Where(state.IncludesTile)
@@ -2154,6 +2159,9 @@ internal sealed partial class MapRenderer
         VectorStyleAssets styleAssets,
         int style)
     {
+        internal VectorExtrusionResolution ResolveExtrusions(double zoom) =>
+            styleAssets.ResolveExtrusions(features, zoom);
+
         // Entry, resolution records, membership dictionary, and cache lookup overhead.
         private const long RetainedOwnerOverheadBytes = 512;
         private double _resolvedZoom = double.NaN;
@@ -2161,6 +2169,7 @@ internal sealed partial class MapRenderer
         private VectorSymbolResolution _resolved =
             new([], 0, 0);
         private VectorSymbolProjectionData? _symbolProjection;
+        private VectorStyleAssets.TextResolutionCache? _textResolutionCache;
         private double _resolvedLineZoom = double.NaN;
         private double _lastDrawableLineZoom = double.NaN;
         private VectorLineResolution _resolvedLines = new([], 0);
@@ -2192,7 +2201,7 @@ internal sealed partial class MapRenderer
 
         internal long DerivedByteSize => RetainedOwnerOverheadBytes + _lineBytes + _polygonBytes +
             _symbolBytes + _accessibilityBytes + _geometryMembership.ByteSize +
-            (_symbolProjection?.RetainedByteSize ?? 0);
+            (_symbolProjection?.RetainedByteSize ?? 0) + (_textResolutionCache?.ByteSize ?? 0);
 
         internal long ByteSize => features.RetainedByteSize +
             (_incidentIndex?.ByteSize ?? 0) + DerivedByteSize;
@@ -2214,12 +2223,15 @@ internal sealed partial class MapRenderer
                     (_resolved.UnavailableGlyphCount != 0 ||
                      _resolved.UnavailableSpriteCount != 0 ||
                      !styleAssets.CanReuseSymbols(_resolvedZoom, zoom))) ||
-                _resolvedTextScaleFactor != textScaleFactor)
+                _resolvedTextScaleFactor != textScaleFactor ||
+                (_resolved.UnavailableGlyphCount != 0 &&
+                    _textResolutionCache?.GlyphVersion != styleAssets.GlyphAtlas.Version))
             {
                 _resolved = styleAssets.ResolveSymbols(
                     features,
                     zoom,
-                    textScaleFactor);
+                    textScaleFactor,
+                    styleAssets.HasTextLayers ? _textResolutionCache ??= new() : null);
                 _symbolBytes = _resolved.Symbols.Length == 0 ? 0 : 24 + SymbolPayloadBytes;
                 _symbolProjection = null;
                 _resolvedZoom = zoom;

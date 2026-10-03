@@ -167,7 +167,7 @@ public sealed partial class ComparisonWebMapControl : MapControl
             if (success.ValueKind == JsonValueKind.True)
             {
                 _ready = true;
-                StatusChanged?.Invoke(this, $"Ready (road style {RoadStyleVersion})");
+                StatusChanged?.Invoke(this, $"Ready");
                 InitialViewApplied?.Invoke(this, EventArgs.Empty);
             }
             else
