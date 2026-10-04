@@ -158,7 +158,7 @@ public sealed partial class MapControl : Control
     private MapControlAutomationPeer? _automationPeer;
     private int _automationCameraUpdateQueued;
     private SolidColorBrush? _solidBackground;
-    private long _solidBackgroundColorToken;
+    private readonly WeakBackgroundColorChangedSubscription _backgroundColorSubscription;
     private Vector4? _opaqueVectorCanvas;
 
     internal int TrackedElementReferenceCount => _elementCounts.Values.Sum();
@@ -272,6 +272,7 @@ public sealed partial class MapControl : Control
     {
         _xamlRootChangedSubscription =
             new WeakXamlRootChangedSubscription(this);
+        _backgroundColorSubscription = new WeakBackgroundColorChangedSubscription(this);
         _renderer = new MapRenderer();
         _renderer.SceneChanged += OnRendererSceneChanged;
         _renderer.DisplayedCameraChanged += OnRendererDisplayedCameraChanged;
@@ -444,6 +445,7 @@ public sealed partial class MapControl : Control
         AttachLifecycleSubscriptions();
         _iconService.SetLoaded(true);
         AttachIconXamlRoot();
+        UpdatePresentationSurface();
         bool runtimeRecreated = false;
         if (_panel is not null)
         {
@@ -477,6 +479,7 @@ public sealed partial class MapControl : Control
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         MapControlEventSource.Log.ControlUnloaded();
+        _backgroundColorSubscription.Detach();
         _touchPitch.Clear();
         ResetTouchManipulation();
         _iconService.SetLoaded(false);
@@ -506,6 +509,7 @@ public sealed partial class MapControl : Control
             if (IsAttachedToXamlRootVisualTree())
             {
                 _iconService.SetLoaded(true);
+                UpdatePresentationSurface();
                 _renderer.Resume();
                 _rasterTileManager.Resume();
                 PublishLayerSnapshots();
@@ -687,6 +691,7 @@ public sealed partial class MapControl : Control
         _runtimeResourcesReleased = true;
         _azureRefreshTimer?.Stop();
         _iconService.SetRuntimeResourcesAvailable(false);
+        _backgroundColorSubscription.Detach();
         DetachIconXamlRoot();
         _iconService.ReleaseDormantResources();
         DetachLifecycleSubscriptions();
@@ -1401,9 +1406,6 @@ public sealed partial class MapControl : Control
     private void OnBackgroundChanged(DependencyObject sender, DependencyProperty property) =>
         UpdatePresentationSurface();
 
-    private void OnSolidBackgroundColorChanged(DependencyObject sender, DependencyProperty property) =>
-        UpdatePresentationSurface();
-
     private void OnOpaqueVectorCanvasChanged(Vector4? canvas)
     {
         _opaqueVectorCanvas = canvas;
@@ -1412,20 +1414,11 @@ public sealed partial class MapControl : Control
 
     private void UpdatePresentationSurface()
     {
-        if (_solidBackground is not null)
-        {
-            _solidBackground.UnregisterPropertyChangedCallback(
-                SolidColorBrush.ColorProperty,
-                _solidBackgroundColorToken);
-            _solidBackground = null;
-        }
+        _solidBackground = Background as SolidColorBrush;
+        _backgroundColorSubscription.Attach(_solidBackground);
 
-        if (Background is SolidColorBrush solid)
+        if (_solidBackground is SolidColorBrush solid)
         {
-            _solidBackground = solid;
-            _solidBackgroundColorToken = solid.RegisterPropertyChangedCallback(
-                SolidColorBrush.ColorProperty,
-                OnSolidBackgroundColorChanged);
             if (solid.Color.A == byte.MaxValue)
             {
                 _renderer.SetPresentationSurface(
@@ -1927,6 +1920,45 @@ public sealed partial class MapControl : Control
         timer.Stop();
         timer.Tick -= OnMissingAzureTokenTimerTick;
         _missingAzureTokenTimer = null;
+    }
+
+    private sealed class WeakBackgroundColorChangedSubscription(MapControl owner)
+    {
+        // Theme brushes outlive controls; their native callbacks must not root a map.
+        private readonly WeakReference<MapControl> _owner = new(owner);
+        private WeakReference<SolidColorBrush>? _brush;
+        private long _token;
+
+        internal void Attach(SolidColorBrush? brush)
+        {
+            if (_brush?.TryGetTarget(out SolidColorBrush? current) == true &&
+                ReferenceEquals(current, brush))
+                return;
+            Detach();
+            if (brush is not null)
+            {
+                _brush = new(brush);
+                _token = brush.RegisterPropertyChangedCallback(SolidColorBrush.ColorProperty, OnChanged);
+            }
+        }
+
+        internal void Detach()
+        {
+            if (_brush?.TryGetTarget(out SolidColorBrush? brush) == true)
+                brush.UnregisterPropertyChangedCallback(SolidColorBrush.ColorProperty, _token);
+            _brush = null;
+        }
+
+        private void OnChanged(DependencyObject sender, DependencyProperty property)
+        {
+            if (_owner.TryGetTarget(out MapControl? control))
+                control.UpdatePresentationSurface();
+            else
+            {
+                sender.UnregisterPropertyChangedCallback(property, _token);
+                _brush = null;
+            }
+        }
     }
 
     private sealed class WeakXamlRootChangedSubscription(MapControl owner)

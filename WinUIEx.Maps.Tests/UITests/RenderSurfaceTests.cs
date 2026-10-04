@@ -12,6 +12,37 @@ namespace WinUIEx.Maps.Tests.UITests;
 public sealed class RenderSurfaceTests
 {
     [TestMethod]
+    public Task BackgroundColorChangesAndReplacementUpdateTheRenderedSurface() =>
+        MapControlTestHost.LoadMapControlAsync(
+            MapControlTestUtilities.InitialCenter,
+            MapControlTestUtilities.InitialZoomLevel,
+            async map =>
+            {
+                using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+                SolidColorBrush first = new(Colors.Red);
+                map.Background = first;
+                await AssertBackground(255, 0, 0);
+                first.Color = Colors.Blue;
+                await AssertBackground(0, 0, 255);
+                SolidColorBrush second = new(Colors.Green);
+                map.Background = second;
+                await AssertBackground(0, 128, 0);
+                first.Color = Colors.Yellow;
+                await AssertBackground(0, 128, 0);
+                second.Color = Colors.Red;
+                await AssertBackground(255, 0, 0);
+
+                async Task AssertBackground(byte red, byte green, byte blue)
+                {
+                    MapRenderFrame frame = await map.CaptureRenderedFrameAsync(timeout.Token);
+                    Assert.AreEqual(blue, frame.Pixels.Span[0]);
+                    Assert.AreEqual(green, frame.Pixels.Span[1]);
+                    Assert.AreEqual(red, frame.Pixels.Span[2]);
+                    Assert.AreEqual((byte)255, frame.Pixels.Span[3]);
+                }
+            });
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task CaptureUsesPhysicalPixelsAndPreservesLogicalIconPositionAfterResize(bool disableAntialiasing)

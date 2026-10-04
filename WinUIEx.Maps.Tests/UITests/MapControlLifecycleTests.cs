@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -272,6 +273,99 @@ public sealed class MapControlLifecycleTests
                     currentMap.ZoomLevel);
             });
     }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SharedBackgroundBrushDoesNotRetainUnloadedMaps(bool explicitBackground)
+    {
+        await MapControlTestHost.LoadUIAsync(
+            () => new Grid
+            {
+                Background = new SolidColorBrush(Microsoft.UI.Colors.Red),
+            },
+            async root =>
+            {
+                Grid host = (Grid)root;
+                List<WeakReference<MapControl>> maps = [];
+                for (int index = 0; index < 3; index++)
+                    maps.Add(await CreateAndUnloadBackgroundMapAsync(
+                        host, explicitBackground ? host.Background : null));
+
+                await CollectMapsAsync(maps.ToArray());
+                Assert.IsTrue(maps.All(map => !map.TryGetTarget(out _)),
+                    "A shared background brush must not keep retired maps and their renderer caches alive.");
+                GC.KeepAlive(host.Background);
+            });
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task<WeakReference<MapControl>> CreateAndUnloadBackgroundMapAsync(
+        Grid host, Brush? background)
+    {
+        MapControl map = new()
+        {
+            Width = 640,
+            Height = 480,
+            MapStyle = MapStyle.Blank,
+        };
+        if (background is not null)
+            map.Background = background;
+        await AddAsync(host, map);
+        await MapControlTestUtilities.WaitForAsync(() => map.RendererHasDeviceResources);
+        await RemoveAsync(host, map);
+        return new WeakReference<MapControl>(map);
+    }
+
+    [TestMethod]
+    public Task SharedBackgroundBrushDoesNotRetainNeverLoadedMap() =>
+        MapControlTestHost.LoadUIAsync(
+            () => new Grid { Background = new SolidColorBrush(Microsoft.UI.Colors.Red) },
+            async root =>
+            {
+                Grid host = (Grid)root;
+                WeakReference<MapControl> map = CreateNeverLoadedBackgroundMap(host.Background);
+                await CollectMapsAsync([map]);
+                Assert.IsFalse(map.TryGetTarget(out _),
+                    "A brush callback must not root a map that never receives Unloaded.");
+                ((SolidColorBrush)host.Background).Color = Microsoft.UI.Colors.Blue;
+            });
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference<MapControl> CreateNeverLoadedBackgroundMap(Brush background) =>
+        new(new MapControl { MapStyle = MapStyle.Blank, Background = background });
+
+    [TestMethod]
+    public Task ReloadedMapObservesBackgroundColorChanges() =>
+        MapControlTestHost.LoadUIAsync(
+            () => new Grid(),
+            async root =>
+            {
+                Grid host = (Grid)root;
+                SolidColorBrush background = new(Microsoft.UI.Colors.Red);
+                MapControl map = new()
+                {
+                    Width = 640,
+                    Height = 480,
+                    MapStyle = MapStyle.Blank,
+                    Background = background,
+                };
+                await AddAsync(host, map);
+                using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+                await map.CaptureRenderedFrameAsync(timeout.Token);
+                await RemoveAsync(host, map);
+                Assert.IsTrue(map.RendererHasDeviceResources);
+                background.Color = Microsoft.UI.Colors.Blue;
+                await AddAsync(host, map);
+                MapRenderFrame blue = await map.CaptureRenderedFrameAsync(timeout.Token);
+                Assert.AreEqual((byte)255, blue.Pixels.Span[0]);
+                Assert.AreEqual((byte)0, blue.Pixels.Span[2]);
+                background.Color = Microsoft.UI.Colors.Red;
+                MapRenderFrame red = await map.CaptureRenderedFrameAsync(timeout.Token);
+                Assert.AreEqual((byte)0, red.Pixels.Span[0]);
+                Assert.AreEqual((byte)255, red.Pixels.Span[2]);
+                await RemoveAsync(host, map);
+            });
 
     [TestMethod]
     public async Task RepeatedSymbolMapsReleaseRendererWorkingMemory()

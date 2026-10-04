@@ -603,6 +603,21 @@ this is a sample-host policy, not a control timeout. Switching tabs or removing 
 within the same sample does not trigger that host collection. Account for those forced
 collections when profiling sample-to-sample navigation.
 
+If repeated navigation emits `ControlUnloaded` (3) and `RenderingSuspended` (27) but no
+`DeviceResourcesReleased` (7), inspect live control roots before blaming extrusion or
+unbalanced scratch allocation. A shared theme `SolidColorBrush.Color` callback previously
+rooted every retired map through native WinRT event ownership, retaining its entire CPU/GPU
+scene. Background-color subscriptions now weakly reference the control, detach on unload,
+and reconnect on load; owned inactive maps still retain their caches.
+An ARM64 Debug/CoreCLR replay of five OpenStreetMap-vector/Home cycles at a 1978-by-1344,
+4x-MSAA viewport grew Home private memory from 1048 to 4340 MiB before the fix.
+The matched corrected replay fluctuated between 558 and 687 MiB at Home rather than growing
+per visit. Event 7 confirmed all five renderers released their resources, versus none before;
+both traces lost zero events and event 90 showed balanced scratch allocation/release.
+Post-navigation GC dumps retained five maps and 1462 MB of managed payload before the fix,
+versus no maps and 7.1 MB afterward. Private-memory numbers are whole-process observations,
+not GPU residency or a claim that driver/GC high-water commitment returns to startup levels.
+
 ## Privacy and Copilot analysis rules
 
 The provider never records `MapServiceToken`, source keys, tile templates, expanded request

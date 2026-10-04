@@ -36,6 +36,7 @@
     <Version>1.0.2</Version>
     <Description>A WinUI 3 map control with Azure Maps vector and raster basemaps, custom tile layers, map elements, and using Direct3D rendering.</Description>
     <PackageReleaseNotes>
+       - Fix a memory leak causing MapControl to be retained, introduced in 1.0.1
     </PackageReleaseNotes>
   </PropertyGroup>
 
