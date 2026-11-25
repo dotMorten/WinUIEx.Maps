@@ -58,7 +58,7 @@
     <PackageReference Include="Azure.Maps.Routing" Version="1.0.0-beta.4" />
     <PackageReference Include="Azure.Maps.Search" Version="1.0.0-beta.5" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.1-experimental" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.6-experimental" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools.WinApp" Version="0.6.1" />
   </ItemGroup>
