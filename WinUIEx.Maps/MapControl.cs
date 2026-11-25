@@ -367,6 +367,26 @@ public sealed partial class MapControl : Control
         return true;
     }
 
+    /// <summary>Converts a geographic location to an offset relative to the upper-left corner of the control.</summary>
+    /// <param name="location">The location to project.</param>
+    /// <param name="offset">The projected offset, which may be outside the viewport.</param>
+    /// <returns>Whether the currently displayed camera could project the location.</returns>
+    /// <remarks>Call on the UI thread. Projection includes the displayed animation, heading, and pitch.</remarks>
+    public bool TryGetOffsetFromLocation(Geopoint location, out Point offset)
+    {
+        ArgumentNullException.ThrowIfNull(location);
+        EnsureUiThread();
+        offset = default;
+        if (_runtimeResourcesReleased || _panel?.XamlRoot is null ||
+            !_renderer.TryGetDisplayedCamera(out MapCenter center, out double zoom, out double heading, out double pitch) ||
+            !MapCamera.TryProjectLocation(location.Position.Longitude, location.Position.Latitude,
+                center.Longitude, center.Latitude, zoom, _panel.ActualWidth, _panel.ActualHeight,
+                heading, pitch, out MapViewportPoint point))
+            return false;
+        offset = _panel.TransformToVisual(this).TransformPoint(new Point(point.X, point.Y));
+        return true;
+    }
+
     /// <summary>
     /// Builds or refreshes the control's visual tree and connects it to the renderer.
     /// </summary>

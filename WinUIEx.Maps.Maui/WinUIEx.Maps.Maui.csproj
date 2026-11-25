@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <UseMaui>true</UseMaui>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>Native WinUIEx.Maps handler for .NET MAUI Maps on Windows.</Description>
+    <IsPackable>true</IsPackable>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Update="README.md" Pack="true" PackagePath="" />
+    <None Update="readme.txt" Pack="true" PackagePath="" />
+    <Using Remove="Microsoft.Maui.ApplicationModel" />
+    <Using Remove="Microsoft.Maui.Controls" />
+    <Using Remove="Microsoft.Maui.Graphics" />
+    <PackageReference Include="Microsoft.Maui.Controls" Version="11.0.0" />
+    <PackageReference Include="Microsoft.Maui.Controls.Maps" Version="11.0.0" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.4" />
+    <ProjectReference Include="..\WinUIEx.Maps\WinUIEx.Maps.csproj" />
+  </ItemGroup>
+</Project>

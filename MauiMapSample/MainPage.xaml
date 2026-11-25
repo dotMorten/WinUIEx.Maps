@@ -1,0 +1,52 @@
+<ContentPage
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:maps="clr-namespace:Microsoft.Maui.Controls.Maps;assembly=Microsoft.Maui.Controls.Maps"
+    x:Class="MauiMapSample.MainPage"
+    Title="Native MAUI Maps on Windows">
+    <Grid RowDefinitions="Auto,*,Auto">
+        <ScrollView Orientation="Horizontal">
+            <HorizontalStackLayout Padding="12" Spacing="12">
+                <Picker x:Name="MapTypePicker" Title="Map type" SelectedIndexChanged="OnMapTypeChanged" WidthRequest="140">
+                    <Picker.Items>
+                        <x:String>Street</x:String>
+                        <x:String>Satellite</x:String>
+                        <x:String>Hybrid</x:String>
+                    </Picker.Items>
+                </Picker>
+                <Label Text="Pan" VerticalOptions="Center" />
+                <Switch AutomationId="PanToggle" SemanticProperties.Description="Allow map panning"
+                        IsToggled="True" Toggled="OnPanToggled" />
+                <Label Text="Zoom" VerticalOptions="Center" />
+                <Switch AutomationId="ZoomToggle" SemanticProperties.Description="Allow map zooming"
+                        IsToggled="True" Toggled="OnZoomToggled" />
+                <Label Text="Traffic" VerticalOptions="Center" />
+                <Switch AutomationId="TrafficToggle" SemanticProperties.Description="Show traffic" Toggled="OnTrafficToggled" />
+                <Label Text="Clusters" VerticalOptions="Center" />
+                <Switch AutomationId="ClusterToggle" SemanticProperties.Description="Cluster nearby pins" Toggled="OnClustersToggled" />
+                <Label Text="Custom clusters" VerticalOptions="Center" />
+                <Switch AutomationId="ClusterImageToggle" SemanticProperties.Description="Use custom cluster images"
+                        Toggled="OnClusterImagesToggled" />
+                <Label Text="My location" VerticalOptions="Center" />
+                <Switch AutomationId="LocationToggle" SemanticProperties.Description="Show my location" Toggled="OnLocationToggled" />
+                <Button Text="Reset region" Clicked="OnResetRegion" />
+                <Button Text="Add pin" Clicked="OnAddPin" />
+                <Button Text="Move pin" Clicked="OnMovePin" />
+                <Button Text="Show callout" Clicked="OnShowCallout" />
+                <Button Text="Hide callout" Clicked="OnHideCallout" />
+                <Button Text="Toggle shapes" Clicked="OnToggleShapes" />
+            </HorizontalStackLayout>
+        </ScrollView>
+        <maps:Map x:Name="SampleMap" AutomationId="NativeMap" Grid.Row="1"
+                  MapClicked="OnMapClicked" MapLongClicked="OnMapLongClicked"
+                  ClusterClicked="OnClusterClicked" UserLocationChanged="OnUserLocationChanged"
+                  PropertyChanged="OnMapPropertyChanged" />
+        <VerticalStackLayout Grid.Row="2" Padding="12" Spacing="4">
+            <Label Text="WinUIEx.Maps native renderer - no WebView. Set AZURE_MAPS_KEY before launching."
+                   FontAttributes="Bold" />
+            <Label x:Name="RegionLabel" AutomationId="VisibleRegion" />
+            <Label x:Name="StatusLabel" AutomationId="EventStatus"
+                   Text="Click pins, shapes, or the map. Right-click or touch-and-hold for a long press." />
+        </VerticalStackLayout>
+    </Grid>
+</ContentPage>

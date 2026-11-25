@@ -176,6 +176,7 @@ payload inspection is best in PerfView's Events view.
 | 94 | `VectorExtrusionRenderBatch` | Verbose/VectorTiles+Device | aggregate triangles, draws including composite, evaluation failures, retained mesh bytes, and shared color/depth target bytes; zero-draw records also expose failed evaluations with no drawable geometry |
 | 95 | `VectorExtrusionPreparationFailed` | Error/VectorTiles+Errors | shared preparation worker failure, containing only the exception type, never feature values or style text |
 | 96 | `VectorGlyphRangeBackpressure` | Verbose/VectorTiles | per-provider active glyph-range and waiting-request counts when the 32-load limit is reached; no font, range, URL, or label content |
+| 97 | `InteractionEnabledChanged` | Info/Camera | independent pan/zoom input-enabled flags; programmatic camera navigation remains available |
 
 ### Frame-time investigations
 

@@ -6,11 +6,11 @@
     <Platform Solution="Debug|Any CPU" Project="x64" />
   </Project>
   <Project Path="WinUIEx.Maps/WinUIEx.Maps.csproj" />
+  <Project Path="WinUIEx.Maps.Maui/WinUIEx.Maps.Maui.csproj" />
   <Project Path="WinUIEx.Maps.Benchmarks/WinUIEx.Maps.Benchmarks.csproj">
+    <Platform Solution="*|Any CPU" Project="ARM64" />
     <Platform Solution="*|ARM64" Project="ARM64" />
     <Platform Solution="*|x64" Project="x64" />
-    <Platform Solution="Debug|Any CPU" Project="ARM64" />
-    <Platform Solution="Release|Any CPU" Project="ARM64" />
   </Project>
   <Configurations>
     <Platform Name="Any CPU" />
@@ -18,20 +18,27 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="MapSample/MapSample.csproj">
-    <Platform Solution="*|ARM64" Project="ARM64" />
-    <Platform Solution="*|x64" Project="x64" />
-    <Platform Solution="*|x86" Project="x86" />
-    <Platform Solution="Debug|Any CPU" Project="x64" />
-    <Platform Solution="Release|Any CPU" Project="x64" />
-    <Deploy />
-  </Project>
-  <Project Path="WindowsMapsSample/WindowsMapsSample.csproj">
-    <Platform Solution="*|ARM64" Project="ARM64" />
-    <Platform Solution="*|x64" Project="x64" />
-    <Platform Solution="*|x86" Project="x86" />
-    <Platform Solution="Debug|Any CPU" Project="x64" />
-    <Platform Solution="Release|Any CPU" Project="x64" />
-    <Deploy />
-  </Project>
+  <Folder Name="/Samples/">
+    <Project Path="MapSample/MapSample.csproj">
+      <Platform Solution="*|Any CPU" Project="x64" />
+      <Platform Solution="*|ARM64" Project="ARM64" />
+      <Platform Solution="*|x64" Project="x64" />
+      <Platform Solution="*|x86" Project="x86" />
+      <Deploy />
+    </Project>
+    <Project Path="MauiMapSample/MauiMapSample.csproj">
+      <Platform Solution="*|Any CPU" Project="x64" />
+      <Platform Solution="*|ARM64" Project="ARM64" />
+      <Platform Solution="*|x64" Project="x64" />
+      <Platform Solution="*|x86" Project="x64" />
+      <Deploy />
+    </Project>
+    <Project Path="WindowsMapsSample/WindowsMapsSample.csproj">
+      <Platform Solution="*|Any CPU" Project="x64" />
+      <Platform Solution="*|ARM64" Project="ARM64" />
+      <Platform Solution="*|x64" Project="x64" />
+      <Platform Solution="*|x86" Project="x86" />
+      <Deploy />
+    </Project>
+  </Folder>
 </Solution>

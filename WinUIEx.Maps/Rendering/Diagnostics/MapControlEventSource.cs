@@ -2197,4 +2197,12 @@ internal sealed class MapControlEventSource : EventSource
         if (IsEnabled(EventLevel.Verbose, Keywords.VectorTiles))
             WriteEvent(96, pendingRangeCount, waitingRequestCount);
     }
+
+    /// <summary>Reports independent user-input restrictions without application data.</summary>
+    [Event(97, Level = EventLevel.Informational, Keywords = Keywords.Camera, Task = Tasks.Camera)]
+    public void InteractionEnabledChanged(bool isPanEnabled, bool isZoomEnabled)
+    {
+        if (IsEnabled(EventLevel.Informational, Keywords.Camera))
+            WriteEvent(97, isPanEnabled, isZoomEnabled);
+    }
 }

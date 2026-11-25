@@ -54,6 +54,34 @@ public sealed class MapIcon : MapElement
     }
 
     /// <summary>
+    /// Updates the icon's geographic coordinates, visual, and normalized anchor point.
+    /// </summary>
+    /// <param name="latitude">The latitude, or <see langword="null"/> to keep the current value.</param>
+    /// <param name="longitude">The longitude, or <see langword="null"/> to keep the current value.</param>
+    /// <param name="iconElement">The unparented XAML icon, or <see langword="null"/> to keep the current visual.</param>
+    /// <param name="normalizedAnchorPoint">The anchor point, or <see langword="null"/> to keep the current value.</param>
+    public void Update(double? latitude = null, double? longitude = null, IconElement? iconElement = null, Point? normalizedAnchorPoint = null)
+    {
+        var bg = this.Location.Position;
+        bg.Latitude  = latitude ?? bg.Latitude;
+        bg.Longitude = longitude ?? bg.Longitude;
+        
+        var updated = new MapIconState(
+            iconElement ?? IconElement,
+            Location,
+            bg.Longitude,
+            bg.Latitude,
+            normalizedAnchorPoint ?? NormalizedAnchorPoint);
+        MapIconState current = Volatile.Read(ref _state);
+        if (!ReferenceEquals(
+                   Interlocked.CompareExchange(ref _state, updated, current),
+                   current))
+        {
+            OnChanged();
+        }
+    }
+
+    /// <summary>
     /// Gets or sets the unparented XAML icon rasterized for this map icon.
     /// </summary>
     /// <remarks>

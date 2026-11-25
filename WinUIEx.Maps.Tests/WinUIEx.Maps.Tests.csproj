@@ -39,6 +39,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\WinUIEx.Maps.Maui\MapMath.cs" Link="Maui\MapMath.cs" />
     <ProjectReference Include="..\WinUIEx.Maps\WinUIEx.Maps.csproj" />
   </ItemGroup>
 

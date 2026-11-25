@@ -166,6 +166,11 @@ public sealed partial class MapControl
         {
             return;
         }
+        bool isZoomKey = e.Key is VirtualKey.Add or PlusKey or VirtualKey.Subtract or MinusKey;
+        if (isZoomKey ? !IsZoomEnabled : !IsPanEnabled)
+        {
+            return;
+        }
         if (_modifiedNavigationKeys.ContainsKey(e.Key))
         {
             e.Handled = true;
@@ -408,6 +413,10 @@ public sealed partial class MapControl
     protected override void OnDoubleTapped(DoubleTappedRoutedEventArgs e)
     {
         base.OnDoubleTapped(e);
+        if (!IsZoomEnabled)
+        {
+            return;
+        }
 
         SetZoomTarget(
             ZoomLevel + 1,
@@ -484,6 +493,10 @@ public sealed partial class MapControl
     protected override void OnPointerWheelChanged(PointerRoutedEventArgs e)
     {
         base.OnPointerWheelChanged(e);
+        if (!IsZoomEnabled)
+        {
+            return;
+        }
 
         Microsoft.UI.Input.PointerPoint point = e.GetCurrentPoint((UIElement?)_panel ?? this);
         int wheelDelta = point.Properties.MouseWheelDelta;
@@ -880,13 +893,13 @@ public sealed partial class MapControl
             position.Longitude,
             position.Latitude,
             currentZoom,
-            translation.X,
-            translation.Y,
+            IsPanEnabled ? translation.X : 0,
+            IsPanEnabled ? translation.Y : 0,
             currentHeading,
             Pitch,
             _panel?.ActualHeight ?? ActualHeight);
         double targetZoom = currentZoom;
-        if (MapCamera.TryGetZoomDeltaFromScale(
+        if (IsZoomEnabled && MapCamera.TryGetZoomDeltaFromScale(
                 scale,
                 out double zoomDelta))
         {
@@ -996,7 +1009,7 @@ public sealed partial class MapControl
 
     private void PanByPixels(double horizontalDelta, double verticalDelta)
     {
-        if (horizontalDelta == 0 && verticalDelta == 0)
+        if (!IsPanEnabled || (horizontalDelta == 0 && verticalDelta == 0))
         {
             return;
         }

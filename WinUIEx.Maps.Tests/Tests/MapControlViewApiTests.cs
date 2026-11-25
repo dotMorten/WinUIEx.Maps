@@ -8,6 +8,20 @@ namespace WinUIEx.Maps.Tests.Tests;
 public sealed class MapControlViewApiTests
 {
     [TestMethod]
+    public void MauiAdapterSupportApisExposeProjectionAndIndependentInputSwitches()
+    {
+        Type type = typeof(MapControl);
+        Assert.AreEqual(typeof(EventHandler), type.GetEvent(nameof(MapControl.ViewChanged))!.EventHandlerType);
+        Assert.IsNotNull(type.GetMethod(nameof(MapControl.TryGetOffsetFromLocation),
+            [typeof(Geopoint), typeof(Windows.Foundation.Point).MakeByRefType()]));
+        foreach (string name in new[] { nameof(MapControl.IsPanEnabled), nameof(MapControl.IsZoomEnabled) })
+        {
+            Assert.AreEqual(typeof(bool), type.GetProperty(name)!.PropertyType);
+            Assert.AreEqual(typeof(DependencyProperty), type.GetField(name + "Property")!.FieldType);
+        }
+    }
+
+    [TestMethod]
     public void TrySetViewAsyncExposesAllUwpOverloads()
     {
         Type type = typeof(MapControl);

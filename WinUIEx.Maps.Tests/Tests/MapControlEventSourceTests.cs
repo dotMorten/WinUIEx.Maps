@@ -12,6 +12,20 @@ namespace WinUIEx.Maps.Tests;
 public sealed class MapControlEventSourceTests
 {
     [TestMethod]
+    public void InteractionRestrictionsReportOnlyFlagsWithCameraKeyword()
+    {
+        using TestEventListener listener = new();
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.Device);
+        MapControlEventSource.Log.InteractionEnabledChanged(false, true);
+        Assert.DoesNotContain(value => value.Id is 0 or 97, listener.Events);
+        listener.Enable(EventLevel.Informational, MapControlEventSource.Keywords.Camera);
+        MapControlEventSource.Log.InteractionEnabledChanged(false, true);
+        Assert.AreSequenceEqual(["isPanEnabled", "isZoomEnabled"], listener.Single(97).PayloadNames);
+        Assert.AreSequenceEqual<object?>([false, true], listener.Single(97).Payload);
+        Assert.DoesNotContain(value => value.Id == 0, listener.Events);
+    }
+
+    [TestMethod]
     public void DashWorkDiagnosticsAreOptInAndContainOnlyWideCounters()
     {
         using TestEventListener listener = new();
@@ -781,7 +795,7 @@ public sealed class MapControlEventSourceTests
             .ToArray();
 
         Assert.AreSequenceEqual(
-            Enumerable.Range(1, 96),
+            Enumerable.Range(1, 97),
             events.Select(attribute => attribute.EventId).Order());
         Assert.AreEqual(events.Length, events.Select(attribute => attribute.EventId).Distinct().Count());
     }

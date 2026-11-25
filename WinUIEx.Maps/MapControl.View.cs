@@ -7,6 +7,10 @@ namespace WinUIEx.Maps;
 
 public sealed partial class MapControl
 {
+    /// <summary>Occurs on the UI thread when the displayed map camera changes.</summary>
+    /// <remarks>Updates are coalesced, include animated views, and may arrive after target properties change.</remarks>
+    public event EventHandler? ViewChanged;
+
     private readonly object _viewChangeSync = new();
     private PendingViewChange? _pendingViewChange;
     private int _programmaticViewPending;
@@ -431,7 +435,7 @@ public sealed partial class MapControl
 
     private void QueueAutomationCameraUpdate()
     {
-        if (_automationPeer is null ||
+        if ((_automationPeer is null && ViewChanged is null) ||
             Interlocked.Exchange(ref _automationCameraUpdateQueued, 1) != 0)
         {
             return;
@@ -441,6 +445,8 @@ public sealed partial class MapControl
             {
                 Interlocked.Exchange(ref _automationCameraUpdateQueued, 0);
                 _automationPeer?.NotifyDisplayedCameraChanged();
+                if (IsLoaded)
+                    ViewChanged?.Invoke(this, EventArgs.Empty);
             }))
         {
             Interlocked.Exchange(ref _automationCameraUpdateQueued, 0);

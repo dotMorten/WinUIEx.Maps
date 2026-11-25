@@ -165,9 +165,11 @@ public sealed partial class StressTestPage : Page
                         current.Latitude + random.NextDouble() - 0.5,
                         -80,
                         80);
-                    icon.Location = CreateLocation(longitude, latitude);
-                    icon.IconElement =
-                        iconElements[(index + (int)cycle) % iconElements.Length];
+                    icon.Update(latitude: latitude, longitude: longitude, iconElement: iconElements[(index + (int)cycle) % iconElements.Length]);
+                    //icon.Location = CreateLocation(longitude, latitude);
+                    //icon.IconElement =
+                    //    iconElements[(index + (int)cycle) % iconElements.Length];
+
                 }
 
                 cycle++;
